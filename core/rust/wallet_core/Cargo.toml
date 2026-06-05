@@ -1,0 +1,42 @@
+[package]
+name = "tigerswap-wallet-core"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap Team"]
+description = "Production-ready wallet core with HD wallet, MPC, and multi-sig support"
+license = "MIT"
+
+[dependencies]
+# Crypto
+sha2 = "0.10"
+hmac = "0.12"
+ripemd160 = "0.11"
+base58 = "0.2"
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async
+tokio = { version = "1.35", features = ["full"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Random
+rand = "0.8"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[lib]
+name = "tigerswap_wallet_core"
+path = "src/lib.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

@@ -1,29 +1,65 @@
-//! TigerSwap DEX Router - Rust Implementation
-//! High-performance multi-DEX routing with Dijkstra-based path finding
-//! Optimized for ultra-low latency and deterministic execution
+//! TigerSwap DEX Router - Production-Ready Implementation
+//! High-performance multi-DEX routing with Dijkstra/A* pathfinding
+//! Supports split routing, gas optimization, and real exchange data
 
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::cmp::Ordering;
 use std::sync::{Arc, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+#[derive(Error, Debug, Clone)]
+pub enum RouterError {
+    #[error("Insufficient liquidity for trade")]
+    InsufficientLiquidity,
+    #[error("No valid route found")]
+    NoRouteFound,
+    #[error("Invalid token address: {0}")]
+    InvalidToken(String),
+    #[error("Pool not found")]
+    PoolNotFound,
+    #[error("Amount too small")]
+    AmountTooSmall,
+    #[error("Price impact too high: {0} bps")]
+    PriceImpactTooHigh(u64),
+    #[error("Quote expired")]
+    QuoteExpired,
+    #[error("Gas estimation failed")]
+    GasEstimationFailed,
+    #[error("Internal error: {0}")]
+    Internal(String),
+}
+
+impl From<RouterError> for String {
+    fn from(err: RouterError) -> String {
+        err.to_string()
+    }
+}
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Fee tier in basis points (e.g., 30 = 0.3%)
-const FEE_TIER_DEFAULT: u64 = 30;
 const Q96: u128 = 1 << 96;
 const Q128: u128 = 1 << 128;
-
-/// Maximum hops for route finding
-const MAX_HOPS: usize = 3;
-
-/// Minimum liquidity threshold
+const MAX_HOPS: usize = 4;
 const MIN_LIQUIDITY: u128 = 1000;
-
-/// Maximum routes to return
-const MAX_ROUTES: usize = 5;
+const MAX_ROUTES: usize = 10;
+const BPS_BASE: u128 = 10000;
+const FEE_BPS_UNISWAP_V2: u64 = 30;
+const FEE_BPS_UNISWAP_V3_LOW: u64 = 100;
+const FEE_BPS_UNISWAP_V3_MEDIUM: u64 = 500;
+const FEE_BPS_UNISWAP_V3_HIGH: u64 = 3000;
+const FEE_BPS_SUSHISWAP: u64 = 30;
+const FEE_BPS_CURVE: u64 = 4;
+const FEE_BPS_BALANCER: u64 = 10;
+const NATIVE_GAS_TOKEN_BSC: &str = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
+const NATIVE_GAS_TOKEN_ETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
 
 // ============================================================================
 // Data Structures
