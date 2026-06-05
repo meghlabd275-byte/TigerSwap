@@ -1,0 +1,1 @@
+import React from 'react'; import { Box, Typography } from '@mui/material'; const Treasury: React.FC = () => { return <Box><Typography variant="h4">Treasury</Typography></Box>; }; export default Treasury;

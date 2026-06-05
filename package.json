@@ -1,0 +1,40 @@
+{
+  "name": "tigerswap-monorepo",
+  "version": "1.0.0",
+  "description": "TigerSwap - Enterprise-grade multichain decentralized exchange ecosystem",
+  "private": true,
+  "workspaces": [
+    "frontend/*",
+    "wallet_ecosystem/*",
+    "dex_aggregator/*",
+    "dex_connectors/*",
+    "cex_connectors/*",
+    "cross_chain_protocol/*",
+    "market_maker_platform/*",
+    "mm_bot_platform/*",
+    "blockchain_layer/*",
+    "admin_platform/*",
+    "user_features/*",
+    "analytics_platform/*",
+    "api_gateway/*",
+    "ai_platform/*",
+    "security_platform/*",
+    "governance_platform/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces",
+    "clean": "npm run clean --workspaces"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.0",
+    "eslint": "^8.55.0",
+    "prettier": "^3.1.0"
+  }
+}

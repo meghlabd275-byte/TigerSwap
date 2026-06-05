@@ -1,0 +1,1 @@
+import React from 'react'; import { Box, Typography } from '@mui/material'; const Transactions: React.FC = () => { return <Box><Typography variant="h4">Transactions</Typography></Box>; }; export default Transactions;
