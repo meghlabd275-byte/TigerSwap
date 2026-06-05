@@ -4,6 +4,24 @@
 
 TigerSwap is a **100% built-from-scratch** decentralized exchange ecosystem that does NOT depend on any third-party DEX protocols, aggregators, or wallet services.
 
+### 🌐 Unlimited Blockchain Support
+TigerSwap supports **unlimited EVM and Non-EVM blockchain networks** with full admin management (add, edit, update, remove chains dynamically).
+
+#### EVM Chains (30+ supported)
+- Ethereum, Sepolia, BNB Chain, Polygon, Mumbai, Arbitrum, Optimism, Base, Avalanche, Fantom, Cronos, Celo, Gnosis, Moonbeam, Kava, Linea, zkEVM, Scroll, Mantle, opBNB, Mode, Zora, Harmony, Metis, Shimmer, Core, and more...
+
+#### Non-EVM Chains (15+ supported)
+- **Solana**: Mainnet, Devnet, Testnet
+- **Aptos**: Mainnet, Devnet, Testnet
+- **Sui**: Mainnet, Devnet, Testnet
+- **TON**: Mainnet
+- **TRON**: Mainnet, Nile
+- **Cosmos**: Cosmos Hub, Osmosis, Injective
+- **NEAR**: Mainnet
+- **Algorand**: Mainnet
+- **Polkadot**: Polkadot, Kusama
+- **Cardano**: Mainnet
+
 ### Native Implementations Built From Scratch:
 
 | Component | Status | Description |
