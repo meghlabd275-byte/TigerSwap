@@ -678,6 +678,230 @@ CREATE TABLE listing_fees (
 );
 
 -- ============================================================================
+-- ORDER BOOK
+-- ============================================================================
+
+CREATE TABLE orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_hash VARCHAR(130) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id),
+    pair_id UUID REFERENCES trading_pairs(id),
+    order_type VARCHAR(20) NOT NULL, -- limit, stop_loss, stop_limit, twap, trailing_stop, post_only, fok, ioc
+    side VARCHAR(10) NOT NULL, -- buy, sell
+    price DECIMAL(20,8),
+    quantity DECIMAL(30,8) NOT NULL,
+    filled_quantity DECIMAL(30,8) DEFAULT 0,
+    remaining_quantity DECIMAL(30,8) NOT NULL,
+    stop_price DECIMAL(20,8),
+    trigger_price DECIMAL(20,8),
+    time_in_force VARCHAR(10) DEFAULT 'GTC', -- GTC, IOC, FOK, GTD
+    expiry_time TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'pending', -- pending, partial, filled, cancelled, expired
+    oco_group_id UUID,
+    client_order_id VARCHAR(100),
+    chain_id INTEGER NOT NULL,
+    tx_hash VARCHAR(66),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW(),
+    executed_at TIMESTAMP
+);
+
+CREATE TABLE twap_orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id),
+    pair_id UUID REFERENCES trading_pairs(id),
+    side VARCHAR(10) NOT NULL,
+    total_quantity DECIMAL(30,8) NOT NULL,
+    filled_quantity DECIMAL(30,8) DEFAULT 0,
+    slice_interval INTEGER NOT NULL,
+    slices_total INTEGER NOT NULL,
+    slices_remaining INTEGER NOT NULL,
+    next_slice_time TIMESTAMP NOT NULL,
+    min_price DECIMAL(20,8),
+    max_price DECIMAL(20,8),
+    status VARCHAR(20) DEFAULT 'active', -- active, paused, completed, cancelled
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE oco_groups (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_id_1 UUID REFERENCES orders(id),
+    order_id_2 UUID REFERENCES orders(id),
+    user_id UUID REFERENCES users(id),
+    status VARCHAR(20) DEFAULT 'active', -- active, triggered, cancelled
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE order_book_levels (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pair_id UUID REFERENCES trading_pairs(id),
+    side VARCHAR(10) NOT NULL, -- buy, sell
+    price DECIMAL(20,8) NOT NULL,
+    total_quantity DECIMAL(30,8) NOT NULL,
+    order_count INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- V4 SINGLETON POOLS
+-- ============================================================================
+
+CREATE TABLE v4_pools (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pool_key VARCHAR(130) UNIQUE NOT NULL,
+    token0_id UUID REFERENCES tokens(id),
+    token1_id UUID REFERENCES tokens(id),
+    fee_tier INTEGER NOT NULL,
+    tick_lower INTEGER NOT NULL,
+    tick_upper INTEGER NOT NULL,
+    liquidity DECIMAL(30,8) DEFAULT 0,
+    sqrt_price_x96 VARCHAR(100),
+    tick INTEGER,
+    hook_address VARCHAR(66),
+    hook_flags INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE v4_positions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    pool_id UUID REFERENCES v4_pools(id),
+    user_id UUID REFERENCES users(id),
+    tick_lower INTEGER NOT NULL,
+    tick_upper INTEGER NOT NULL,
+    liquidity DECIMAL(30,8) DEFAULT 0,
+    collected_fees_token0 DECIMAL(30,8) DEFAULT 0,
+    collected_fees_token1 DECIMAL(30,8) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE v4_hooks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    hook_address VARCHAR(66) UNIQUE NOT NULL,
+    name VARCHAR(100),
+    description TEXT,
+    before_initialize BOOLEAN DEFAULT false,
+    after_initialize BOOLEAN DEFAULT false,
+    before_swap BOOLEAN DEFAULT false,
+    after_swap BOOLEAN DEFAULT false,
+    before_modify_liquidity BOOLEAN DEFAULT false,
+    after_modify_liquidity BOOLEAN DEFAULT false,
+    before_donate BOOLEAN DEFAULT false,
+    after_donate BOOLEAN DEFAULT false,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- GOVERNANCE
+-- ============================================================================
+
+CREATE TABLE governance_proposals (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proposal_id INTEGER NOT NULL,
+    proposer_id UUID REFERENCES users(id),
+    description TEXT NOT NULL,
+    start_block INTEGER,
+    end_block INTEGER,
+    execution_time TIMESTAMP,
+    for_votes DECIMAL(30,8) DEFAULT 0,
+    against_votes DECIMAL(30,8) DEFAULT 0,
+    abstain_votes DECIMAL(30,8) DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'pending', -- pending, active, succeeded, defeated, queued, executed, cancelled
+    created_at TIMESTAMP DEFAULT NOW(),
+    executed_at TIMESTAMP
+);
+
+CREATE TABLE proposal_actions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proposal_id UUID REFERENCES governance_proposals(id),
+    target_address VARCHAR(66) NOT NULL,
+    value DECIMAL(30,8) DEFAULT 0,
+    signature TEXT,
+    calldata BYTEA,
+    executed BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE governance_votes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    proposal_id UUID REFERENCES governance_proposals(id),
+    voter_id UUID REFERENCES users(id),
+    support INTEGER NOT NULL, -- 0=against, 1=for, 2=abstain
+    votes DECIMAL(30,8) NOT NULL,
+    weight DECIMAL(30,8),
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE token_delegations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    delegator_id UUID REFERENCES users(id),
+    delegate_id UUID REFERENCES users(id),
+    votes DECIMAL(30,8) NOT NULL,
+    block_number INTEGER,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- PERPETUAL TRADING
+// ============================================================================
+
+CREATE TABLE perpetual_positions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    position_hash VARCHAR(130) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id),
+    asset_id UUID REFERENCES tokens(id),
+    side VARCHAR(10) NOT NULL, -- long, short
+    size DECIMAL(30,8) NOT NULL,
+    collateral DECIMAL(30,8) NOT NULL,
+    average_price DECIMAL(20,8) NOT NULL,
+    last_funding_payment TIMESTAMP,
+    pnl DECIMAL(20,8) DEFAULT 0,
+    loss DECIMAL(20,8) DEFAULT 0,
+    open_time TIMESTAMP NOT NULL,
+    is_liquidated BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE perpetual_orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    order_hash VARCHAR(130) UNIQUE NOT NULL,
+    user_id UUID REFERENCES users(id),
+    asset_id UUID REFERENCES tokens(id),
+    order_type VARCHAR(20) NOT NULL, -- market, limit, stop_loss, take_profit
+    side VARCHAR(10) NOT NULL,
+    size DECIMAL(30,8) NOT NULL,
+    trigger_price DECIMAL(20,8),
+    collateral DECIMAL(30,8),
+    leverage DECIMAL(10,8),
+    status VARCHAR(20) DEFAULT 'pending', -- pending, filled, cancelled
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE perpetual_pools (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id UUID REFERENCES tokens(id),
+    balance DECIMAL(30,8) DEFAULT 0,
+    total_long DECIMAL(30,8) DEFAULT 0,
+    total_short DECIMAL(30,8) DEFAULT 0,
+    funding_rate DECIMAL(20,8) DEFAULT 0,
+    last_funding_time TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE liquidation_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    position_id UUID REFERENCES perpetual_positions(id),
+    liquidator_id UUID REFERENCES users(id),
+    reward DECIMAL(30,8) NOT NULL,
+    price DECIMAL(20,8) NOT NULL,
+    timestamp TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
 -- FUNCTIONS & TRIGGERS
 -- ============================================================================
 
