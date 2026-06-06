@@ -1029,6 +1029,109 @@ CREATE TABLE options (
 );
 
 -- ============================================================================
+-- WALLET ECOSYSTEM
+-- ============================================================================
+
+CREATE TABLE master_wallets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_address VARCHAR(66) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    encrypted_seed BYTEA,
+    wallet_hash VARCHAR(66) NOT NULL,
+    backup_code_hash VARCHAR(66),
+    is_active BOOLEAN DEFAULT true,
+    withdraw_fee_percent DECIMAL(5,2) DEFAULT 1.0,
+    swap_fee_percent DECIMAL(5,2) DEFAULT 0.3,
+    transaction_fee_percent DECIMAL(5,2) DEFAULT 0.1,
+    liquidity_fee_percent DECIMAL(5,2) DEFAULT 0.2,
+    total_revenue DECIMAL(30,8) DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE user_wallets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    master_wallet_id UUID REFERENCES master_wallets(id),
+    wallet_address VARCHAR(66) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    encrypted_seed BYTEA,
+    wallet_hash VARCHAR(66) NOT NULL,
+    password_hash VARCHAR(66),
+    is_active BOOLEAN DEFAULT true,
+    two_factor_enabled BOOLEAN DEFAULT false,
+    two_factor_address VARCHAR(66),
+    auto_sign_enabled BOOLEAN DEFAULT true,
+    total_transactions INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    last_active_at TIMESTAMP
+);
+
+CREATE TABLE wallet_chains (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_id UUID REFERENCES user_wallets(id) ON DELETE CASCADE,
+    chain_id INTEGER NOT NULL,
+    is_supported BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE wallet_balances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_id UUID REFERENCES user_wallets(id) ON DELETE CASCADE,
+    chain_id INTEGER NOT NULL,
+    token_address VARCHAR(66),
+    balance DECIMAL(30,8) DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE wallet_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_id UUID REFERENCES user_wallets(id),
+    tx_hash VARCHAR(66) UNIQUE NOT NULL,
+    chain_id INTEGER NOT NULL,
+    tx_type VARCHAR(20) NOT NULL, -- send, receive, swap, liquidity, token_create, airdrop, campaign
+    from_address VARCHAR(66),
+    to_address VARCHAR(66),
+    token_address VARCHAR(66),
+    amount DECIMAL(30,8) NOT NULL,
+    fee DECIMAL(20,8),
+    status VARCHAR(20) DEFAULT 'completed', -- pending, signed, executed, failed, cancelled
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE wallet_multisig_txs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_id UUID REFERENCES user_wallets(id),
+    tx_hash VARCHAR(66) UNIQUE NOT NULL,
+    required_signatures INTEGER DEFAULT 1,
+    current_signatures INTEGER DEFAULT 0,
+    amount DECIMAL(30,8) NOT NULL,
+    token_address VARCHAR(66),
+    to_address VARCHAR(66),
+    is_executed BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE token_baskets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    master_wallet_id UUID REFERENCES master_wallets(id),
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    tokens JSONB NOT NULL, -- array of token addresses
+    weights JSONB NOT NULL, -- array of weights
+    min_investment DECIMAL(30,8) DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE wallet_auto_sign_queue (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    request_id VARCHAR(66) UNIQUE NOT NULL,
+    wallet_id UUID REFERENCES user_wallets(id),
+    tx_data BYTEA,
+    is_executed BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
 -- FUNCTIONS & TRIGGERS
 -- ============================================================================
 
