@@ -1721,3 +1721,222 @@ CREATE INDEX idx_white_label_deployments_client ON white_label_deployments(clien
 CREATE INDEX idx_white_label_deployments_domain ON white_label_deployments(domain);
 CREATE INDEX idx_white_label_api_logs_license ON white_label_api_logs(license_id, created_at);
 CREATE INDEX idx_white_label_earnings_client_period ON white_label_earnings(client_id, period_start);
+-- ============================================================================
+-- WHITE LABEL FEATURE SYNC & UPDATES
+-- ============================================================================
+
+-- TigerSwap version and features registry
+CREATE TABLE tigerswap_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    version VARCHAR(20) UNIQUE NOT NULL,
+    release_date DATE NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    release_notes TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Feature registry (all available features in TigerSwap)
+CREATE TABLE tigerswap_features (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    feature_id VARCHAR(50) UNIQUE NOT NULL,
+    feature_name VARCHAR(100) NOT NULL,
+    category VARCHAR(50) NOT NULL, -- core, bot, wallet, api, branding
+    description TEXT,
+    is_enabled BOOLEAN DEFAULT true,
+    version_added VARCHAR(20) NOT NULL,
+    version_deprecated VARCHAR(20),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Feature updates available for white label
+CREATE TABLE white_label_updates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    
+    -- Update info
+    update_id VARCHAR(50) UNIQUE NOT NULL,
+    update_version VARCHAR(20) NOT NULL,
+    update_type VARCHAR(20) NOT NULL, -- feature_add, feature_update, security_fix, breaking_change
+    title VARCHAR(200) NOT NULL,
+    description TEXT NOT NULL,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'available', -- available, downloaded, applied, failed
+    available_at TIMESTAMP DEFAULT NOW(),
+    downloaded_at TIMESTAMP,
+    applied_at TIMESTAMP,
+    failed_reason TEXT,
+    
+    -- Features affected
+    features_added JSONB DEFAULT '[]',
+    features_updated JSONB DEFAULT '[]',
+    features_removed JSONB DEFAULT '[]',
+    
+    -- Size and checksum
+    update_size_bytes INTEGER,
+    checksum VARCHAR(64),
+    
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label version tracking
+CREATE TABLE white_label_versions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    license_id UUID REFERENCES white_label_licenses(id),
+    
+    current_version VARCHAR(20) NOT NULL,
+    latest_available_version VARCHAR(20),
+    last_checked_at TIMESTAMP,
+    update_available BOOLEAN DEFAULT false,
+    
+    -- Feature status
+    enabled_features JSONB DEFAULT '[]',
+    disabled_features JSONB DEFAULT '[]',
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Sync log
+CREATE TABLE white_label_sync_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id),
+    sync_type VARCHAR(20) NOT NULL, -- manual, scheduled, forced
+    status VARCHAR(20) DEFAULT 'pending',
+    features_synced INTEGER DEFAULT 0,
+    errors TEXT,
+    started_at TIMESTAMP DEFAULT NOW(),
+    completed_at TIMESTAMP
+);
+
+-- ============================================================================
+-- FEATURE SYNC FUNCTIONS
+// ============================================================================
+
+-- Get latest TigerSwap version
+CREATE OR REPLACE FUNCTION get_latest_tigerswap_version()
+RETURNS VARCHAR(20) AS $$
+DECLARE
+    v_version VARCHAR(20);
+BEGIN
+    SELECT version INTO v_version
+    FROM tigerswap_versions
+    WHERE is_active = true
+    ORDER BY release_date DESC
+    LIMIT 1;
+    RETURN v_version;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Check for available updates
+CREATE OR REPLACE FUNCTION check_for_updates(
+    p_client_id UUID
+) RETURNS TABLE(
+    update_version VARCHAR(20),
+    update_count INTEGER,
+    has_breaking_changes BOOLEAN
+) AS $$
+DECLARE
+    v_current_version VARCHAR(20);
+    v_latest_version VARCHAR(20);
+    v_update_count INTEGER := 0;
+    v_has_breaking BOOLEAN := FALSE;
+BEGIN
+    -- Get current version
+    SELECT current_version INTO v_current_version
+    FROM white_label_versions
+    WHERE client_id = p_client_id;
+    
+    -- Get latest TigerSwap version
+    v_latest_version := get_latest_tigerswap_version();
+    
+    -- Count available updates
+    SELECT COUNT(*) INTO v_update_count
+    FROM white_label_updates
+    WHERE client_id = p_client_id
+      AND status = 'available'
+      AND update_version > v_current_version;
+    
+    -- Check for breaking changes
+    SELECT COUNT(*) > 0 INTO v_has_breaking
+    FROM white_label_updates
+    WHERE client_id = p_client_id
+      AND update_type = 'breaking_change'
+      AND status = 'available'
+      AND update_version > v_current_version;
+    
+    RETURN QUERY SELECT v_latest_version, v_update_count, v_has_breaking;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Apply update to white label
+CREATE OR REPLACE FUNCTION apply_white_label_update(
+    p_client_id UUID,
+    p_update_id VARCHAR(50)
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_update RECORD;
+    v_features JSONB;
+    v_success BOOLEAN := FALSE;
+BEGIN
+    -- Get update record
+    SELECT * INTO v_update
+    FROM white_label_updates
+    WHERE client_id = p_client_id
+      AND update_id = p_update_id;
+    
+    IF v_update IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    
+    -- Mark as downloading
+    UPDATE white_label_updates
+    SET status = 'downloading',
+        downloaded_at = NOW()
+    WHERE id = v_update.id;
+    
+    -- In production: Download and apply update here
+    -- For now, simulate success
+    
+    -- Update features based on update type
+    IF v_update.features_added IS NOT NULL THEN
+        -- Add new features
+        UPDATE white_label_features
+        SET updated_at = NOW()
+        WHERE client_id = p_client_id;
+    END IF;
+    
+    -- Mark as applied
+    UPDATE white_label_updates
+    SET status = 'applied',
+        applied_at = NOW()
+    WHERE id = v_update.id;
+    
+    -- Update version
+    UPDATE white_label_versions
+    SET current_version = v_update.update_version,
+        update_available = false,
+        updated_at = NOW()
+    WHERE client_id = p_client_id;
+    
+    RETURN TRUE;
+EXCEPTION
+    WHEN OTHERS THEN
+        UPDATE white_label_updates
+        SET status = 'failed',
+            failed_reason = SQLERRM
+        WHERE id = v_update.id;
+        RETURN FALSE;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- INDEXES
+-- ============================================================================
+
+CREATE INDEX idx_tigerswap_features_category ON tigerswap_features(category);
+CREATE INDEX idx_white_label_updates_client ON white_label_updates(client_id, status);
+CREATE INDEX idx_white_label_updates_version ON white_label_updates(update_version);
+CREATE INDEX idx_white_label_versions_client ON white_label_versions(client_id);
+CREATE INDEX idx_white_label_sync_logs_client ON white_label_sync_logs(client_id, started_at);
