@@ -437,6 +437,247 @@ CREATE INDEX idx_activity_user ON user_activity_log(user_id);
 CREATE INDEX idx_activity_created ON user_activity_log(created_at);
 
 -- ============================================================================
+-- ADMIN & PERMISSIONS
+-- ============================================================================
+
+CREATE TABLE admin_users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(100) UNIQUE NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    role VARCHAR(20) NOT NULL DEFAULT 'admin', -- super_admin, dex_admin, cex_admin, finance_admin
+    permissions JSONB DEFAULT '[]',
+    is_active BOOLEAN DEFAULT true,
+    last_login_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE admin_sessions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    admin_id UUID REFERENCES admin_users(id) ON DELETE CASCADE,
+    session_token VARCHAR(255) UNIQUE NOT NULL,
+    ip_address INET,
+    user_agent TEXT,
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- API KEYS FOR EXTERNAL USERS
+-- ============================================================================
+
+CREATE TABLE api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) NOT NULL,
+    key_name VARCHAR(100),
+    api_key VARCHAR(64) UNIQUE NOT NULL,
+    api_secret_encrypted BYTEA NOT NULL,
+    tier VARCHAR(20) DEFAULT 'free', -- free, basic, pro, enterprise, institutional
+    permissions JSONB DEFAULT '{"trading": true, "withdrawal": false, "reading": true}',
+    rate_limit_per_minute INTEGER DEFAULT 60,
+    rate_limit_per_day INTEGER DEFAULT 10000,
+    is_active BOOLEAN DEFAULT true,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE api_key_usage (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    api_key_id UUID REFERENCES api_keys(id) ON DELETE CASCADE,
+    endpoint VARCHAR(100) NOT NULL,
+    method VARCHAR(10),
+    status_code INTEGER,
+    latency_ms INTEGER,
+    request_size INTEGER,
+    response_size INTEGER,
+    ip_address INET,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- BOT SUBSCRIPTION TIERS
+-- ============================================================================
+
+CREATE TABLE bot_tiers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(50) UNIQUE NOT NULL, -- tier_1, tier_2, tier_3, tier_4, tier_5
+    display_name VARCHAR(100) NOT NULL,
+    monthly_fee_usd DECIMAL(10,2) NOT NULL,
+    max_bots INTEGER DEFAULT 1,
+    max_dex_connections INTEGER DEFAULT 5,
+    max_cex_connections INTEGER DEFAULT 20,
+    max_trading_pairs INTEGER DEFAULT 10,
+    max_position_usd DECIMAL(20,2) DEFAULT 100000,
+    max_daily_volume_usd DECIMAL(20,2) DEFAULT 1000000,
+    latency_target_ms INTEGER DEFAULT 100,
+    features JSONB DEFAULT '{}',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- BOT SUBSCRIPTIONS
+-- ============================================================================
+
+CREATE TABLE bot_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) NOT NULL,
+    tier_id UUID REFERENCES bot_tiers(id),
+    num_dexs INTEGER DEFAULT 20,
+    num_cexes INTEGER DEFAULT 200,
+    monthly_fee DECIMAL(10,2) NOT NULL,
+    per_dex_fee DECIMAL(10,2) DEFAULT 1000,
+    per_cex_fee DECIMAL(10,2) DEFAULT 100,
+    total_monthly_fee DECIMAL(10,2) NOT NULL,
+    status VARCHAR(20) DEFAULT 'active', -- active, paused, cancelled, expired
+    billing_cycle_start DATE NOT NULL,
+    billing_cycle_end DATE NOT NULL,
+    next_billing_date DATE,
+    payment_method VARCHAR(50), -- crypto, card, invoice
+    payment_reference VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- EXTERNAL CEX CONNECTIONS (User-managed API keys)
+-- ============================================================================
+
+CREATE TABLE user_cex_connections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) NOT NULL,
+    exchange_name VARCHAR(50) NOT NULL, -- binance, coinbase, kraken, etc.
+    account_id VARCHAR(100),
+    api_key_encrypted BYTEA,
+    api_secret_encrypted BYTEA,
+    passphrase_encrypted BYTEA,
+    subaccount VARCHAR(50),
+    permissions JSONB DEFAULT '{"trading": true, "reading": true, "withdrawal": false}',
+    is_active BOOLEAN DEFAULT true,
+    can_trade BOOLEAN DEFAULT true,
+    can_withdraw BOOLEAN DEFAULT false,
+    can_deposit BOOLEAN DEFAULT true,
+    last_sync_at TIMESTAMP,
+    sync_status VARCHAR(20) DEFAULT 'idle', -- idle, syncing, error
+    error_message TEXT,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE user_cex_balances (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    connection_id UUID REFERENCES user_cex_connections(id) ON DELETE CASCADE,
+    asset VARCHAR(20) NOT NULL,
+    free DECIMAL(30,8) DEFAULT 0,
+    locked DECIMAL(30,8) DEFAULT 0,
+    balance_usd DECIMAL(20,8) DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- EXTERNAL DEX CONNECTIONS (User-managed API keys)
+-- ============================================================================
+
+CREATE TABLE user_dex_connections (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) NOT NULL,
+    dex_name VARCHAR(50) NOT NULL, -- uniswap, pancakeswap, etc.
+    chain_id INTEGER NOT NULL,
+    wallet_address VARCHAR(66),
+    router_address VARCHAR(66),
+    pool_addresses VARCHAR(100)[],
+    permissions JSONB DEFAULT '{"swapping": true, "liquidity": true, "borrowing": false}',
+    is_active BOOLEAN DEFAULT true,
+    max_slippage_bps INTEGER DEFAULT 300,
+    gas_limit INTEGER DEFAULT 500000,
+    last_tx_hash VARCHAR(66),
+    last_tx_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- COMPLETE FEE CONFIGURATION
+-- ============================================================================
+
+CREATE TABLE fee_configs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fee_type VARCHAR(50) NOT NULL, -- swap, liquidity, withdrawal, deposit, bot_subscription, api_key, listing
+    chain_id INTEGER,
+    token_symbol VARCHAR(20),
+    fee_amount_usd DECIMAL(20,8) NOT NULL,
+    fee_percentage DECIMAL(10,4) DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    min_fee_usd DECIMAL(20,8) DEFAULT 0,
+    max_fee_usd DECIMAL(20,8),
+    updated_by UUID REFERENCES admin_users(id),
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE admin_fee_addresses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fee_type VARCHAR(50) NOT NULL,
+    chain_id INTEGER NOT NULL,
+    wallet_address VARCHAR(66) NOT NULL,
+    token_symbol VARCHAR(20),
+    is_active BOOLEAN DEFAULT true,
+    priority INTEGER DEFAULT 0, -- For multi-sig distribution
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE collected_fees (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    fee_type VARCHAR(50) NOT NULL,
+    user_id UUID REFERENCES users(id),
+    amount_usd DECIMAL(20,8) NOT NULL,
+    token_symbol VARCHAR(20),
+    amount_token DECIMAL(30,8),
+    chain_id INTEGER,
+    tx_hash VARCHAR(66),
+    recipient_address VARCHAR(66),
+    status VARCHAR(20) DEFAULT 'collected', -- collected, pending, distributed
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- BLOCKCHAINS
+-- ============================================================================
+
+CREATE TABLE blockchains (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(50) NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    chain_id INTEGER UNIQUE NOT NULL,
+    chain_id_hex VARCHAR(20),
+    is_evm BOOLEAN DEFAULT true,
+    is_active BOOLEAN DEFAULT true,
+    explorer_url TEXT,
+    rpc_url TEXT,
+    native_token_symbol VARCHAR(20),
+    logo_url TEXT,
+    avg_gas_price_gwei DECIMAL(20,4),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- LISTING FEES
+-- ============================================================================
+
+CREATE TABLE listing_fees (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    tier VARCHAR(20) NOT NULL, -- basic, standard, premium, premium_plus
+    listing_type VARCHAR(20) NOT NULL, -- token, pool, pair
+    one_time_fee_usd DECIMAL(10,2) NOT NULL,
+    monthly_fee_usd DECIMAL(10,2) DEFAULT 0,
+    features JSONB DEFAULT '{}',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
 -- FUNCTIONS & TRIGGERS
 -- ============================================================================
 

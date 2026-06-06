@@ -10,6 +10,47 @@ use std::time::{SystemTime, UNIX_EPOCH};
 // ALL BOT TYPES WITH FULL FEATURES
 // ============================================================================
 
+// ============================================================================
+// ROLE-BASED ACCESS CONTROL
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BotRole {
+    Admin,           // Super admin - full platform control
+    BotOperator,     // Can manage all bots on platform
+    Client,          // Can only manage own bots
+}
+
+impl BotRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BotRole::Admin => "admin",
+            BotRole::BotOperator => "bot_operator",
+            BotRole::Client => "client",
+        }
+    }
+    
+    pub fn can_manage_all_bots(&self) -> bool {
+        matches!(self, BotRole::Admin | BotRole::BotOperator)
+    }
+    
+    pub fn can_manage_fees(&self) -> bool {
+        matches!(self, BotRole::Admin)
+    }
+    
+    pub fn can_create_bots(&self) -> bool {
+        matches!(self, BotRole::Admin | BotRole::BotOperator)
+    }
+    
+    pub fn can_view_all_stats(&self) -> bool {
+        matches!(self, BotRole::Admin | BotRole::BotOperator)
+    }
+    
+    pub fn can_suspend_platform(&self) -> bool {
+        matches!(self, BotRole::Admin)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BotType {
     MarketMaker,      // Standard MM - earn spread
