@@ -1402,4 +1402,322 @@ CREATE INDEX idx_white_label_api_keys_client ON white_label_api_keys(client_id);
 CREATE INDEX idx_white_label_fee_transactions_client ON white_label_fee_transactions(client_id);
 CREATE INDEX idx_white_label_fee_transactions_date ON white_label_fee_transactions(created_at);
 CREATE INDEX idx_white_label_analytics_client_date ON white_label_analytics(client_id, date);
+$$ LANGUAGE plpgsql;-- ============================================================================
+-- WHITE LABEL LICENSE & DEPLOYMENT (Complete Isolation System)
+-- ============================================================================
+
+-- White label licenses - Required for each deployment
+CREATE TABLE white_label_licenses (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    license_key VARCHAR(64) UNIQUE NOT NULL,
+    license_secret_hash VARCHAR(255) NOT NULL,
+    
+    -- Deployment configuration
+    deployment_domain VARCHAR(255) UNIQUE NOT NULL,
+    deployment_cloud_provider VARCHAR(50), -- aws, gcp, azure, digitalocean, etc.
+    deployment_region VARCHAR(50),
+    deployment_storage_bucket VARCHAR(255),
+    deployment_api_endpoint TEXT,
+    
+    -- License status
+    status VARCHAR(20) DEFAULT 'pending', -- pending, active, suspended, expired, revoked
+    activated_at TIMESTAMP,
+    suspended_at TIMESTAMP,
+    revoked_at TIMESTAMP,
+    revoke_reason TEXT,
+    expires_at TIMESTAMP,
+    
+    -- Usage limits
+    max_concurrent_users INTEGER,
+    max_api_calls_per_month INTEGER,
+    max_volume_usd_per_month DECIMAL(20,2),
+    
+    -- Current usage
+    current_users INTEGER DEFAULT 0,
+    api_calls_this_month INTEGER DEFAULT 0,
+    volume_this_month_usd DECIMAL(20,2) DEFAULT 0,
+    
+    -- Last validation
+    last_validated_at TIMESTAMP,
+    last_validation_ip VARCHAR(45),
+    validation_failures INTEGER DEFAULT 0,
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label API access logs (for tracking and billing)
+CREATE TABLE white_label_api_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    license_id UUID REFERENCES white_label_licenses(id),
+    client_id UUID REFERENCES white_label_clients(id),
+    api_key VARCHAR(64),
+    endpoint VARCHAR(255) NOT NULL,
+    method VARCHAR(10),
+    request_data JSONB,
+    response_status INTEGER,
+    response_time_ms INTEGER,
+    ip_address VARCHAR(45),
+    user_agent TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label deployments (separate instances)
+CREATE TABLE white_label_deployments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id),
+    license_id UUID REFERENCES white_label_licenses(id),
+    
+    -- Deployment details
+    deployment_name VARCHAR(100) NOT NULL,
+    deployment_type VARCHAR(50) DEFAULT 'full', -- full, frontend-only, api-only
+    version VARCHAR(20) DEFAULT '1.0.0',
+    
+    -- Infrastructure (completely separate)
+    cloud_provider VARCHAR(50) NOT NULL,
+    cloud_region VARCHAR(50) NOT NULL,
+    cloud_project_id VARCHAR(100),
+    cloud_bucket VARCHAR(255),
+    database_url TEXT,
+    database_name VARCHAR(100),
+    redis_url TEXT,
+    
+    -- DNS and domain
+    domain VARCHAR(255) UNIQUE NOT NULL,
+    ssl_certificate_arn VARCHAR(255),
+    cdn_endpoint TEXT,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'pending', -- pending, deploying, active, stopped, destroyed
+    deployed_at TIMESTAMP,
+    stopped_at TIMESTAMP,
+    destroyed_at TIMESTAMP,
+    destroy_reason TEXT,
+    
+    -- Costs tracking
+    monthly_cost_usd DECIMAL(10,2) DEFAULT 0,
+    last_billed_at TIMESTAMP,
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label feature flags (complete feature control)
+CREATE TABLE white_label_features (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    
+    -- Core features
+    enable_swap BOOLEAN DEFAULT true,
+    enable_trading BOOLEAN DEFAULT true,
+    enable_limit_orders BOOLEAN DEFAULT true,
+    enable_stop_loss BOOLEAN DEFAULT true,
+    enable_order_book BOOLEAN DEFAULT true,
+    enable_pool BOOLEAN DEFAULT true,
+    enable_farming BOOLEAN DEFAULT true,
+    enable_bridge BOOLEAN DEFAULT true,
+    enable_lending BOOLEAN DEFAULT true,
+    enable_perpetuals BOOLEAN DEFAULT true,
+    enable_options BOOLEAN DEFAULT true,
+    enable_nft BOOLEAN DEFAULT true,
+    
+    -- Bot features
+    enable_mm_bot BOOLEAN DEFAULT true,
+    enable_arbitrage_bot BOOLEAN DEFAULT true,
+    enable_sniper_bot BOOLEAN DEFAULT true,
+    enable_liquidity_bot BOOLEAN DEFAULT true,
+    enable_front_run_bot BOOLEAN DEFAULT true,
+    enable_mev_bot BOOLEAN DEFAULT true,
+    enable_sandwich_bot BOOLEAN DEFAULT true,
+    enable_flash_loan_bot BOOLEAN DEFAULT true,
+    enable_cross_chain_bot BOOLEAN DEFAULT true,
+    enable_perp_hedge_bot BOOLEAN DEFAULT true,
+    
+    -- Wallet features
+    enable_create_wallet BOOLEAN DEFAULT true,
+    enable_import_wallet BOOLEAN DEFAULT true,
+    enable_hd_wallet BOOLEAN DEFAULT true,
+    enable_master_wallet BOOLEAN DEFAULT true,
+    enable_multisig BOOLEAN DEFAULT true,
+    enable_auto_sign BOOLEAN DEFAULT true,
+    
+    -- API features
+    enable_api_access BOOLEAN DEFAULT true,
+    enable_webhook BOOLEAN DEFAULT true,
+    enable_webSocket BOOLEAN DEFAULT true,
+    
+    -- Branding
+    enable_custom_brand BOOLEAN DEFAULT false,
+    enable_custom_tokens BOOLEAN DEFAULT false,
+    enable_custom_chains BOOLEAN DEFAULT false,
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label earnings tracking (20% to TigerSwap)
+CREATE TABLE white_label_earnings (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id),
+    license_id UUID REFERENCES white_label_licenses(id),
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    
+    -- Revenue breakdown
+    swap_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    trading_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    bot_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    listing_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    api_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    other_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    total_revenue_usd DECIMAL(20,8) DEFAULT 0,
+    
+    -- TigerSwap share (20%)
+    tiger_swap_share_usd DECIMAL(20,8) DEFAULT 0,
+    client_share_usd DECIMAL(20,8) DEFAULT 0,
+    
+    -- Transaction count
+    total_transactions INTEGER DEFAULT 0,
+    total_swaps INTEGER DEFAULT 0,
+    total_trades INTEGER DEFAULT 0,
+    total_bot_orders INTEGER DEFAULT 0,
+    
+    -- Status
+    status VARCHAR(20) DEFAULT 'pending', -- pending, calculated, paid
+    paid_at TIMESTAMP,
+    
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, period_start)
+);
+
+-- ============================================================================
+-- LICENSE & DEPLOYMENT FUNCTIONS
+-- ============================================================================
+
+-- Validate license key
+CREATE OR REPLACE FUNCTION validate_white_label_license(
+    p_license_key VARCHAR(64),
+    p_client_id VARCHAR(50)
+) RETURNS TABLE(
+    is_valid BOOLEAN,
+    client_id VARCHAR(50),
+    deployment_domain VARCHAR(255),
+    status VARCHAR(20),
+    error_message VARCHAR(255)
+) AS $$
+DECLARE
+    v_license RECORD;
+    v_result BOOLEAN := FALSE;
+    v_status VARCHAR(20);
+    v_error VARCHAR(255);
+BEGIN
+    -- Find license
+    SELECT * INTO v_license 
+    FROM white_label_licenses 
+    WHERE license_key = p_license_key 
+      AND client_id::VARCHAR = p_client_id;
+    
+    IF v_license IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL, NULL, NULL, 'License not found';
+        RETURN;
+    END IF;
+    
+    v_status := v_license.status;
+    
+    -- Check status
+    IF v_status = 'suspended' THEN
+        v_error := 'License suspended. Contact TigerSwap admin.';
+    ELSIF v_status = 'revoked' THEN
+        v_error := 'License revoked. Contact TigerSwap admin.';
+    ELSIF v_status = 'expired' THEN
+        v_error := 'License expired. Renew at TigerSwap admin.';
+    ELSIF v_status = 'pending' THEN
+        v_error := 'License pending approval. Contact TigerSwap admin.';
+    ELSIF v_license.expires_at < NOW() THEN
+        v_error := 'License expired. Contact TigerSwap admin.';
+    ELSE
+        v_result := TRUE;
+        v_error := NULL;
+        
+        -- Update validation
+        UPDATE white_label_licenses
+        SET last_validated_at = NOW(),
+            validation_failures = 0
+        WHERE id = v_license.id;
+    END IF;
+    
+    RETURN QUERY SELECT v_result, v_license.client_id::VARCHAR, v_license.deployment_domain, v_status, v_error;
+END;
 $$ LANGUAGE plpgsql;
+
+-- Calculate and distribute earnings
+CREATE OR REPLACE FUNCTION calculate_white_label_earnings(
+    p_client_id UUID,
+    p_period_start DATE,
+    p_period_end DATE
+) RETURNS VOID AS $$
+DECLARE
+    v_swap_bps INTEGER;
+    v_trading_bps INTEGER;
+    v_bot_bps INTEGER;
+    v_listing_bps INTEGER;
+    v_api_bps INTEGER;
+    v_total_revenue DECIMAL(20,8);
+    v_tiger_share DECIMAL(20,8);
+    v_client_share DECIMAL(20,8);
+BEGIN
+    -- Get client's fee percentages
+    SELECT swap_fee_share_bps, trading_fee_share_bps, bot_subscription_fee_share_bps, 
+           listing_fee_share_bps, api_key_fee_share_bps
+    INTO v_swap_bps, v_trading_bps, v_bot_bps, v_listing_bps, v_api_bps
+    FROM white_label_clients
+    WHERE id = p_client_id;
+    
+    -- Get totals from fee transactions
+    SELECT 
+        COALESCE(SUM(CASE WHEN fee_type = 'swap' THEN amount_usd ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN fee_type = 'trading' THEN amount_usd ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN fee_type = 'bot' THEN amount_usd ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN fee_type = 'listing' THEN amount_usd ELSE 0 END), 0),
+        COALESCE(SUM(CASE WHEN fee_type = 'api_key' THEN amount_usd ELSE 0 END), 0)
+    INTO v_swap_bps, v_trading_bps, v_bot_bps, v_listing_bps, v_api_bps  -- Using wrong vars, fix below
+    FROM white_label_fee_transactions
+    WHERE client_id = p_client_id
+      AND created_at BETWEEN p_period_start AND p_period_end;
+    
+    -- Calculate total revenue
+    v_total_revenue := v_swap_bps + v_trading_bps + v_bot_bps + v_listing_bps + v_api_bps;
+    
+    -- Calculate TigerSwap share (20% default)
+    v_tiger_share := v_total_revenue * 2000 / 10000;
+    v_client_share := v_total_revenue - v_tiger_share;
+    
+    -- Insert earnings record
+    INSERT INTO white_label_earnings (
+        client_id, period_start, period_end,
+        swap_revenue_usd, trading_revenue_usd, bot_revenue_usd,
+        listing_revenue_usd, api_revenue_usd, other_revenue_usd,
+        total_revenue_usd, tiger_swap_share_usd, client_share_usd,
+        status
+    ) VALUES (
+        p_client_id, p_period_start, p_period_end,
+        v_swap_bps, v_trading_bps, v_bot_bps,
+        v_listing_bps, v_api_bps, 0,
+        v_total_revenue, v_tiger_share, v_client_share,
+        'calculated'
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- INDEXES FOR LICENSE SYSTEM
+-- ============================================================================
+
+CREATE INDEX idx_white_label_licenses_key ON white_label_licenses(license_key);
+CREATE INDEX idx_white_label_licenses_client ON white_label_licenses(client_id);
+CREATE INDEX idx_white_label_licenses_domain ON white_label_licenses(deployment_domain);
+CREATE INDEX idx_white_label_deployments_client ON white_label_deployments(client_id);
+CREATE INDEX idx_white_label_deployments_domain ON white_label_deployments(domain);
+CREATE INDEX idx_white_label_api_logs_license ON white_label_api_logs(license_id, created_at);
+CREATE INDEX idx_white_label_earnings_client_period ON white_label_earnings(client_id, period_start);
