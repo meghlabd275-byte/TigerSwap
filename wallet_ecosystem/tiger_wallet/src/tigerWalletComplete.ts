@@ -17,25 +17,80 @@ const BIP39_WORDLIST = [
   // ... (full 2048 words would be here)
 ];
 
-// Supported Chains
-export const CHAIN_CONFIG = {
-  // EVM Chains
-  1: { name: 'Ethereum', symbol: 'ETH', rpc: 'https://eth.llamarpc.com', explorer: 'https://etherscan.io', decimals: 18 },
-  56: { name: 'BNB Chain', symbol: 'BNB', rpc: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com', decimals: 18 },
-  137: { name: 'Polygon', symbol: 'MATIC', rpc: 'https://polygon-rpc.com', explorer: 'https://polygonscan.com', decimals: 18 },
-  42161: { name: 'Arbitrum One', symbol: 'ETH', rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io', decimals: 18 },
-  10: { name: 'Optimism', symbol: 'ETH', rpc: 'https://mainnet.optimism.io', explorer: 'https://optimistic.etherscan.io', decimals: 18 },
-  8453: { name: 'Base', symbol: 'ETH', rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', decimals: 18 },
-  43114: { name: 'Avalanche', symbol: 'AVAX', rpc: 'https://api.avax.network/ext/bc/C/rpc', explorer: 'https://snowtrace.io', decimals: 18 },
-  // Non-EVM Chains
-  101: { name: 'Solana', symbol: 'SOL', rpc: 'https://api.mainnet-beta.solana.com', explorer: 'https://explorer.solana.com', decimals: 9 },
-  1100: { name: 'Aptos', symbol: 'APT', rpc: 'https://fullnode.mainnet.aptoslabs.com', explorer: 'https://explorer.aptoslabs.com', decimals: 8 },
-  7821: { name: 'Sui', symbol: 'SUI', rpc: 'https://fullnode.mainnet.sui.io', explorer: 'https://explorer.sui.io', decimals: 9 },
-  6060: { name: 'Toncoin', symbol: 'TON', rpc: 'https://toncenter.com/api/v2', explorer: 'https://tonviewer.com', decimals: 9 },
-  3141: { name: 'Pi Network', symbol: 'PI', rpc: 'https://minepi.com/api/gateway', explorer: 'https://explorer.minepi.com', decimals: 18 },
-} as const;
+// ============================================================================
+// SUPPORTED BLOCKCHAINS - 40+ EVM + Non-EVM Chains Pre-installed
+// ============================================================================
 
-export type ChainId = keyof typeof CHAIN_CONFIG;
+// EVM Chains (20+)
+export const EVM_CHAINS: Record<number, ChainConfig> = {
+  1:    { id: 1, name: 'Ethereum', symbol: 'ETH', rpc: 'https://eth.llamarpc.com', explorer: 'https://etherscan.io', decimals: 18, type: 'evm' },
+  5:    { id: 5, name: 'Goerli Testnet', symbol: 'ETH', rpc: 'https://goerli.infura.io/v3/', explorer: 'https://goerli.etherscan.io', decimals: 18, type: 'evm' },
+  11155111: { id: 11155111, name: 'Sepolia Testnet', symbol: 'ETH', rpc: 'https://rpc.sepolia.org', explorer: 'https://sepolia.etherscan.io', decimals: 18, type: 'evm' },
+  56:   { id: 56, name: 'BNB Chain', symbol: 'BNB', rpc: 'https://bsc-dataseed.binance.org', explorer: 'https://bscscan.com', decimals: 18, type: 'evm' },
+  97:   { id: 97, name: 'BNB Testnet', symbol: 'BNB', rpc: 'https://data-seed-prebsc-1-s1.binance.org:8545', explorer: 'https://testnet.bscscan.com', decimals: 18, type: 'evm' },
+  137:  { id: 137, name: 'Polygon', symbol: 'MATIC', rpc: 'https://polygon-rpc.com', explorer: 'https://polygonscan.com', decimals: 18, type: 'evm' },
+  80001: { id: 80001, name: 'Mumbai Testnet', symbol: 'MATIC', rpc: 'https://rpc-mumbai.maticvigil.com', explorer: 'https://mumbai.polygonscan.com', decimals: 18, type: 'evm' },
+  42161: { id: 42161, name: 'Arbitrum One', symbol: 'ETH', rpc: 'https://arb1.arbitrum.io/rpc', explorer: 'https://arbiscan.io', decimals: 18, type: 'evm' },
+  421613: { id: 421613, name: 'Arbitrum Goerli', symbol: 'ETH', rpc: 'https://goerli-rollup.arbitrum.io/rpc', explorer: 'https://goerli.arbiscan.io', decimals: 18, type: 'evm' },
+  10:   { id: 10, name: 'Optimism', symbol: 'ETH', rpc: 'https://mainnet.optimism.io', explorer: 'https://optimistic.etherscan.io', decimals: 18, type: 'evm' },
+  420:  { id: 420, name: 'Optimism Goerli', symbol: 'ETH', rpc: 'https://goerli.optimism.io', explorer: 'https://goerli-optimistic.etherscan.io', decimals: 18, type: 'evm' },
+  8453:  { id: 8453, name: 'Base', symbol: 'ETH', rpc: 'https://mainnet.base.org', explorer: 'https://basescan.org', decimals: 18, type: 'evm' },
+  84531: { id: 84531, name: 'Base Goerli', symbol: 'ETH', rpc: 'https://goerli.base.org', explorer: 'https://goerli.basescan.org', decimals: 18, type: 'evm' },
+  43114: { id: 43114, name: 'Avalanche', symbol: 'AVAX', rpc: 'https://api.avax.network/ext/bc/C/rpc', explorer: 'https://snowtrace.io', decimals: 18, type: 'evm' },
+  43113: { id: 43113, name: 'Avalanche Fuji', symbol: 'AVAX', rpc: 'https://api.avax-test.network/ext/bc/C/rpc', explorer: 'https://testnet.snowtrace.io', decimals: 18, type: 'evm' },
+  250:  { id: 250, name: 'Fantom', symbol: 'FTM', rpc: 'https://rpc.ftm.tools', explorer: 'https://ftmscan.com', decimals: 18, type: 'evm' },
+  4002: { id: 4002, name: 'Fantom Testnet', symbol: 'FTM', rpc: 'https://rpc.testnet.fantom.network', explorer: 'https://testnet.ftmscan.com', decimals: 18, type: 'evm' },
+  1284: { id: 1284, name: 'Moonbeam', symbol: 'GLMR', rpc: 'https://rpc.api.moonbeam.network', explorer: 'https://moonbeam.moonscan.io', decimals: 18, type: 'evm' },
+  1287: { id: 1287, name: 'Moonbase Alpha', symbol: 'DEV', rpc: 'https://rpc.api.moonbase.moonbeam.network', explorer: 'https://moonbase.moonscan.io', decimals: 18, type: 'evm' },
+  42220: { id: 42220, name: 'Celo', symbol: 'CELO', rpc: 'https://rpc.ankr.com/celo', explorer: 'https://explorer.celo.org', decimals: 18, type: 'evm' },
+  44787: { id: 44787, name: 'Celo Alfajores', symbol: 'CELO', rpc: 'https://alfajores-forno.celo-testnet.org', explorer: 'https://alfajores.celoscan.io', decimals: 18, type: 'evm' },
+  25:   { id: 25, name: 'Cronos', symbol: 'CRO', rpc: 'https://evm.cronos.org', explorer: 'https://cronoscan.org', decimals: 18, type: 'evm' },
+  338:  { id: 338, name: 'Cronos Testnet', symbol: 'CRO', rpc: 'https://evm-t3.cronos.org', explorer: 'https://testnet.cronoscan.org', decimals: 18, type: 'evm' },
+  100:  { id: 100, name: 'Gnosis', symbol: 'XDAI', rpc: 'https://rpc.gnosischain.com', explorer: 'https://gnoscan.io', decimals: 18, type: 'evm' },
+};
+
+// Non-EVM Chains (20+)
+export const NONEVM_CHAINS: Record<number, ChainConfig> = {
+  101:   { id: 101, name: 'Solana', symbol: 'SOL', rpc: 'https://api.mainnet-beta.solana.com', explorer: 'https://explorer.solana.com', decimals: 9, type: 'non-evm' },
+  103:   { id: 103, name: 'Solana Devnet', symbol: 'SOL', rpc: 'https://api.devnet.solana.com', explorer: 'https://explorer.solana.com', decimals: 9, type: 'non-evm' },
+  1100:  { id: 1100, name: 'Aptos', symbol: 'APT', rpc: 'https://fullnode.mainnet.aptoslabs.com', explorer: 'https://explorer.aptoslabs.com', decimals: 8, type: 'non-evm' },
+  1101:  { id: 1101, name: 'Aptos Devnet', symbol: 'APT', rpc: 'https://fullnode.devnet.aptoslabs.com', explorer: 'https://explorer.devnet.aptoslabs.com', decimals: 8, type: 'non-evm' },
+  7821:  { id: 7821, name: 'Sui', symbol: 'SUI', rpc: 'https://fullnode.mainnet.sui.io', explorer: 'https://explorer.sui.io', decimals: 9, type: 'non-evm' },
+  7822:  { id: 7822, name: 'Sui Devnet', symbol: 'SUI', rpc: 'https://fullnode.devnet.sui.io', explorer: 'https://explorer.sui.io', decimals: 9, type: 'non-evm' },
+  6060:  { id: 6060, name: 'Toncoin', symbol: 'TON', rpc: 'https://toncenter.com/api/v2', explorer: 'https://tonviewer.com', decimals: 9, type: 'non-evm' },
+  6061:  { id: 6061, name: 'Toncoin Testnet', symbol: 'TON', rpc: 'https://toncenter.com/api/v2', explorer: 'https://tonviewer.com', decimals: 9, type: 'non-evm' },
+  3141:  { id: 3141, name: 'Pi Network', symbol: 'PI', rpc: 'https://minepi.com/api/gateway', explorer: 'https://explorer.minepi.com', decimals: 18, type: 'non-evm' },
+  3142:  { id: 3142, name: 'Pi Network Testnet', symbol: 'PI', rpc: 'https://api.testnet.minepi.com', explorer: 'https://explorer.testnet.minepi.com', decimals: 18, type: 'non-evm' },
+  118:   { id: 118, name: 'Cosmos', symbol: 'ATOM', rpc: 'https://cosmos-rpc.polkachu.com', explorer: 'https://mintscan.io/cosmos', decimals: 6, type: 'non-evm' },
+  0:    { id: 0, name: 'Cosmos Testnet', symbol: 'ATOM', rpc: 'https://rpc.sentry-01.theta-testnet.polypu.xyz', explorer: 'https://mintscan.io/cosmos-testnet', decimals: 6, type: 'non-evm' },
+  531050: { id: 531050, name: 'Sei', symbol: 'SEI', rpc: 'https://rpc.sei-apis.com', explorer: 'https://sei.explorers.guru', decimals: 6, type: 'non-evm' },
+  0:    { id: 0, name: 'Sei Atlantic', symbol: 'SEI', rpc: 'https://rpc.atlantic-1.sei-apis.com', explorer: 'https://sei.explorers.guru', decimals: 6, type: 'non-evm' },
+  1123:  { id: 1123, name: 'Mixin', symbol: 'XIN', rpc: 'https://rpc.mixinprotocols.io', explorer: 'https://mixscan.io', decimals: 8, type: 'non-evm' },
+  8660:  { id: 8660, name: 'Near', symbol: 'NEAR', rpc: 'https://rpc.mainnet.near.org', explorer: 'https://explorer.near.org', decimals: 24, type: 'non-evm' },
+  8661:  { id: 8661, name: 'Near Testnet', symbol: 'NEAR', rpc: 'https://rpc.testnet.near.org', explorer: 'https://explorer.testnet.near.org', decimals: 24, type: 'non-evm' },
+  127:   { id: 127, name: 'Near Aurora', symbol: 'ETH', rpc: 'https://mainnet.aurora.dev', explorer: 'https://aurorascan.dev', decimals: 18, type: 'non-evm' },
+  1313161554: { id: 1313161554, name: 'Near Aurora Mainnet', symbol: 'ETH', rpc: 'https://mainnet.aurora.dev', explorer: 'https://aurorascan.dev', decimals: 18, type: 'non-evm' },
+  2000:   { id: 2000, name: 'Kava', symbol: 'KAVA', rpc: 'https://evm.kava.io', explorer: 'https://explorer.kava.io', decimals: 18, type: 'non-evm' },
+};
+
+// Combined Chain Config
+export const CHAIN_CONFIG: Record<number, ChainConfig> = { ...EVM_CHAINS, ...NONEVM_CHAINS };
+
+export type ChainId = number;
+
+// ============================================================================
+// TYPES
+// ============================================================================
+
+export interface ChainConfig {
+  id: number;
+  name: string;
+  symbol: string;
+  rpc: string;
+  explorer: string;
+  decimals: number;
+  type: 'evm' | 'non-evm';
+}
 
 // ============================================================================
 // TYPES
