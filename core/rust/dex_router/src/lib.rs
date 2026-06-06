@@ -135,40 +135,6 @@ impl DEXProtocol {
 // Data Structures
 // ============================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DEXProtocol {
-    UniswapV2,
-    UniswapV3,
-    SushiSwap,
-    PancakeSwap,
-    Curve,
-    Balancer,
-}
-
-impl DEXProtocol {
-    pub fn fee_bps(&self) -> u64 {
-        match self {
-            DEXProtocol::UniswapV2 => 30,
-            DEXProtocol::UniswapV3 => 500,
-            DEXProtocol::SushiSwap => 30,
-            DEXProtocol::PancakeSwap => 25,
-            DEXProtocol::Curve => 4,
-            DEXProtocol::Balancer => 10,
-        }
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            DEXProtocol::UniswapV2 => "Uniswap V2",
-            DEXProtocol::UniswapV3 => "Uniswap V3",
-            DEXProtocol::SushiSwap => "SushiSwap",
-            DEXProtocol::PancakeSwap => "PancakeSwap",
-            DEXProtocol::Curve => "Curve",
-            DEXProtocol::Balancer => "Balancer",
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Token {
     pub address: String,
