@@ -846,7 +846,7 @@ CREATE TABLE token_delegations (
 
 -- ============================================================================
 -- PERPETUAL TRADING
-// ============================================================================
+-- ============================================================================
 
 CREATE TABLE perpetual_positions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -899,6 +899,133 @@ CREATE TABLE liquidation_events (
     reward DECIMAL(30,8) NOT NULL,
     price DECIMAL(20,8) NOT NULL,
     timestamp TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- CHAIN REGISTRY
+-- ============================================================================
+
+CREATE TABLE chains (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chain_id INTEGER UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    chain_type VARCHAR(20) NOT NULL, -- evm, non_evm_solana, non_evm_aptos, etc.
+    chain_id_hex VARCHAR(20),
+    rpc_url TEXT,
+    explorer_url TEXT,
+    logo_url TEXT,
+    native_token_decimals INTEGER DEFAULT 18,
+    avg_gas_price_gwei DECIMAL(20,8),
+    min_confirmations INTEGER DEFAULT 1,
+    block_time_seconds INTEGER DEFAULT 12,
+    is_testnet BOOLEAN DEFAULT false,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE chain_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chain_id INTEGER NOT NULL,
+    token_address VARCHAR(66),
+    symbol VARCHAR(20) NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    decimals INTEGER NOT NULL,
+    is_native BOOLEAN DEFAULT false,
+    is_wrapped BOOLEAN DEFAULT false,
+    wrapped_token_address VARCHAR(66),
+    min_transfer DECIMAL(30,8),
+    max_transfer DECIMAL(30,8),
+    is_paused BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE chain_fee_configs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chain_id INTEGER NOT NULL,
+    swap_fee_bps INTEGER DEFAULT 30,
+    withdraw_fee_min DECIMAL(20,8) DEFAULT 0,
+    withdraw_fee_max DECIMAL(20,8),
+    deposit_fee_min DECIMAL(20,8) DEFAULT 0,
+    deposit_fee_max DECIMAL(20,8),
+    cross_chain_fee DECIMAL(20,8),
+    listing_fee DECIMAL(20,8),
+    is_dynamic BOOLEAN DEFAULT false,
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE cross_chain_routes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_chain_id INTEGER NOT NULL,
+    to_chain_id INTEGER NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- LENDING PROTOCOL
+-- ============================================================================
+
+CREATE TABLE lending_markets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    asset_id UUID REFERENCES tokens(id),
+    chain_id INTEGER NOT NULL,
+    total_supply DECIMAL(30,8) DEFAULT 0,
+    total_borrows DECIMAL(30,8) DEFAULT 0,
+    supply_rate DECIMAL(20,8) DEFAULT 0,
+    borrow_rate DECIMAL(20,8) DEFAULT 0,
+    reserve_factor DECIMAL(10,4) DEFAULT 0,
+    liquidation_threshold INTEGER DEFAULT 80,
+    ltv INTEGER DEFAULT 70,
+    bonus INTEGER DEFAULT 5,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE user_lending_positions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id),
+    market_id UUID REFERENCES lending_markets(id),
+    supply_balance DECIMAL(30,8) DEFAULT 0,
+    borrow_balance DECIMAL(30,8) DEFAULT 0,
+    supply_index DECIMAL(20,8) DEFAULT 1,
+    borrow_index DECIMAL(20,8) DEFAULT 1,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- ============================================================================
+-- OPTIONS TRADING
+-- ============================================================================
+
+CREATE TABLE option_markets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    underlying_id UUID REFERENCES tokens(id),
+    chain_id INTEGER NOT NULL,
+    min_strike_price DECIMAL(20,8),
+    max_strike_price DECIMAL(20,8),
+    min_expiry_days INTEGER DEFAULT 1,
+    max_expiry_days INTEGER DEFAULT 365,
+    pool_balance DECIMAL(30,8) DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE options (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    option_hash VARCHAR(130) UNIQUE NOT NULL,
+    writer_id UUID REFERENCES users(id),
+    buyer_id UUID REFERENCES users(id),
+    market_id UUID REFERENCES option_markets(id),
+    option_type VARCHAR(10) NOT NULL, -- call, put
+    style VARCHAR(20) NOT NULL, -- european, american
+    strike_price DECIMAL(20,8) NOT NULL,
+    expiry_time TIMESTAMP NOT NULL,
+    amount DECIMAL(30,8) NOT NULL,
+    premium DECIMAL(20,8) NOT NULL,
+    exercise_price DECIMAL(20,8),
+    status VARCHAR(20) DEFAULT 'active', -- active, exercised, expired, cancelled
+    created_at TIMESTAMP DEFAULT NOW()
 );
 
 -- ============================================================================
