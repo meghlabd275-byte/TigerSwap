@@ -1162,4 +1162,244 @@ BEGIN
     VALUES (NEW.id, NEW.reserve_a, NEW.reserve_b, NEW.liquidity_usd, NOW());
     RETURN NEW;
 END;
+-- ============================================================================
+-- WHITE LABEL CLIENTS & PRODUCTS
+-- ============================================================================
+
+-- White label clients (branded products)
+CREATE TABLE white_label_clients (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id VARCHAR(50) UNIQUE NOT NULL,
+    client_name VARCHAR(100) NOT NULL,
+    brand_name VARCHAR(100),
+    brand_logo_url TEXT,
+    brand_color_primary VARCHAR(20),
+    brand_color_secondary VARCHAR(20),
+    website_url TEXT,
+    contact_email VARCHAR(255) NOT NULL,
+    tier VARCHAR(20) DEFAULT 'basic', -- basic, pro, enterprise
+    
+    -- Approval status
+    status VARCHAR(20) DEFAULT 'pending', -- pending, approved, suspended, halted
+    approved_by UUID REFERENCES admins(id),
+    approved_at TIMESTAMP,
+    suspended_by UUID REFERENCES admins(id),
+    suspended_at TIMESTAMP,
+    halt_reason TEXT,
+    
+    -- Fee configuration (0-20% shared with TigerSwap)
+    swap_fee_share_bps INTEGER DEFAULT 2000, -- 2000 = 20%
+    trading_fee_share_bps INTEGER DEFAULT 2000,
+    bot_subscription_fee_share_bps INTEGER DEFAULT 2000,
+    listing_fee_share_bps INTEGER DEFAULT 2000,
+    withdrawal_fee_share_bps INTEGER DEFAULT 2000,
+    deposit_fee_share_bps INTEGER DEFAULT 2000,
+    transfer_fee_share_bps INTEGER DEFAULT 2000,
+    api_key_fee_share_bps INTEGER DEFAULT 2000,
+    
+    -- TigerSwap admin fee receiver address
+    admin_fee_address VARCHAR(66),
+    
+    -- Client's revenue address (80% goes here)
+    client_revenue_address VARCHAR(66),
+    
+    -- Feature flags
+    can_use_swap BOOLEAN DEFAULT true,
+    can_use_trading BOOLEAN DEFAULT true,
+    can_use_bots BOOLEAN DEFAULT true,
+    can_use_listings BOOLEAN DEFAULT true,
+    can_use_bridge BOOLEAN DEFAULT true,
+    can_use_farming BOOLEAN DEFAULT true,
+    can_use_lending BOOLEAN DEFAULT true,
+    can_use_perpetuals BOOLEAN DEFAULT true,
+    can_use_options BOOLEAN DEFAULT true,
+    can_use_nft BOOLEAN DEFAULT true,
+    can_create_api_keys BOOLEAN DEFAULT true,
+    can_whitelist_tokens BOOLEAN DEFAULT false,
+    can_custom_bridge BOOLEAN DEFAULT false,
+    can_custom_dex BOOLEAN DEFAULT false,
+    
+    -- Limits
+    max_daily_volume DECIMAL(20,2),
+    max_daily_users INTEGER,
+    max_api_calls_per_day INTEGER,
+    
+    -- Statistics
+    total_volume_usd DECIMAL(20,2) DEFAULT 0,
+    total_fees_paid DECIMAL(20,2) DEFAULT 0,
+    total_users INTEGER DEFAULT 0,
+    
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label client admins (each client can have their own admins)
+CREATE TABLE white_label_admins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    wallet_address VARCHAR(66) NOT NULL,
+    email VARCHAR(255),
+    role VARCHAR(20) DEFAULT 'admin', -- super_admin, admin, operator, viewer
+    permissions JSONB DEFAULT '{}',
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, wallet_address)
+);
+
+-- White label API keys for external integrations
+CREATE TABLE white_label_api_keys (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    api_key VARCHAR(64) UNIQUE NOT NULL,
+    api_secret_hash VARCHAR(255) NOT NULL,
+    label VARCHAR(100),
+    permissions JSONB DEFAULT '{"swap": true, "trading": true, "bots": true}',
+    rate_limit INTEGER DEFAULT 10000,
+    is_active BOOLEAN DEFAULT true,
+    last_used_at TIMESTAMP,
+    expires_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label fee transactions (track 20% fees)
+CREATE TABLE white_label_fee_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id),
+    fee_type VARCHAR(50) NOT NULL, -- swap, trading, bot, listing, etc.
+    amount_usd DECIMAL(20,8) NOT NULL,
+    tiger_share_usd DECIMAL(20,8) NOT NULL,
+    client_share_usd DECIMAL(20,8) NOT NULL,
+    tx_hash VARCHAR(66),
+    status VARCHAR(20) DEFAULT 'pending', -- pending, confirmed, failed
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- White label whitelisted tokens (client-specific tokens)
+CREATE TABLE white_label_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    token_address VARCHAR(66) NOT NULL,
+    chain_id INTEGER NOT NULL,
+    symbol VARCHAR(20),
+    name VARCHAR(100),
+    decimals INTEGER DEFAULT 18,
+    is_whitelisted BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, chain_id, token_address)
+);
+
+-- White label custom chains (client-specific chains)
+CREATE TABLE white_label_chains (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id) ON DELETE CASCADE,
+    chain_id INTEGER NOT NULL,
+    chain_name VARCHAR(50),
+    rpc_url TEXT,
+    explorer_url TEXT,
+    is_enabled BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, chain_id)
+);
+
+-- White label analytics
+CREATE TABLE white_label_analytics (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    client_id UUID REFERENCES white_label_clients(id),
+    date DATE NOT NULL,
+    volume_usd DECIMAL(20,2) DEFAULT 0,
+    fees_usd DECIMAL(20,2) DEFAULT 0,
+    users_new INTEGER DEFAULT 0,
+    users_active INTEGER DEFAULT 0,
+    swaps_count INTEGER DEFAULT 0,
+    bots_active INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE(client_id, date)
+);
+
+-- ============================================================================
+-- WHITE LABEL FUNCTIONS
+-- ============================================================================
+
+-- Calculate fee split between TigerSwap and white label client
+CREATE OR REPLACE FUNCTION calculate_white_label_fee(
+    p_amount DECIMAL(20,8),
+    p_fee_share_bps INTEGER
+) RETURNS TABLE(tiger_share DECIMAL(20,8), client_share DECIMAL(20,8)) AS $$
+BEGIN
+    RETURN QUERY 
+    SELECT 
+        (p_amount * p_fee_share_bps / 10000)::DECIMAL(20,8) AS tiger_share,
+        (p_amount * (10000 - p_fee_share_bps) / 10000)::DECIMAL(20,8) AS client_share;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Auto-distribute fees to TigerSwap admin
+CREATE OR REPLACE FUNCTION distribute_white_label_fees()
+RETURNS TRIGGER AS $$
+DECLARE
+    v_client RECORD;
+    v_tiger_share DECIMAL(20,8);
+    v_client_share DECIMAL(20,8);
+BEGIN
+    IF NEW.status = 'confirmed' THEN
+        -- Get client info
+        SELECT * INTO v_client 
+        FROM white_label_clients 
+        WHERE id = NEW.client_id;
+        
+        IF v_client IS NOT NULL THEN
+            -- Calculate split based on fee type
+            CASE NEW.fee_type
+                WHEN 'swap' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.swap_fee_share_bps / 10000;
+                WHEN 'trading' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.trading_fee_share_bps / 10000;
+                WHEN 'bot' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.bot_subscription_fee_share_bps / 10000;
+                WHEN 'listing' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.listing_fee_share_bps / 10000;
+                WHEN 'withdrawal' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.withdrawal_fee_share_bps / 10000;
+                WHEN 'deposit' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.deposit_fee_share_bps / 10000;
+                WHEN 'transfer' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.transfer_fee_share_bps / 10000;
+                WHEN 'api_key' THEN
+                    v_tiger_share := NEW.amount_usd * v_client.api_key_fee_share_bps / 10000;
+                ELSE
+                    v_tiger_share := NEW.amount_usd * 2000 / 10000; -- Default 20%
+            END CASE;
+            
+            v_client_share := NEW.amount_usd - v_tiger_share;
+            
+            -- Update client totals
+            UPDATE white_label_clients
+            SET total_fees_paid = total_fees_paid + v_tiger_share,
+                updated_at = NOW()
+            WHERE id = NEW.client_id;
+            
+            -- In production, transfer to TigerSwap admin address here
+            -- Using v_client.admin_fee_address
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_white_label_fee_distribution
+    AFTER UPDATE ON white_label_fee_transactions
+    FOR EACH ROW EXECUTE FUNCTION distribute_white_label_fees();
+
+-- ============================================================================
+-- INDEXES FOR PERFORMANCE
+-- ============================================================================
+
+CREATE INDEX idx_white_label_clients_status ON white_label_clients(status);
+CREATE INDEX idx_white_label_clients_client_id ON white_label_clients(client_id);
+CREATE INDEX idx_white_label_admins_client ON white_label_admins(client_id);
+CREATE INDEX idx_white_label_api_keys_client ON white_label_api_keys(client_id);
+CREATE INDEX idx_white_label_fee_transactions_client ON white_label_fee_transactions(client_id);
+CREATE INDEX idx_white_label_fee_transactions_date ON white_label_fee_transactions(created_at);
+CREATE INDEX idx_white_label_analytics_client_date ON white_label_analytics(client_id, date);
 $$ LANGUAGE plpgsql;
