@@ -13,16 +13,16 @@ interface ThemeContextType {
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined)
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('dark')
+  // DEFAULT IS LIGHT THEME - as per requirement
+  const [theme, setThemeState] = useState<Theme>('light')
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
     const stored = localStorage.getItem('tigerswap-theme') as Theme
     if (stored) {
       setThemeState(stored)
-    } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
-      setThemeState('light')
     }
+    // Default is light theme - only use system preference if explicitly set
     setMounted(true)
   }, [])
 

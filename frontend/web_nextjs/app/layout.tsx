@@ -19,9 +19,10 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{
             __html: `
               (function() {
+                // DEFAULT IS LIGHT THEME - as per requirement
                 var theme = localStorage.getItem('tigerswap-theme');
                 if (!theme) {
-                  theme = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+                  theme = 'light'; // Default to light theme
                 }
                 document.documentElement.classList.add(theme);
               })();
