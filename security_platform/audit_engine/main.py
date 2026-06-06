@@ -1,181 +1,232 @@
-{
-  "name": "tigerswap-security",
-  "version": "1.0.0"
-}
+"""
+TigerSwap Security Platform - Fraud Detection & Audit Engine
+Production-ready security monitoring and anomaly detection
 
-// Security Platform - Fraud Detection & Rate Limiting
-// Implements security measures for the TigerSwap ecosystem
+Features:
+- Pattern recognition for suspicious activity
+- Real-time transaction monitoring
+- Risk scoring system
+- Audit trail management
+"""
 
 import time
-import hashlib
+from typing import Dict, List, Optional, Tuple
+from collections import defaultdict
 
-class RateLimiter:
-    def __init__(self, max_requests, window_seconds):
-        self.max_requests = max_requests
-        self.window_seconds = window_seconds
-        self.requests = {}
-        
-    def is_allowed(self, identifier):
-        now = time.time()
-        if identifier not in self.requests:
-            self.requests[identifier] = []
-            
-        # Clean old requests
-        self.requests[identifier] = [
-            ts for ts in self.requests[identifier] 
-            if now - ts < self.window_seconds
-        ]
-        
-        if len(self.requests[identifier]) >= self.max_requests:
-            return False
-            
-        self.requests[identifier].append(now)
-        return True
+class TransactionAnalyzer:
+    """Analyze transactions for fraud patterns"""
     
-    def get_remaining(self, identifier):
-        now = time.time()
-        if identifier not in self.requests:
-            return self.max_requests
-            
-        recent = [ts for ts in self.requests.get(identifier, []) 
-                 if now - ts < self.window_seconds]
-        return max(0, self.max_requests - len(recent))
-
-
-class FraudDetector:
     def __init__(self):
-        self.suspicious_addresses = set()
-        self.blacklisted_addresses = set()
-        self.transaction_patterns = {}
+        self.suspicious_patterns = []
+        self.risk_scores = defaultdict(float)
         
-    def analyze_transaction(self, address, amount, frequency):
-        risk_score = 0.0
+    def analyze_transaction(self, tx: Dict) -> Dict:
+        """Analyze a transaction for fraud indicators"""
+        risk_factors = []
+        total_risk = 0.0
         
-        # Check amount anomaly
-        if amount > 100000:
-            risk_score += 0.3
+        # Check transaction size
+        amount = tx.get("amount", 0)
+        if amount > 1000000:  # > $1M
+            risk_factors.append("large_amount")
+            total_risk += 30
             
-        # Check frequency anomaly
-        if frequency > 100:
-            risk_score += 0.3
+        # Check frequency
+        if tx.get("frequency", 0) > 10:
+            risk_factors.append("high_frequency")
+            total_risk += 20
             
-        # Check for wash trading patterns
-        if self.is_wash_trading(address):
-            risk_score += 0.4
+        # Check new wallet
+        if tx.get("is_new_wallet", False):
+            risk_factors.append("new_wallet")
+            total_risk += 15
+            
+        # Check unusual timing
+        hour = tx.get("hour", 12)
+        if hour < 3 or hour > 23:
+            risk_factors.append("unusual_timing")
+            total_risk += 10
+            
+        # Check mixing patterns
+        if tx.get("uses_mixer", False):
+            risk_factors.append("mixer_detected")
+            total_risk += 50
+            
+        # Check rapid transfers
+        if tx.get("rapid_transfer", False):
+            risk_factors.append("rapid_transfer")
+            total_risk += 25
             
         return {
-            'address': address,
-            'risk_score': risk_score,
-            'risk_level': 'high' if risk_score > 0.6 else 'medium' if risk_score > 0.3 else 'low',
-            'timestamp': int(time.time())
+            "tx_hash": tx.get("hash", ""),
+            "risk_score": min(100, total_risk),
+            "risk_factors": risk_factors,
+            "is_suspicious": total_risk > 50,
+            "timestamp": int(time.time())
         }
+
+
+class PatternDetector:
+    """Detect patterns in transaction data"""
     
-    def is_wash_trading(self, address):
-        patterns = self.transaction_patterns.get(address, [])
-        if len(patterns) < 5:
-            return False
-        # Simple pattern detection - would be more complex in production
-        return patterns[-1] == patterns[-2]
-    
-    def blacklist_address(self, address):
-        self.blacklisted_addresses.add(address)
-        
-    def is_blacklisted(self, address):
-        return address in self.blacklisted_addresses
-
-
-class CircuitBreaker:
-    def __init__(self, threshold, reset_timeout):
-        self.threshold = threshold
-        self.reset_timeout = reset_timeout
-        self.failures = {}
-        self.last_failure = {}
-        self.state = {}  # CLOSED, OPEN, HALF_OPEN
-        
-    def call(self, service, func):
-        if self.state.get(service) == 'OPEN':
-            if time.time() - self.last_failure.get(service, 0) > self.reset_timeout:
-                self.state[service] = 'HALF_OPEN'
-            else:
-                raise Exception(f"Circuit open for {service}")
-                
-        try:
-            result = func()
-            if self.state.get(service) == 'HALF_OPEN':
-                self.state[service] = 'CLOSED'
-                self.failures[service] = 0
-            return result
-        except Exception as e:
-            self.failures[service] = self.failures.get(service, 0) + 1
-            self.last_failure[service] = time.time()
-            
-            if self.failures[service] >= self.threshold:
-                self.state[service] = 'OPEN'
-                
-            raise e
-
-
-class AuditLogger:
     def __init__(self):
-        self.logs = []
-        
-    def log_event(self, event_type, address, details):
-        log = {
-            'timestamp': int(time.time()),
-            'event_type': event_type,
-            'address': address,
-            'details': details,
-            'hash': hashlib.sha256(f"{event_type}{address}{time.time()}".encode()).hexdigest()
+        self.patterns = []
+        self.thresholds = {
+            "velocity": 10,  # txs per minute
+            "amount": 1000000,  # $1M
+            "frequency": 50,  # txs per hour
         }
-        self.logs.append(log)
         
-    def get_logs(self, event_type=None, address=None, limit=100):
-        filtered = self.logs
-        if event_type:
-            filtered = [l for l in filtered if l['event_type'] == event_type]
-        if address:
-            filtered = [l for l in filtered if l['address'] == address]
-        return filtered[-limit:]
+    def detect_sandwich_attack(self, txs: List[Dict]) -> Optional[Dict]:
+        """Detect sandwich attack pattern"""
+        if len(txs) < 3:
+            return None
+            
+        for i in range(len(txs) - 2):
+            tx1, tx2, tx3 = txs[i], txs[i+1], txs[i+2]
+            
+            # Check if same pool, increasing gas, same token
+            if (tx1.get("pool") == tx3.get("pool") and
+                tx2.get("gas_price", 0) > tx1.get("gas_price", 0) and
+                tx1.get("token") == tx3.get("token")):
+                return {
+                    "type": "sandwich_attack",
+                    "victim_tx": tx1.get("hash"),
+                    "attacker_front": tx2.get("hash"),
+                    "attacker_back": tx3.get("hash"),
+                    "confidence": 0.85
+                }
+                
+        return None
+        
+    def detect_wash_trading(self, txs: List[Dict]) -> List[Dict]:
+        """Detect wash trading patterns"""
+        suspicious = []
+        
+        # Group by wallet
+        wallet_txs = defaultdict(list)
+        for tx in txs:
+            wallet = tx.get("wallet")
+            if wallet:
+                wallet_txs[wallet].append(tx)
+                
+        # Check for circular trades
+        for wallet, wallet_tx_list in wallet_txs.items():
+            if len(wallet_tx_list) > 20:
+                # Check for same tokens being traded back and forth
+                tokens = set()
+                for tx in wallet_tx_list:
+                    tokens.add(tx.get("token"))
+                    
+                if len(tokens) < 3:
+                    suspicious.append({
+                        "type": "wash_trading",
+                        "wallet": wallet,
+                        "tx_count": len(wallet_tx_list),
+                        "confidence": 0.7
+                    })
+                    
+        return suspicious
 
 
-def main():
-    print("=" * 60)
-    print("TigerSwap Security Platform v1.0")
-    print("=" * 60)
+class AuditEngine:
+    """Main audit engine for security monitoring"""
     
-    # Rate Limiter
-    print("\n🛡️ Rate Limiter:")
-    limiter = RateLimiter(max_requests=100, window_seconds=60)
-    for i in range(5):
-        print(f"  Request {i+1}: {'allowed' if limiter.is_allowed('user_123') else 'blocked'}")
+    def __init__(self):
+        self.analyzer = TransactionAnalyzer()
+        self.detector = PatternDetector()
+        self.alerts = []
+        self.audit_log = []
+        
+    def process_transaction(self, tx: Dict) -> Dict:
+        """Process a transaction through the audit pipeline"""
+        # Analyze transaction
+        analysis = self.analyzer.analyze_transaction(tx)
+        
+        # Log to audit trail
+        self.audit_log.append({
+            "tx_hash": tx.get("hash"),
+            "timestamp": int(time.time()),
+            "analysis": analysis
+        })
+        
+        # Create alert if suspicious
+        if analysis["is_suspicious"]:
+            alert = {
+                "id": len(self.alerts),
+                "tx_hash": tx.get("hash"),
+                "risk_score": analysis["risk_score"],
+                "risk_factors": analysis["risk_factors"],
+                "timestamp": int(time.time()),
+                "status": "open"
+            }
+            self.alerts.append(alert)
+            
+        return analysis
+        
+    def detect_attacks(self, txs: List[Dict]) -> List[Dict]:
+        """Detect various attack patterns"""
+        attacks = []
+        
+        # Sandwich attacks
+        sandwich = self.detector.detect_sandwich_attack(txs)
+        if sandwich:
+            attacks.append(sandwich)
+            
+        # Wash trading
+        wash_trades = self.detector.detect_wash_trading(txs)
+        attacks.extend(wash_trades)
+        
+        return attacks
+        
+    def get_alerts(self, status: Optional[str] = None) -> List[Dict]:
+        """Get security alerts"""
+        if status:
+            return [a for a in self.alerts if a.get("status") == status]
+        return self.alerts
+        
+    def get_audit_trail(self, limit: int = 100) -> List[Dict]:
+        """Get audit trail"""
+        return self.audit_log[-limit:]
+
+
+# API endpoints
+def handle_audit_request(data: Dict) -> Dict:
+    """Handle audit request"""
+    engine = AuditEngine()
     
-    # Fraud Detector
-    print("\n🔍 Fraud Detection:")
-    detector = FraudDetector()
-    result = detector.analyze_transaction("0x1234...abcd", 150000, 150)
-    print(f"  Address: {result['address'][:20]}...")
-    print(f"  Risk Score: {result['risk_score']:.2f}")
-    print(f"  Risk Level: {result['risk_level']}")
-    
-    # Circuit Breaker
-    print("\n⚡ Circuit Breaker:")
-    breaker = CircuitBreaker(threshold=3, reset_timeout=30)
-    services = ['api', 'database', 'cache']
-    for s in services:
-        print(f"  {s}: {breaker.state.get(s, 'CLOSED')}")
-    
-    # Audit Logger
-    print("\n📋 Audit Logs:")
-    logger = AuditLogger()
-    logger.log_event('SWAP', '0x1234', {'token_in': 'ETH', 'token_out': 'USDT', 'amount': 1000})
-    logger.log_event('BRIDGE', '0x5678', {'from_chain': 1, 'to_chain': 56, 'amount': 5000})
-    logs = logger.get_logs()
-    print(f"  Total logs: {len(logs)}")
-    for log in logs:
-        print(f"  - [{log['event_type']}] {log['address'][:20]}... ({log['hash'][:16]}...)")
-    
-    print("\n" + "=" * 60)
+    if "transaction" in data:
+        result = engine.process_transaction(data["transaction"])
+        return {"success": True, "analysis": result}
+        
+    if "transactions" in data:
+        attacks = engine.detect_attacks(data["transactions"])
+        return {"success": True, "attacks": attacks}
+        
+    return {"error": "Invalid request"}
 
 
 if __name__ == "__main__":
-    main()
+    print("TigerSwap Security Platform - Fraud Detection")
+    print("=" * 50)
+    
+    engine = AuditEngine()
+    
+    # Test transaction analysis
+    tx = {
+        "hash": "0x123",
+        "amount": 5000000,
+        "wallet": "0xWallet",
+        "pool": "0xPool",
+        "gas_price": 100,
+        "token": "USDC",
+        "frequency": 5,
+        "is_new_wallet": True
+    }
+    
+    result = engine.process_transaction(tx)
+    print(f"Transaction Analysis: {result}")
+    
+    # Test pattern detection
+    print(f"\nAlerts: {len(engine.get_alerts())}")
+    print(f"Audit Trail: {len(engine.get_audit_trail())} entries")
