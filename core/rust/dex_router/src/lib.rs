@@ -1,8 +1,16 @@
 //! TigerSwap DEX Router - Production-Ready Implementation
-//! High-performance multi-DEX routing with Dijkstra/A* pathfinding
-//! Supports split routing, gas optimization, and real exchange data
+//! 
+//! This is a COMPLETELY SELF-CONTAINED DEX routing engine with:
+//! - Dijkstra/A* pathfinding algorithms
+//! - Split routing for optimal execution
+//! - Gas optimization and cost modeling
+//! - Multi-hop routing across any token pairs
+//! - Price impact and slippage calculation
+//! - Real-time quote generation
+//! 
+//! NO external DEX dependencies - all logic is implemented from scratch.
 
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use std::cmp::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 // ============================================================================
-// Error Types
+// Error Types - Comprehensive error handling
 // ============================================================================
 
 #[derive(Error, Debug, Clone)]
@@ -21,16 +29,20 @@ pub enum RouterError {
     NoRouteFound,
     #[error("Invalid token address: {0}")]
     InvalidToken(String),
-    #[error("Pool not found")]
-    PoolNotFound,
-    #[error("Amount too small")]
-    AmountTooSmall,
-    #[error("Price impact too high: {0} bps")]
-    PriceImpactTooHigh(u64),
-    #[error("Quote expired")]
-    QuoteExpired,
+    #[error("Pool not found for pair: {0} -> {1}")]
+    PoolNotFound(String, String),
+    #[error("Amount too small: minimum is {0}")]
+    AmountTooSmall(u128),
+    #[error("Price impact too high: {0} bps (max: {1} bps)")]
+    PriceImpactTooHigh(u64, u64),
+    #[error("Quote expired at timestamp {0}")]
+    QuoteExpired(u64),
     #[error("Gas estimation failed")]
     GasEstimationFailed,
+    #[error("Slippage exceeded: expected {0}, got {1}")]
+    SlippageExceeded(u128, u128),
+    #[error("Invalid chain ID: {0}")]
+    InvalidChainId(u64),
     #[error("Internal error: {0}")]
     Internal(String),
 }
@@ -42,24 +54,82 @@ impl From<RouterError> for String {
 }
 
 // ============================================================================
-// Constants
+// Constants - All configurable parameters
 // ============================================================================
 
-const Q96: u128 = 1 << 96;
-const Q128: u128 = 1 << 128;
-const MAX_HOPS: usize = 4;
-const MIN_LIQUIDITY: u128 = 1000;
-const MAX_ROUTES: usize = 10;
-const BPS_BASE: u128 = 10000;
-const FEE_BPS_UNISWAP_V2: u64 = 30;
-const FEE_BPS_UNISWAP_V3_LOW: u64 = 100;
-const FEE_BPS_UNISWAP_V3_MEDIUM: u64 = 500;
-const FEE_BPS_UNISWAP_V3_HIGH: u64 = 3000;
-const FEE_BPS_SUSHISWAP: u64 = 30;
-const FEE_BPS_CURVE: u64 = 4;
-const FEE_BPS_BALANCER: u64 = 10;
-const NATIVE_GAS_TOKEN_BSC: &str = "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c";
-const NATIVE_GAS_TOKEN_ETH: &str = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+pub const Q96: u128 = 1 << 96;
+pub const Q128: u128 = 1 << 128;
+pub const MAX_HOPS: usize = 6;
+pub const MAX_INTERMEDIATE_TOKENS: usize = 50;
+pub const MIN_LIQUIDITY: u128 = 1000;
+pub const MAX_ROUTES: usize = 20;
+pub const BPS_BASE: u128 = 10000;
+pub const MAX_PRICE_IMPACT_BPS: u64 = 500; // 5% max price impact
+
+// Supported DEX Protocols with their characteristics
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DEXProtocol {
+    UniswapV2,
+    UniswapV3,
+    SushiSwap,
+    PancakeSwap,
+    Curve,
+    Balancer,
+    Dodo,
+    Bancor,
+    ShibaSwap,
+    ApeSwap,
+}
+
+impl DEXProtocol {
+    /// Get fee in basis points for this protocol
+    pub fn fee_bps(&self) -> u64 {
+        match self {
+            DEXProtocol::UniswapV2 => 30,
+            DEXProtocol::UniswapV3 => 100, // Will be overridden by pool fee tier
+            DEXProtocol::SushiSwap => 30,
+            DEXProtocol::PancakeSwap => 25,
+            DEXProtocol::Curve => 4,
+            DEXProtocol::Balancer => 10,
+            DEXProtocol::Dodo => 30,
+            DEXProtocol::Bancor => 30,
+            DEXProtocol::ShibaSwap => 30,
+            DEXProtocol::ApeSwap => 20,
+        }
+    }
+
+    /// Protocol display name
+    pub fn name(&self) -> &'static str {
+        match self {
+            DEXProtocol::UniswapV2 => "Uniswap V2",
+            DEXProtocol::UniswapV3 => "Uniswap V3",
+            DEXProtocol::SushiSwap => "SushiSwap",
+            DEXProtocol::PancakeSwap => "PancakeSwap",
+            DEXProtocol::Curve => "Curve",
+            DEXProtocol::Balancer => "Balancer",
+            DEXProtocol::Dodo => "DODO",
+            DEXProtocol::Bancor => "Bancor",
+            DEXProtocol::ShibaSwap => "ShibaSwap",
+            DEXProtocol::ApeSwap => "ApeSwap",
+        }
+    }
+
+    /// Base gas cost for a single hop on this protocol
+    pub fn base_gas(&self) -> u64 {
+        match self {
+            DEXProtocol::UniswapV2 => 95000,
+            DEXProtocol::UniswapV3 => 110000,
+            DEXProtocol::SushiSwap => 95000,
+            DEXProtocol::PancakeSwap => 95000,
+            DEXProtocol::Curve => 130000,
+            DEXProtocol::Balancer => 120000,
+            DEXProtocol::Dodo => 100000,
+            DEXProtocol::Bancor => 140000,
+            DEXProtocol::ShibaSwap => 95000,
+            DEXProtocol::ApeSwap => 95000,
+        }
+    }
+}
 
 // ============================================================================
 // Data Structures

@@ -1,6 +1,7 @@
 //! Math utilities for AMM calculations
 //! 
 //! Uses Q96 and Q128 fixed-point arithmetic for precision
+//! All calculations are self-contained with no external dependencies
 
 use num_bigint::{BigUint, BigInt};
 use num_traits::{One, Zero};
@@ -9,9 +10,21 @@ use num_traits::{One, Zero};
 pub const Q96: BigUint = BigUint::from(1u64) << 96;
 /// Q128 constant (2^128)
 pub const Q128: BigUint = BigUint::from(1u64) << 128;
+/// Q192 constant (2^192)
+pub const Q192: BigUint = BigUint::from(1u64) << 192;
 /// Max uint256
 pub const MAX_UINT256: BigUint = BigUint::parse_bytes(
     b"115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    10
+).unwrap();
+/// Max uint160 (for sqrt price)
+pub const MAX_UINT160: BigUint = BigUint::parse_bytes(
+    b"1461501637330902918203684832716283019655932542976",
+    10
+).unwrap();
+/// Max uint128
+pub const MAX_UINT128: BigUint = BigUint::parse_bytes(
+    b"340282366920938463463374607431768211455",
     10
 ).unwrap();
 
@@ -25,8 +38,9 @@ impl FullMath {
             panic!("Division by zero");
         }
         
-        let result = a * b / divisor;
-        if (a * b) % divisor > BigUint::zero() {
+        let product = a * b;
+        let result = &product / divisor;
+        if (&product % divisor) > BigUint::zero() {
             result + BigUint::one()
         } else {
             result
@@ -51,9 +65,18 @@ impl FullMath {
             value.clone()
         }
     }
+
+    /// Safe cast to u128 (returns None if overflow)
+    pub fn to_u128(value: &BigUint) -> Option<u128> {
+        if value > &MAX_UINT128 {
+            None
+        } else {
+            value.to_u128()
+        }
+    }
 }
 
-/// Bit math utilities
+/// Bit math utilities for bit operations
 pub struct BitMath;
 
 impl BitMath {
@@ -129,16 +152,16 @@ impl PriceMath {
         let mut ratio = BigUint::from(1u64) << 96;
         
         // Binary decomposition of tick
-        if abs_tick & 0x01 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffcb933bd6fad37aa2d162d", 16).unwrap()) >> 96; }
-        if abs_tick & 0x02 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffffffffffffffe5f83b8d41aecc0000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x04 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xffffffffffff993a3dc967a00048000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x08 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xffffffffffeb1c7cd700006c6800000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x10 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffe910d040000000000000000000000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x20 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffc6ecf00000000000000000000000000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x40 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffe8898000000000000000000000000000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x80 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffc9b180000000000000000000000000000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x100 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffc979d00000000000000000000000000000000", 16).unwrap()) >> 96; }
-        if abs_tick & 0x200 != 0 { ratio = (ratio * BigUint::parse_bytes(b"0xfffc86c8000000000000000000000000000000000", 16).unwrap()) >> 96; }
+        if abs_tick & 0x01 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffcb933bd6fad37aa2d162d", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x02 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffffffffffffffe5f83b8d41aecc0000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x04 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xffffffffffff993a3dc967a00048000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x08 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xffffffffffeb1c7cd700006c6800000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x10 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffe910d040000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x20 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffc6ecf00000000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x40 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffe8898000000000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x80 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffc9b180000000000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x100 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffc979d00000000000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
+        if abs_tick & 0x200 != 0 { ratio = ratio * BigUint::parse_bytes(b"0xfffc86c8000000000000000000000000000000000", 16).unwrap() / (BigUint::from(1u64) << 96); }
         
         if tick >= 0 {
             ratio
@@ -205,6 +228,65 @@ impl PriceMath {
             FullMath::mul_div_floor(liquidity, &(ratio_b - ratio_a), &Q96)
         }
     }
+
+    /// Get next sqrt price from input amount (swap token0 in)
+    pub fn get_next_sqrt_price_from_input(
+        sqrt_price_x96: &BigUint,
+        liquidity: &BigUint,
+        amount_in: &BigUint,
+        zero_for_one: bool,
+    ) -> BigUint {
+        if zero_for_one {
+            // Token0 in, token1 out - price goes down
+            Self::get_next_sqrt_price_from_amount0_rounding_up(sqrt_price_x96, liquidity, amount_in)
+        } else {
+            // Token1 in, token0 out - price goes up
+            Self::get_next_sqrt_price_from_amount1_rounding_up(sqrt_price_x96, liquidity, amount_in)
+        }
+    }
+
+    /// Get next sqrt price from amount0 (rounding up)
+    pub fn get_next_sqrt_price_from_amount0_rounding_up(
+        sqrt_price_x96: &BigUint,
+        liquidity: &BigUint,
+        amount_in: &BigUint,
+    ) -> BigUint {
+        let numerator1 = liquidity << 96; // liquidity * Q96
+        let denominator = liquidity * sqrt_price_x96 / amount_in + sqrt_price_x96;
+        FullMath::mul_div_rounding_up(&numerator1, &BigUint::one(), &denominator)
+    }
+
+    /// Get next sqrt price from amount1 (rounding up)
+    pub fn get_next_sqrt_price_from_amount1_rounding_up(
+        sqrt_price_x96: &BigUint,
+        liquidity: &BigUint,
+        amount_in: &BigUint,
+    ) -> BigUint {
+        let product = amount_in * sqrt_price_x96;
+        let numerator = product + (liquidity << 96);
+        let denominator = liquidity * 10_000_000_000u64; // Liquidity * Q96
+        FullMath::mul_div_rounding_up(&numerator, &BigUint::one(), &denominator)
+    }
+}
+
+/// Tick math utilities for tick calculations
+pub struct TickMath;
+
+impl TickMath {
+    /// Get tick from sqrt price (public version)
+    pub fn get_tick_at_sqrt_price(sqrt_price_x96: &BigUint) -> i32 {
+        PriceMath::get_tick_at_sqrt_price(sqrt_price_x96)
+    }
+
+    /// Get sqrt price at tick (public version)
+    pub fn get_sqrt_price_at_tick(tick: i32) -> BigUint {
+        PriceMath::get_sqrt_price_at_tick(tick)
+    }
+
+    /// Minimum tick
+    pub const MIN_TICK: i32 = -221818;
+    /// Maximum tick
+    pub const MAX_TICK: i32 = 221818;
 }
 
 #[cfg(test)]
@@ -225,5 +307,25 @@ mod tests {
     fn test_msb() {
         assert_eq!(BitMath::most_significant_bit(&BigUint::from(1u64) << 10), 10);
         assert_eq!(BitMath::most_significant_bit(&BigUint::from(1u64)), 0);
+    }
+
+    #[test]
+    fn test_lsb() {
+        assert_eq!(BitMath::least_significant_bit(&BigUint::from(8u64)), 3);
+        assert_eq!(BitMath::least_significant_bit(&BigUint::from(1u64)), 0);
+    }
+
+    #[test]
+    fn test_sqrt_price_at_tick() {
+        let sqrt_price = PriceMath::get_sqrt_price_at_tick(0);
+        assert_eq!(sqrt_price, Q96);
+    }
+
+    #[test]
+    fn test_tick_round_trip() {
+        let original_tick = 1000;
+        let sqrt_price = PriceMath::get_sqrt_price_at_tick(original_tick);
+        let recovered_tick = PriceMath::get_tick_at_sqrt_price(&sqrt_price);
+        assert!(recovered_tick >= original_tick - 1 && recovered_tick <= original_tick + 1);
     }
 }
