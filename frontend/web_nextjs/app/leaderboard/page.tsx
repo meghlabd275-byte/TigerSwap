@@ -12,6 +12,7 @@ import {
   Leaderboard, PersonAdd, TrendingUp, TrendingDown, Star,
   Copy, Visibility, MoreVert, Refresh, Verified, Whatshot
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

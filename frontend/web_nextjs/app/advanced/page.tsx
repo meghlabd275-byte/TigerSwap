@@ -14,6 +14,7 @@ import {
   Timer, Warning, CheckCircle, Error as ErrorIcon, LocalGasStation,
   FlashOn, Settings, Info, OpenInNew
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

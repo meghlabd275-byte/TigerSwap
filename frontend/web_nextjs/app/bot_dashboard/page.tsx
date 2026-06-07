@@ -15,6 +15,7 @@ import {
   Build, Security, MonetizationOn, Warning, CheckCircle, Error as ErrorIcon,
   Timeline, People, Store, Dashboard, Notifications, History
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces
@@ -111,6 +112,18 @@ const EXCHANGES = [
 // ============================================================================
 
 export default function BotDashboard() {
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+  
+  // Theme-aware colors
+  const bgPrimary = isDark ? '#0f172a' : '#f8fafc';
+  const bgSecondary = isDark ? '#1e293b' : '#e2e8f0';
+  const bgCard = isDark ? 'rgba(30, 41, 59, 0.8)' : 'rgba(255, 255, 255, 0.9)';
+  const textPrimary = isDark ? '#f8fafc' : '#0f172a';
+  const textSecondary = isDark ? '#94a3b8' : '#64748b';
+  const borderColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+  const accentColor = '#f97316';
+
   // Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isConnected, setIsConnected] = useState(false);

@@ -11,6 +11,7 @@ import {
   AccountBalance, Wallet, ShowChart, TrendingUp, TrendingDown,
   SwapHoriz, Pool, History, Refresh
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types

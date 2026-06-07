@@ -13,6 +13,7 @@ import {
   Add, Remove, Visibility, Close, Refresh, ShowChart,
   ContentCopy, TrendingUp, TrendingDown
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

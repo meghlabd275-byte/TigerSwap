@@ -14,7 +14,7 @@ import {
   ArrowUpward, ArrowDownward, Error, CheckCircle, Schedule,
   Cancel, MoreHoriz, Copy,QrCode
 } from '@mui/icons-material';
-import { TigerSwapWallet, COMMON_TOKENS, SUPPORTED_CHAINS } from '@tigerswap/wallet';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

@@ -12,6 +12,7 @@ import {
   AccountBalance, Gavel, ThumbUp, ThumbDown, AccessTime,
   TrendingUp, Visibility, Close
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

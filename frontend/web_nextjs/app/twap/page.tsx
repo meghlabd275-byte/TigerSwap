@@ -13,6 +13,7 @@ import {
   Schedule, TrendingUp, TrendingDown, Add, Remove, PlayArrow,
   Pause, Delete, Refresh, ShowChart, AccessTime, CheckCircle
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

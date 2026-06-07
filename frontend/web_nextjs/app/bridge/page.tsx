@@ -12,6 +12,7 @@ import {
   Error, AccessTime, Speed, Security, Warning,
   ContentCopy, Refresh, ArrowDropDown
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

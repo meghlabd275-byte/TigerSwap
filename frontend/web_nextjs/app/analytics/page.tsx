@@ -15,6 +15,7 @@ import {
   ArrowUpward, ArrowDownward, AttachMoney, Speed, Pool,
   SwapHoriz, AccountBalanceWallet
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

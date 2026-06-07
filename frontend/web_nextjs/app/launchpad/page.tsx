@@ -10,6 +10,7 @@ import {
   RocketLaunch, Timer, TrendingUp, Users, Ballot,
   AccessTime, Verified, Warning, CheckCircle, Cancel
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types

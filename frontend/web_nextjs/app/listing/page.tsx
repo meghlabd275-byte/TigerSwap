@@ -1,7 +1,22 @@
 // TigerSwap - Token Listing Application Page
+'use client';
+
 import React, { useState } from 'react'
+import { useTheme } from '../components/ThemeProvider'
 
 export default function TokenListingPage() {
+  const { theme } = useTheme()
+  const isDark = theme === 'dark'
+  
+  // Theme-aware colors
+  const bgPrimary = isDark ? '#0f172a' : '#f8fafc'
+  const bgSecondary = isDark ? '#1e293b' : '#e2e8f0'
+  const bgCard = isDark ? 'rgba(30, 41, 59, 0.8)' : 'rgba(255, 255, 255, 0.9)'
+  const textPrimary = isDark ? '#f8fafc' : '#0f172a'
+  const textSecondary = isDark ? '#94a3b8' : '#64748b'
+  const borderColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)'
+  const accentColor = '#f97316'
+  
   const [step, setStep] = useState(1)
   const [token, setToken] = useState({ symbol: '', name: '', address: '', chainId: 1 })
   const [quoteToken, setQuoteToken] = useState('USDT')
@@ -23,11 +38,11 @@ export default function TokenListingPage() {
   const quoteTokens = ['USDT', 'USDC', 'ETH', 'BNB']
 
   return (
-    <div style={{ background: '#0f172a', minHeight: '100vh', color: 'white' }}>
-      <div style={{ padding: 24, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+    <div style={{ background: bgPrimary, minHeight: '100vh', color: textPrimary }}>
+      <div style={{ padding: 24, borderBottom: `1px solid ${borderColor}` }}>
         <div style={{ maxWidth: 800, margin: '0 auto' }}>
           <h1 style={{ fontSize: 28, margin: 0 }}>📋 Token Listing Application</h1>
-          <p style={{ color: '#94a3b8', margin: '8px 0 0' }}>Apply to list your token on TigerSwap</p>
+          <p style={{ color: textSecondary, margin: '8px 0 0' }}>Apply to list your token on TigerSwap</p>
         </div>
       </div>
 

@@ -14,6 +14,7 @@ import {
   Refresh, ShowChart, Info, Warning, CheckCircle, AccessTime,
   AccountBalance, Favorite
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces

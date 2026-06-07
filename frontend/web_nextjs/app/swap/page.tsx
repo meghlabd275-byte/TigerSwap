@@ -5,16 +5,16 @@ import {
   Box, Typography, Card, CardContent, Button, TextField,
   Chip, CircularProgress, Alert, IconButton,
   InputAdornment, Slider, Divider, Stack, Switch, FormControlLabel,
-  Dialog, DialogTitle, DialogContent, List, ListItemIcon, 
+  Dialog, DialogTitle, DialogContent, List, ListItemIcon,
   ListItemText, ListItemButton, Avatar, Tabs, Tab, Badge,
-  Snackbar, LinearProgress, Tooltip
+  Snackbar, LinearProgress, Tooltip, useTheme as useMuiTheme
 } from '@mui/material';
 import {
   SwapHoriz, Settings, ArrowDropDown, Warning,
   OpenInNew, AccountBalanceWallet, Shield, Speed, CompareArrows,
   Check, Refresh, ArrowForward, KeyboardArrowDown, Close
 } from '@mui/icons-material';
-import { TigerSwapWallet, ERC20_ABI, DEX_ROUTERS, COMMON_TOKENS, SUPPORTED_CHAINS, TokenInfo, GasPriceInfo } from '@tigerswap/wallet';
+import { useTheme } from '../components/ThemeProvider';
 
 // ============================================================================
 // Types & Interfaces
@@ -161,7 +161,19 @@ function formatAmount(amount: bigint, decimals: number): string {
 // ============================================================================
 
 export default function SwapPage() {
-  const walletRef = useRef<TigerSwapWallet | null>(null);
+  const { theme } = useTheme();
+  const muiTheme = useMuiTheme();
+  const isDark = theme === 'dark';
+  const walletRef = useRef<any>(null);
+
+  // Theme-aware colors
+  const bgPrimary = isDark ? '#0f172a' : '#f8fafc';
+  const bgSecondary = isDark ? '#1e293b' : '#e2e8f0';
+  const bgCard = isDark ? 'rgba(30, 41, 59, 0.8)' : 'rgba(255, 255, 255, 0.9)';
+  const textPrimary = isDark ? '#f8fafc' : '#0f172a';
+  const textSecondary = isDark ? '#94a3b8' : '#64748b';
+  const borderColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.1)';
+  const accentColor = '#f97316';
   
   // Wallet state
   const [wallet, setWallet] = useState<WalletState>({
