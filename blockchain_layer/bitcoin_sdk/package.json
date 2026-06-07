@@ -1,0 +1,9 @@
+{
+  "name": "@tigerswap/bitcoin-sdk",
+  "version": "1.0.0",
+  "description": "TigerSwap Bitcoin SDK - Native Bitcoin implementation with HD wallet, multi-sig, PSBT",
+  "main": "src/index.ts",
+  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "jest" },
+  "dependencies": {},
+  "devDependencies": { "typescript": "^5.3.0" }
+}

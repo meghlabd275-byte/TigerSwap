@@ -1,0 +1,9 @@
+{
+  "name": "@tigerswap/cosmos-sdk",
+  "version": "1.0.0",
+  "description": "TigerSwap Cosmos SDK - Native Cosmos, IBC, Staking, Governance",
+  "main": "src/index.ts",
+  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "jest" },
+  "dependencies": {},
+  "devDependencies": { "typescript": "^5.3.0" }
+}
