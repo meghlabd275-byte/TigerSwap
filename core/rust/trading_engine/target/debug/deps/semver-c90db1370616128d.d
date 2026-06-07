@@ -1,0 +1,12 @@
+/workspace/project/TigerSwap/core/rust/trading_engine/target/debug/deps/semver-c90db1370616128d.d: /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/lib.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/display.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/error.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/eval.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/identifier.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/impls.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/parse.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/serde.rs
+
+/workspace/project/TigerSwap/core/rust/trading_engine/target/debug/deps/libsemver-c90db1370616128d.rmeta: /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/lib.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/display.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/error.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/eval.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/identifier.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/impls.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/parse.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/serde.rs
+
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/lib.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/display.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/error.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/eval.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/identifier.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/impls.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/parse.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/semver-1.0.28/src/serde.rs:

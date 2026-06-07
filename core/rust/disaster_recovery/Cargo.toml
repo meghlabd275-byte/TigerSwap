@@ -1,0 +1,16 @@
+[package]
+name = "tigerswap-disaster-recovery"
+version = "1.0.0"
+edition = "2021"
+description = "Disaster Recovery System"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+parking_lot = "0.12"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4"] }
+
+[lib]
+path = "src/lib.rs"

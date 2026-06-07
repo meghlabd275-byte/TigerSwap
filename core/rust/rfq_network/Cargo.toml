@@ -1,0 +1,21 @@
+[package]
+name = "tigerswap-rfq-network"
+version = "1.0.0"
+edition = "2021"
+description = "RFQ Network for TigerSwap"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+parking_lot = "0.12"
+rust_decimal = { version = "1.33", features = ["serde"] }
+
+[lib]
+name = "tigerswap_rfq_network"
+path = "src/lib.rs"

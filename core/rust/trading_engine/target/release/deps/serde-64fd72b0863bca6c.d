@@ -1,0 +1,14 @@
+/workspace/project/TigerSwap/core/rust/trading_engine/target/release/deps/serde-64fd72b0863bca6c.d: /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /workspace/project/TigerSwap/core/rust/trading_engine/target/release/build/serde-1ddf8bfdf8757bba/out/private.rs
+
+/workspace/project/TigerSwap/core/rust/trading_engine/target/release/deps/libserde-64fd72b0863bca6c.rlib: /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /workspace/project/TigerSwap/core/rust/trading_engine/target/release/build/serde-1ddf8bfdf8757bba/out/private.rs
+
+/workspace/project/TigerSwap/core/rust/trading_engine/target/release/deps/libserde-64fd72b0863bca6c.rmeta: /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /workspace/project/TigerSwap/core/rust/trading_engine/target/release/build/serde-1ddf8bfdf8757bba/out/private.rs
+
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/openhands/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/workspace/project/TigerSwap/core/rust/trading_engine/target/release/build/serde-1ddf8bfdf8757bba/out/private.rs:
+
+# env-dep:OUT_DIR=/workspace/project/TigerSwap/core/rust/trading_engine/target/release/build/serde-1ddf8bfdf8757bba/out
