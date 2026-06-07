@@ -5,21 +5,7 @@
   "private": true,
   "workspaces": [
     "frontend/*",
-    "wallet_ecosystem/*",
-    "dex_aggregator/*",
-    "dex_connectors/*",
-    "cex_connectors/*",
-    "cross_chain_protocol/*",
-    "market_maker_platform/*",
-    "mm_bot_platform/*",
-    "blockchain_layer/*",
-    "admin_platform/*",
-    "user_features/*",
-    "analytics_platform/*",
-    "api_gateway/*",
-    "ai_platform/*",
-    "security_platform/*",
-    "governance_platform/*"
+    "blockchain_layer/evm_sdk"
   ],
   "scripts": {
     "dev": "npm run dev --workspaces",
