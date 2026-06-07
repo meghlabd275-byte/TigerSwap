@@ -1,0 +1,19 @@
+{
+  "name": "@tigerswap/sdk",
+  "version": "1.0.0",
+  "description": "TigerSwap TypeScript SDK",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "jest"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "ethers": "^5.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
