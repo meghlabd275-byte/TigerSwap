@@ -1,0 +1,94 @@
+{
+  "app": {
+    "name": "TigerSwap",
+    "tagline": "Enterprise-Klasse · Multichain · Dezentralisiert"
+  },
+  "nav": {
+    "swap": "Tauschen",
+    "pool": "Pool",
+    "portfolio": "Portfolio",
+    "wallet": "Wallet",
+    "settings": "Einstellungen"
+  },
+  "swap": {
+    "title": "Tauschen",
+    "from": "Von",
+    "to": "Nach",
+    "swap": "Tauschen",
+    "selectToken": "Token Auswählen",
+    "enterAmount": "Betrag Eingeben",
+    "slippage": "Schlupf-Toleranz",
+    "deadline": "Transaktions-Frist",
+    "priceImpact": "Preisauswirkung",
+    "minimumReceived": "Mindestens Erhalten",
+    "exchangeRate": "Wechselkurs",
+    "route": "Route"
+  },
+  "pool": {
+    "title": "Pool",
+    "addLiquidity": "Liquidität Hinzufügen",
+    "removeLiquidity": "Liquidität Entfernen",
+    "tvl": "TVL",
+    "volume24h": "24h Volumen",
+    "apr": "APR",
+    "myPools": "Meine Pools",
+    "explore": "Pools Erkunden"
+  },
+  "portfolio": {
+    "title": "Portfolio",
+    "totalValue": "Gesamtwert",
+    "assets": "Vermögenswerte",
+    "positions": "Positionen",
+    "history": "Verlauf",
+    "pnl": "PnL"
+  },
+  "wallet": {
+    "title": "Wallet",
+    "connect": "Wallet Verbinden",
+    "disconnect": "Trennen",
+    "balance": "Guthaben",
+    "transactions": "Transaktionen",
+    "copyAddress": "Adresse Kopieren",
+    "viewExplorer": "Im Explorer Anzeigen"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "network": "Netzwerk",
+    "slippage": "Schlupf-Toleranz",
+    "expert": "Expertenmodus",
+    "biometric": "Biometrische Auth",
+    "notifications": "Push-Benachrichtigungen",
+    "language": "Sprache",
+    "version": "Version",
+    "documentation": "Dokumentation",
+    "support": "Support"
+  },
+  "common": {
+    "confirm": "Bestätigen",
+    "cancel": "Abbrechen",
+    "close": "Schließen",
+    "save": "Speichern",
+    "search": "Suchen",
+    "loading": "Laden...",
+    "error": "Fehler",
+    "success": "Erfolg",
+    "pending": "Ausstehend",
+    "completed": "Abgeschlossen",
+    "failed": "Fehlgeschlagen"
+  },
+  "errors": {
+    "insufficientBalance": "Unzureichendes Guthaben",
+    "slippageExceeded": "Schlupf überschritten",
+    "transactionFailed": "Transaktion fehlgeschlagen",
+    "networkError": "Netzwerkfehler",
+    "userRejected": "Benutzer abgelehnt"
+  },
+  "tokens": {
+    "eth": "Ethereum",
+    "btc": "Bitcoin",
+    "usdc": "USD Coin",
+    "usdt": "Tether",
+    "weth": "Wrapped Ether",
+    "wbtc": "Wrapped Bitcoin"
+  }
+}
