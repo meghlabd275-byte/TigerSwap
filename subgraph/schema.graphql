@@ -1,0 +1,241 @@
+type _Schema @fulltext(
+  name: "tigerSearch"
+  language: en
+  algorithm: rank
+  include: [
+    {
+      entity: "Swap"
+      fields: [
+        { name: "id" }
+        { name: "fromToken" }
+        { name: "toToken" }
+      ]
+    }
+    {
+      entity: "Pool"
+      fields: [
+        { name: "id" }
+        { name: "token0" }
+        { name: "token1" }
+      ]
+    }
+  ]
+) {}
+
+# Token entity
+type Token @entity {
+  id: ID!
+  symbol: String!
+  name: String!
+  decimals: Int!
+  totalSupply: BigInt!
+  tradeVolume: BigInt!
+  tradeVolumeUSD: BigDecimal!
+  totalValueLockedUSD: BigDecimal!
+  txCount: BigInt!
+  whitelist: [Pool!]! @derivedFrom(field: "token0")
+  blacklist: [Pool!]! @derivedFrom(field: "token1")
+  createdAt: BigInt!
+  updatedAt: BigInt!
+}
+
+# Pool entity
+type Pool @entity {
+  id: ID!
+  token0: Token!
+  token1: Token!
+  feeTier: Int!
+  liquidity: BigInt!
+  sqrtPrice: BigInt!
+  token0Price: BigDecimal!
+  token1Price: BigDecimal!
+  observationCardinality: Int!
+  observationCardinalityNext: BigInt!
+  volumeToken0: BigInt!
+  volumeToken1: BigInt!
+  volumeUSD: BigDecimal!
+  txCount: BigInt!
+  swaps: [Swap!]! @derivedFrom(field: "pool")
+  mints: [Mint!]! @derivedFrom(field: "pool")
+  burns: [Burn!]! @derivedFrom(field: "pool")
+  createdAtTimestamp: BigInt!
+  createdAtBlock: BigInt!
+}
+
+# Swap entity
+type Swap @entity {
+  id: ID!
+  pool: Pool!
+  tokenIn: Token!
+  tokenOut: Token!
+  amountIn: BigDecimal!
+  amountOut: BigDecimal!
+  amountInUSD: BigDecimal!
+  amountOutUSD: BigDecimal!
+  sender: Bytes!
+  recipient: Bytes!
+  origin: Bytes!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  transaction: Transaction!
+}
+
+# Mint entity
+type Mint @entity {
+  id: ID!
+  pool: Pool!
+  token0Amount: BigDecimal!
+  token1Amount: BigDecimal!
+  amountUSD: BigDecimal!
+  sender: Bytes
+  origin: Bytes!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  transaction: Transaction!
+}
+
+# Burn entity
+type Burn @entity {
+  id: ID!
+  pool: Pool!
+  token0Amount: BigDecimal!
+  token1Amount: BigDecimal!
+  amountUSD: BigDecimal!
+  sender: Bytes
+  origin: Bytes!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  transaction: Transaction!
+}
+
+# Transaction entity
+type Transaction @entity {
+  id: ID!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+  swaps: [Swap!]!
+  mints: [Mint!]!
+  burns: [Burn!]!
+}
+
+# User entity
+type User @entity {
+  id: ID!
+  swaps: [Swap!]! @derivedFrom(field: "origin")
+  liquidityPositions: [LiquidityPosition!]!
+  totalValueLockedUSD: BigDecimal!
+}
+
+# Liquidity Position entity
+type LiquidityPosition @entity {
+  id: ID!
+  user: User!
+  pool: Pool!
+  liquidityTokenBalance: BigDecimal!
+  liquidityTokenTotalSupply: BigInt!
+  token0Balance: BigDecimal!
+  token1Balance: BigDecimal!
+  depositedToken0USD: BigDecimal!
+  depositedToken1USD: BigDecimal!
+  withdrawnToken0USD: BigDecimal!
+  withdrawnToken1USD: BigDecimal!
+  feeUSD: BigDecimal!
+  lastUpdatedAt: BigInt!
+}
+
+# Position Snapshot entity
+type PositionSnapshot @entity {
+  id: ID!
+  user: User!
+  pool: Pool!
+  timestamp: BigInt!
+  liquidity: BigDecimal!
+  token0Balance: BigDecimal!
+  token1Balance: BigDecimal!
+  totalValueLockedUSD: BigDecimal!
+  feesUSD: BigDecimal!
+}
+
+# Factory entity
+type Factory @entity {
+  id: ID!
+  poolCount: BigInt!
+  totalValueLockedUSD: BigDecimal!
+  totalVolumeUSD: BigDecimal!
+  totalFeesUSD: BigDecimal!
+  txCount: BigInt!
+}
+
+# Token Hour Data
+type TokenHourData @entity {
+  id: ID!
+  token: Token!
+  hourStartUnix: BigInt!
+  volume: BigDecimal!
+  volumeUSD: BigDecimal!
+  untrackedVolumeUSD: BigDecimal!
+  txCount: BigInt!
+  totalValueLockedUSD: BigDecimal!
+}
+
+# Token Day Data
+type TokenDayData @entity {
+  id: ID!
+  token: Token!
+  date: Int!
+  volume: BigDecimal!
+  volumeUSD: BigDecimal!
+  untrackedVolumeUSD: BigDecimal!
+  txCount: BigInt!
+  totalValueLockedUSD: BigDecimal!
+}
+
+# Pool Hour Data
+type PoolHourData @entity {
+  id: ID!
+  pool: Pool!
+  hourStartUnix: BigInt!
+  volumeToken0: BigDecimal!
+  volumeToken1: BigDecimal!
+  volumeUSD: BigDecimal!
+  txCount: BigInt!
+  tvlUSD: BigDecimal!
+}
+
+# Pool Day Data
+type PoolDayData @entity {
+  id: ID!
+  pool: Pool!
+  date: Int!
+  volumeToken0: BigDecimal!
+  volumeToken1: BigDecimal!
+  volumeUSD: BigDecimal!
+  txCount: BigInt!
+  tvlUSD: BigDecimal!
+}
+
+# Token V3 Position
+type TokenPosition @entity {
+  id: ID!
+  owner: User!
+  pool: Pool!
+  tickLower: Int!
+  tickUpper: Int!
+  liquidity: BigInt!
+  depositedToken0: BigDecimal!
+  depositedToken1: BigDecimal!
+  withdrawnToken0: BigDecimal!
+  withdrawnToken1: BigDecimal!
+  collectedFeesToken0: BigDecimal!
+  collectedFeesToken1: BigDecimal!
+  transaction: Transaction!
+}
+
+# Aggregated Day Data
+type DayData @entity {
+  id: ID!
+  date: Int!
+  tvlUSD: BigDecimal!
+  volumeUSD: BigDecimal!
+  feesUSD: BigDecimal!
+}

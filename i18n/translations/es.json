@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "TigerSwap",
+    "tagline": "Grado Empresarial · Multicadena · Descentralizado"
+  },
+  "nav": {
+    "swap": "Intercambiar",
+    "pool": "Pool",
+    "portfolio": "Portafolio",
+    "wallet": "Billetera",
+    "settings": "Configuración"
+  },
+  "swap": {
+    "title": "Intercambiar",
+    "from": "De",
+    "to": "A",
+    "swap": "Intercambiar",
+    "selectToken": "Seleccionar Token",
+    "enterAmount": "Ingresar cantidad",
+    "slippage": "Tolerancia de Deslizamiento",
+    "deadline": "Límite de Transacción",
+    "priceImpact": "Impacto en Precio",
+    "minimumReceived": "Mínimo Recibido",
+    "exchangeRate": "Tasa de Cambio"
+  },
+  "pool": {
+    "title": "Pool",
+    "addLiquidity": "Agregar Liquidez",
+    "removeLiquidity": "Remover Liquidez",
+    "tvl": "TVL",
+    "volume24h": "Volumen 24h",
+    "apr": "APR",
+    "myPools": "Mis Pools",
+    "explore": "Explorar Pools"
+  },
+  "portfolio": {
+    "title": "Portafolio",
+    "totalValue": "Valor Total",
+    "assets": "Activos",
+    "positions": "Posiciones",
+    "history": "Historial",
+    "pnl": "PnL"
+  },
+  "wallet": {
+    "title": "Billetera",
+    "connect": "Conectar Billetera",
+    "disconnect": "Desconectar",
+    "balance": "Balance",
+    "transactions": "Transacciones",
+    "copyAddress": "Copiar Dirección",
+    "viewExplorer": "Ver en Explorador"
+  },
+  "settings": {
+    "title": "Configuración",
+    "network": "Red",
+    "slippage": "Tolerancia de Deslizamiento",
+    "expert": "Modo Experto",
+    "biometric": "Autenticación Biométrica",
+    "notifications": "Notificaciones Push",
+    "language": "Idioma",
+    "version": "Versión",
+    "documentation": "Documentación",
+    "support": "Soporte"
+  },
+  "common": {
+    "confirm": "Confirmar",
+    "cancel": "Cancelar",
+    "close": "Cerrar",
+    "save": "Guardar",
+    "search": "Buscar",
+    "loading": "Cargando...",
+    "error": "Error",
+    "success": "Éxito",
+    "pending": "Pendiente",
+    "completed": "Completado",
+    "failed": "Fallido"
+  },
+  "errors": {
+    "insufficientBalance": "Balance insuficiente",
+    "slippageExceeded": "Deslizamiento excedido",
+    "transactionFailed": "Transacción fallida",
+    "networkError": "Error de red",
+    "userRejected": "Usuario rechazó"
+  },
+  "tokens": {
+    "eth": "Ethereum",
+    "btc": "Bitcoin",
+    "usdc": "USD Coin",
+    "usdt": "Tether",
+    "weth": "Wrapped Ether",
+    "wbtc": "Wrapped Bitcoin"
+  }
+}
