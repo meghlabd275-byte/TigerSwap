@@ -1,0 +1,38 @@
+[package]
+name = "tigerswap-sdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["TigerSwap Team"]
+description = "TigerSwap Rust SDK - Complete DEX functionality"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], optional }
+tokio = { version = "1.0", features = ["full"], optional }
+thiserror = "1.0"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[features]
+default = ["blocking"]
+blocking = ["reqwest"]
+async = ["tokio", "reqwest"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full", "test-util"] }
+
+[lib]
+name = "tigerswap"
+path = "src/lib.rs"
+
+[[example]]
+name = "simple_swap"
+path = "examples/simple_swap.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
