@@ -15,6 +15,8 @@ import {
   Security, Warning, CheckCircle, Error as ErrorIcon, Lock,
   AccountTree, Hexagon
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 // ============================================================================
 // Types & Interfaces

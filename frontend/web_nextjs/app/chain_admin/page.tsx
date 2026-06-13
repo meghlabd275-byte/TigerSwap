@@ -16,6 +16,8 @@ import {
   AccountBalance, Speed, ShowChart, TrendingUp, Warning, CheckCircle,
   Error as ErrorIcon, CloudQueue, Dns, Router, SwapHoriz
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 // ============================================================================
 // Types & Interfaces

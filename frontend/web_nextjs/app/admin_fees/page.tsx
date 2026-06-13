@@ -15,6 +15,8 @@ import {
   Settings, Add, Edit, Delete, Refresh, ExpandMore, Warning,
   CheckCircle, Error as ErrorIcon, Money, CreditCard, Wallet
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 // ============================================================================
 // Types & Interfaces
@@ -86,6 +88,10 @@ const CHAINS = [
 // ============================================================================
 
 export default function AdminFeesPage() {
+  // Theme
+  const { theme } = useTheme();
+  const isDark = theme === 'dark';
+  
   // State
   const [activeTab, setActiveTab] = useState(0);
   const [loading, setLoading] = useState(false);

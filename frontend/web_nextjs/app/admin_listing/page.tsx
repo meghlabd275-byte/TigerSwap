@@ -14,6 +14,8 @@ import {
   Warning, Schedule, Verified, TrendingUp, TrendingDown, Visibility,
   Star, Comment, ThumbUp, ThumbDown
 } from '@mui/icons-material';
+import { useTheme } from '../components/ThemeProvider';
+import { ThemeToggle } from '../components/ThemeToggle';
 
 // ============================================================================
 // Types & Interfaces
