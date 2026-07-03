@@ -1025,7 +1025,7 @@ export default function SwapPage() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       {tokenIn.logoURI && <Avatar src={tokenIn.logoURI} sx={{ width: 24, height: 24 }} />}
                       <Typography>{tokenIn.symbol}</Typography>
-                    </>
+                    </Box>
                   ) : (
                     'Select'
                   )}
@@ -1112,7 +1112,7 @@ export default function SwapPage() {
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
                       {tokenOut.logoURI && <Avatar src={tokenOut.logoURI} sx={{ width: 24, height: 24 }} />}
                       <Typography>{tokenOut.symbol}</Typography>
-                    </>
+                    </Box>
                   ) : (
                     'Select'
                   )}

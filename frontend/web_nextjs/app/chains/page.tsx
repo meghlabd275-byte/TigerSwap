@@ -1,3 +1,5 @@
+'use client';
+
 // TigerSwap - Supported Chains Page
 // Display all EVM and Non-EVM blockchain networks
 

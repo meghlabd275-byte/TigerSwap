@@ -10,7 +10,7 @@ import {
   Slider, InputAdornment, Divider
 } from '@mui/material';
 import {
-  Pool, Agriculture, TrendingUp, Add, Remove, Lock, Unlock,
+  Pool, Agriculture, TrendingUp, Add, Remove, Lock, LockOpen,
   Refresh, ShowChart, Info, Warning, CheckCircle, AccessTime,
   AccountBalance, Favorite
 } from '@mui/icons-material';
@@ -121,7 +121,7 @@ function formatTokens(amount: string, decimals: number = 18): string {
 function timeUntil(unlockTime: number): string {
   const now = Date.now();
   const diff = unlockTime - now;
-  if (diff <= 0) return 'Unlocked';
+  if (diff <= 0) return 'LockOpened';
   const days = Math.floor(diff / (24 * 60 * 60 * 1000));
   const hours = Math.floor((diff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
   return `${days}d ${hours}h`;
@@ -720,8 +720,8 @@ export default function FarmingPage() {
                                   />
                                 ) : (
                                   <Chip
-                                    icon={<Unlock sx={{ fontSize: 16 }} />}
-                                    label="Unlocked"
+                                    icon={<LockOpen sx={{ fontSize: 16 }} />}
+                                    label="LockOpened"
                                     size="small"
                                     sx={{ bgcolor: '#00d4aa20', color: '#00d4aa' }}
                                   />

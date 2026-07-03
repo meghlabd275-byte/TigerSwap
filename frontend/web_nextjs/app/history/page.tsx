@@ -12,7 +12,7 @@ import {
 import {
   FilterList, Download, Refresh, Visibility, OpenInNew,
   ArrowUpward, ArrowDownward, Error, CheckCircle, Schedule,
-  Cancel, MoreHoriz, Copy,QrCode
+  Cancel, MoreHoriz, ContentCopy,QrCode
 } from '@mui/icons-material';
 import { useTheme } from '../components/ThemeProvider';
 
@@ -452,7 +452,7 @@ export default function TransactionHistoryPage() {
   };
 
   // ============================================================================
-  // Copy to Clipboard
+  // ContentCopy to Clipboard
   // ============================================================================
 
   const copyToClipboard = async (text: string) => {
@@ -840,7 +840,7 @@ export default function TransactionHistoryPage() {
                                 <Visibility fontSize="small" />
                               </IconButton>
                             </Tooltip>
-                            <Tooltip title="Copy Hash">
+                            <Tooltip title="ContentCopy Hash">
                               <IconButton
                                 size="small"
                                 onClick={(e) => {
@@ -849,7 +849,7 @@ export default function TransactionHistoryPage() {
                                 }}
                                 sx={{ color: '#9ca3af' }}
                               >
-                                <Copy fontSize="small" />
+                                <ContentCopy fontSize="small" />
                               </IconButton>
                             </Tooltip>
                             <Tooltip title="View on Explorer">
@@ -988,7 +988,7 @@ export default function TransactionHistoryPage() {
                     {selectedTx.hash}
                   </Typography>
                   <IconButton size="small" onClick={() => copyToClipboard(selectedTx.hash)} sx={{ color: '#9ca3af' }}>
-                    <Copy fontSize="small" />
+                    <ContentCopy fontSize="small" />
                   </IconButton>
                 </Box>
               </Box>
