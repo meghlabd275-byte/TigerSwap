@@ -89,30 +89,45 @@ export class TransactionSigner {
    * Simulate transaction
    */
   async simulate(tx: Transaction): Promise<SimulationResult> {
-    // Would use Tenderly or local simulation in production
-    const result: SimulationResult = {
-      success: true,
-      gasUsed: 21000n,
-      logs: [],
-      returnValue: '0x',
-      stateChanges: new Map(),
-    };
-
-    // Check for common issues
-    if (tx.value === '0x' || tx.value === '0') {
-      result.success = true;
+    if (!this.wallet?.provider?.request) {
+      throw new Error('Transaction simulation requires a wallet provider with eth_call and eth_estimateGas support.');
     }
 
-    // Check contract calls
-    if (tx.data && tx.data !== '0x') {
-      result.gasUsed = 50000n;
+    try {
+      const callParams = [{
+        from: tx.from,
+        to: tx.to,
+        value: tx.value,
+        data: tx.data || '0x',
+      }, 'latest'];
+      await this.wallet.provider.request({ method: 'eth_call', params: callParams });
+
+      const gasHex = await this.wallet.provider.request({
+        method: 'eth_estimateGas',
+        params: [callParams[0]],
+      });
+
+      const result: SimulationResult = {
+        success: true,
+        gasUsed: BigInt(gasHex),
+        logs: [],
+        returnValue: '0x',
+        stateChanges: new Map(),
+      };
+      this.simulations.set(this.hashTransaction(tx), result);
+      return result;
+    } catch (error) {
+      const result: SimulationResult = {
+        success: false,
+        gasUsed: 0n,
+        logs: [],
+        returnValue: '0x',
+        error: error instanceof Error ? error.message : 'Simulation failed',
+        stateChanges: new Map(),
+      };
+      this.simulations.set(this.hashTransaction(tx), result);
+      return result;
     }
-
-    // Store simulation
-    const txHash = this.hashTransaction(tx);
-    this.simulations.set(txHash, result);
-
-    return result;
   }
 
   /**

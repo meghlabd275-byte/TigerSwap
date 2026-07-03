@@ -1,116 +1,69 @@
-# TigerSwap - Enterprise-grade Multichain DEX Ecosystem
+# TigerSwap - Multichain DEX Ecosystem
 
-## 🚀 Complete Native Implementation - No Dependencies
+TigerSwap is a multichain decentralized-exchange codebase that includes frontend apps, browser/mobile wallet surfaces, EVM smart contracts, blockchain SDKs, DEX/CEX connector modules, bot/market-maker modules, security modules, and backend/API components.
 
-TigerSwap is a **100% built-from-scratch** decentralized exchange ecosystem that does NOT depend on any third-party DEX protocols, aggregators, or wallet services.
+> **Launch status:** TigerSwap is **not production-ready yet**. See [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md) for the current launch-readiness tracker, blockers, and release gates.
 
-### 🌐 Unlimited Blockchain Support
-TigerSwap supports **unlimited EVM and Non-EVM blockchain networks** with full admin management (add, edit, update, remove chains dynamically).
+## Current engineering priorities
 
-#### EVM Chains (30+ supported)
-- Ethereum, Sepolia, BNB Chain, Polygon, Mumbai, Arbitrum, Optimism, Base, Avalanche, Fantom, Cronos, Celo, Gnosis, Moonbeam, Kava, Linea, zkEVM, Scroll, Mantle, opBNB, Mode, Zora, Harmony, Metis, Shimmer, Core, and more...
+1. Make the monorepo buildable and testable across TypeScript, Go, Rust, and Solidity packages.
+2. Remove unsafe mock/demo behavior from production execution paths.
+3. Add production-grade transaction lifecycle handling, provider-backed simulation, and clear failure states.
+4. Expand smart-contract tests to include unit, integration, fork, fuzz, invariant, access-control, governance, bridge, and emergency scenarios.
+5. Add deployment manifests, address registries, monitoring, incident runbooks, and security evidence before any uncapped mainnet launch.
 
-#### Non-EVM Chains (15+ supported)
-- **Solana**: Mainnet, Devnet, Testnet
-- **Aptos**: Mainnet, Devnet, Testnet
-- **Sui**: Mainnet, Devnet, Testnet
-- **TON**: Mainnet
-- **TRON**: Mainnet, Nile
-- **Cosmos**: Cosmos Hub, Osmosis, Injective
-- **NEAR**: Mainnet
-- **Algorand**: Mainnet
-- **Polkadot**: Polkadot, Kusama
-- **Cardano**: Mainnet
-
-### Native Implementations Built From Scratch:
-
-| Component | Status | Description |
-|-----------|--------|-------------|
-| **Solana SDK** | ✅ Complete | Full RPC, SPL tokens, wallet adapters |
-| **Aptos SDK** | ✅ Complete | Move language, BCS serialization |
-| **TON SDK** | ✅ Complete | FunC contracts, Cell serialization |
-| **Sui SDK** | ✅ Complete | Object model, Move execution |
-| **TRON SDK** | ✅ Complete | TRC20, smart contracts |
-| **Pi Network SDK** | ✅ Complete | Payment integration |
-| **EVM Wallet Adapter** | ✅ Complete | MetaMask, WalletConnect v2, Coinbase |
-| **Solana Wallet** | ✅ Complete | Phantom, Solflare, Backpack |
-| **Aptos Wallet** | ✅ Complete | Martian, Sui Wallet |
-| **TON Wallet** | ✅ Complete | Tonkeeper adapter |
-| **Core AMM** | ✅ Complete | Concentrated liquidity, constant product |
-| **MEV Protection** | ✅ Complete | Bundle builder, sandwich detector |
-| **Order Book CLOB** | ✅ Complete | Limit orders, market orders |
-| **DEX Aggregator** | ✅ Complete | Multi-hop routing, split routes |
-
-## Technology Stack
+## Technology stack
 
 | Layer | Technology |
-|-------|------------|
-| High Performance Routing | C++ |
-| Wallet Core | Rust |
-| Cryptography | Rust |
-| Cross Chain Engine | Rust + Go |
-| Backend APIs | Go |
-| Enterprise Modules | Java |
-| Smart Contracts | Solidity |
-| Analytics / AI | Python |
-| Internal Automation | Ruby |
-| Frontend | TypeScript |
-| Website | Next.js |
-| UI Components | React |
+| --- | --- |
+| Frontend | Next.js, React, TypeScript |
+| Admin / dashboards | React, TypeScript |
+| Backend APIs | Go, TypeScript |
+| Smart contracts | Solidity, Hardhat |
+| Routing / trading engines | Rust, TypeScript, C++/Go modules where present |
+| Analytics / AI | Python, TypeScript |
+| Mobile/browser wallet surfaces | React Native, browser extension JavaScript/TypeScript |
 
-## Supported Chains (All Native SDKs)
+## Repository structure
 
-### EVM Chains
-- Ethereum, BNB Chain, Polygon, Arbitrum, Optimism, Base, Avalanche, Fantom
-
-### Non-EVM Chains (All Built From Scratch)
-- **Solana** - SPL tokens, Serum/OpenBook DEX
-- **Aptos** - Move language, fungible assets
-- **TON** - Telegram Open Network, FunC contracts
-- **Sui** - Object model, Move execution
-- **TRON** - TRC20 tokens, smart contracts
-- **Pi Network** - Payment integration
-- **Bitcoin** - UTXO model
-
-## Project Structure
-
-```
+```text
 TigerSwap/
-├── blockchain_layer/           # Native blockchain SDKs
-│   ├── solana_sdk/            # Solana RPC, SPL, AMM
-│   ├── aptos_sdk/            # Aptos Move, BCS
-│   ├── ton_sdk/              # TON Cell, FunC
-│   ├── sui_sdk/              # Sui objects, Move
-│   ├── tron_sdk/             # TRON TRC20
-│   ├── pi_network_sdk/       # Pi payments
-│   └── bitcoin_sdk/           # Bitcoin UTXO
-├── core/                      # Core DEX engine
-│   ├── amm/                  # Concentrated liquidity AMM
-│   ├── orderbook/            # CLOB order book
-│   ├── routing/              # DEX aggregator router
-│   └── mev/                 # MEV protection
-├── libs/                      # Libraries
-│   ├── web3_wallet/          # EVM wallet adapters
-│   └── routing/              # Routing engine
-├── dex_aggregator/            # DEX aggregation
-├── smart_contracts/           # EVM contracts
-└── frontend/                  # UI applications
+├── admin_platform/             # Admin and chain-management modules
+├── ai_platform/                # Price/risk intelligence modules
+├── analytics_platform/         # Dashboards and analytics surfaces
+├── api_gateway/                # API gateway and REST modules
+├── blockchain_layer/           # Chain SDKs and chain-specific integrations
+├── browser_extension/          # Browser wallet/extension UI
+├── cex_connectors/             # CEX connector modules
+├── core/                       # Core trading/routing engines
+├── cross_chain_protocol/       # Bridge/messaging modules
+├── dapp_browser/               # DApp browser, permissions, wallet injector, signer
+├── dex_aggregator/             # Aggregation/routing modules
+├── dex_connectors/             # DEX connector modules
+├── frontend/                   # Web, admin, and frontend SDK packages
+├── governance/                 # Governance contracts/services
+├── libs/                       # Shared SDKs/libraries
+├── market_maker_platform/      # Market-maker modules
+├── mm_bot_platform/            # Bot platform modules
+├── mobile/                     # Mobile wallet app
+├── security_platform/          # Security scanners, fraud/rate-limit/circuit-breaker modules
+├── smart_contracts/            # EVM contracts and Hardhat project
+└── user_features/              # User-facing feature modules
 ```
 
-## Quick Start
+## Quick start
 
 ```bash
-# Install dependencies
 npm install
-
-# Build all packages
 npm run build
-
-# Run development
-npm run dev
 ```
+
+The root build is intended to become the primary launch gate. Until every package is fully integrated, always review [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md) before relying on any module for production.
+
+## Production policy
+
+Production builds must fail closed when live dependencies are missing. They must not silently fall back to mock quotes, mock balances, fake transaction hashes, or fake transaction success messages.
 
 ## License
 
 MIT
-Multichain Cryptocurrency Decentralised exchanges 

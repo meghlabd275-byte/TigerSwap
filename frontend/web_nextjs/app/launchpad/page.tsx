@@ -7,7 +7,7 @@ import {
   Tabs, Tab, Divider, Avatar
 } from '@mui/material';
 import {
-  RocketLaunch, Timer, TrendingUp, Users, Ballot,
+  RocketLaunch, Timer, TrendingUp, People, Ballot,
   AccessTime, Verified, Warning, CheckCircle, Cancel
 } from '@mui/icons-material';
 import { useTheme } from '../components/ThemeProvider';
@@ -479,7 +479,7 @@ export default function LaunchpadPage() {
           </Card>
           <Card sx={{ bgcolor: '#1a1a2e', borderRadius: 3 }}>
             <CardContent sx={{ textAlign: 'center' }}>
-              <Users sx={{ color: '#00d4aa', fontSize: 32, mb: 1 }} />
+              <People sx={{ color: '#00d4aa', fontSize: 32, mb: 1 }} />
               <Typography variant="h4" sx={{ color: 'white', fontWeight: 'bold' }}>
                 {formatNumber(projects.reduce((s, p) => s + p.participants, 0))}
               </Typography>

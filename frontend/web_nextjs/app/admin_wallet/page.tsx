@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import {
   AccountBalanceWallet, Add, Edit, Delete, Refresh, Visibility,
-  VisibilityOff, ContentCopy, Send, Receive, SwapHoriz, Key,
+  VisibilityOff, ContentCopy, Send, MoveToInbox, SwapHoriz, Key,
   Security, Warning, CheckCircle, Error as ErrorIcon, Lock,
   AccountTree, Hexagon
 } from '@mui/icons-material';
@@ -534,7 +534,7 @@ export default function AdminWalletPage() {
                         label={tx.type.toUpperCase()} 
                         size="small"
                         color={tx.type === 'send' ? 'error' : tx.type === 'receive' ? 'success' : 'primary'}
-                        icon={tx.type === 'send' ? <Send /> : tx.type === 'receive' ? <Receive /> : <SwapHoriz />}
+                        icon={tx.type === 'send' ? <Send /> : tx.type === 'receive' ? <MoveToInbox /> : <SwapHoriz />}
                       />
                     </TableCell>
                     <TableCell>{wallet?.name}</TableCell>

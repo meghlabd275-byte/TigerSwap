@@ -417,7 +417,7 @@ export class BalancerClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-balancer-swap-${Date.now()}`;
+      throw new Error(`Balancer swap failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 

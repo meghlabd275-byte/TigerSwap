@@ -1,5 +1,8 @@
 // TigerSwap Wallet - Popup Script
 
+const TIGERSWAP_API_BASE_URL = 'https://api.tigerswap.com/v1';
+
+
 class TigerSwapWallet {
     constructor() {
         this.wallet = null;
@@ -42,30 +45,20 @@ class TigerSwapWallet {
         this.updateLoadingState();
         
         try {
-            // Fetch assets from API
-            const response = await fetch(`https://api.tigerswap.com/v1/portfolio/${this.wallet.address}`);
-            if (response.ok) {
-                const data = await response.json();
-                this.assets = data.tokens || [];
-            } else {
-                // Fallback to mock data for demo
-                this.assets = this.getMockAssets();
+            const response = await fetch(`${TIGERSWAP_API_BASE_URL}/portfolio/${this.wallet.address}`);
+            if (!response.ok) {
+                throw new Error(`Portfolio request failed with HTTP ${response.status}`);
             }
+            const data = await response.json();
+            this.assets = data.tokens || [];
         } catch (error) {
             console.error('Failed to load assets:', error);
-            this.assets = this.getMockAssets();
+            this.assets = [];
+            this.showMessage('Unable to load portfolio from TigerSwap API.', 'error');
         }
         
         this.isLoading = false;
         this.updateAssetsList();
-    }
-    
-    getMockAssets() {
-        return [
-            { symbol: 'ETH', balance: '2.5', valueUSD: 6250 },
-            { symbol: 'USDC', balance: '5000', valueUSD: 5000 },
-            { symbol: 'WETH', balance: '0.5', valueUSD: 1250 }
-        ];
     }
     
     setupEventListeners() {
@@ -153,10 +146,7 @@ class TigerSwapWallet {
         const totalBalance = this.assets.reduce((sum, asset) => sum + asset.valueUSD, 0);
         document.getElementById('total-balance').textContent = `$${totalBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
         
-        // Update balance change (mock for demo)
-        const change = totalBalance * 0.05;
-        const changePercent = 5;
-        document.getElementById('balance-change').textContent = `+$${change.toLocaleString('en-US', { minimumFractionDigits: 2 })} (+${changePercent}%)`;
+        document.getElementById('balance-change').textContent = 'Live portfolio data';
     }
     
     updateAssetsList() {
@@ -197,20 +187,20 @@ class TigerSwapWallet {
         
         try {
             const response = await fetch(
-                `https://api.tigerswap.com/v1/quote?fromToken=${fromToken}&toToken=${toToken}&amount=${fromAmount}`
+                `${TIGERSWAP_API_BASE_URL}/quote?fromToken=${fromToken}&toToken=${toToken}&amount=${fromAmount}`
             );
             
-            if (response.ok) {
-                const data = await response.json();
-                document.getElementById('to-amount').value = data.toAmount;
-                document.getElementById('exchange-rate').textContent = `1 ${fromToken} = ${data.rate} ${toToken}`;
+            if (!response.ok) {
+                throw new Error(`Quote request failed with HTTP ${response.status}`);
             }
+            const data = await response.json();
+            document.getElementById('to-amount').value = data.toAmount;
+            document.getElementById('exchange-rate').textContent = `1 ${fromToken} = ${data.rate} ${toToken}`;
         } catch (error) {
-            // Mock calculation
-            const rate = fromToken === 'ETH' && toToken === 'USDC' ? 2500 : 
-                        fromToken === 'USDC' && toToken === 'ETH' ? 0.0004 : 1;
-            document.getElementById('to-amount').value = (parseFloat(fromAmount) * rate).toFixed(6);
-            document.getElementById('exchange-rate').textContent = `1 ${fromToken} = ${rate} ${toToken}`;
+            console.error('Failed to calculate quote:', error);
+            document.getElementById('to-amount').value = '';
+            document.getElementById('exchange-rate').textContent = 'Quote unavailable';
+            this.showMessage('Unable to fetch a live quote. Please try again.', 'error');
         }
     }
     
@@ -241,7 +231,7 @@ class TigerSwapWallet {
         
         try {
             // Send transaction request
-            const response = await fetch('https://api.tigerswap.com/v1/swap', {
+            const response = await fetch(`${TIGERSWAP_API_BASE_URL}/swap`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -252,15 +242,15 @@ class TigerSwapWallet {
                 })
             });
             
-            if (response.ok) {
-                const data = await response.json();
-                this.showMessage(`Swap executed! Tx: ${data.txHash.slice(0, 10)}...`, 'success');
-                await this.loadAssets();
+            if (!response.ok) {
+                throw new Error(`Swap request failed with HTTP ${response.status}`);
             }
-        } catch (error) {
-            // Mock success for demo
-            this.showMessage('Swap executed successfully!', 'success');
+            const data = await response.json();
+            this.showMessage(`Swap submitted! Tx: ${data.txHash.slice(0, 10)}...`, 'success');
             await this.loadAssets();
+        } catch (error) {
+            console.error('Failed to execute swap:', error);
+            this.showMessage('Swap was not submitted. Please review the error and try again.', 'error');
         }
         
         this.isLoading = false;
@@ -295,7 +285,7 @@ class TigerSwapWallet {
         this.updateLoadingState();
         
         try {
-            const response = await fetch('https://api.tigerswap.com/v1/transfer', {
+            const response = await fetch(`${TIGERSWAP_API_BASE_URL}/transfer`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -306,14 +296,15 @@ class TigerSwapWallet {
                 })
             });
             
-            if (response.ok) {
-                const data = await response.json();
-                this.showMessage(`Transfer sent! Tx: ${data.txHash.slice(0, 10)}...`, 'success');
-                await this.loadAssets();
+            if (!response.ok) {
+                throw new Error(`Transfer request failed with HTTP ${response.status}`);
             }
-        } catch (error) {
-            this.showMessage('Transfer sent successfully!', 'success');
+            const data = await response.json();
+            this.showMessage(`Transfer submitted! Tx: ${data.txHash.slice(0, 10)}...`, 'success');
             await this.loadAssets();
+        } catch (error) {
+            console.error('Failed to execute transfer:', error);
+            this.showMessage('Transfer was not submitted. Please review the error and try again.', 'error');
         }
         
         this.isLoading = false;

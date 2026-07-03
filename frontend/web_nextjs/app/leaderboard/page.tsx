@@ -10,7 +10,7 @@ import {
 } from '@mui/material';
 import {
   Leaderboard, PersonAdd, TrendingUp, TrendingDown, Star,
-  Copy, Visibility, MoreVert, Refresh, Verified, Whatshot
+  ContentCopy, Visibility, MoreVert, Refresh, Verified, Whatshot
 } from '@mui/icons-material';
 import { useTheme } from '../components/ThemeProvider';
 
@@ -41,7 +41,7 @@ interface Trader {
   isFollowing: boolean;
 }
 
-interface CopyTrade {
+interface ContentCopyTrade {
   id: string;
   follower: string;
   leader: string;
@@ -161,8 +161,8 @@ export default function LeaderboardPage() {
   const [activeTab, setActiveTab] = useState(0);
   const [selectedTrader, setSelectedTrader] = useState<Trader | null>(null);
   const [showTraderDetail, setShowTraderDetail] = useState(false);
-  const [copyAmount, setCopyAmount] = useState('');
-  const [copying, setCopying] = useState(false);
+  const [copyAmount, setContentCopyAmount] = useState('');
+  const [copying, setContentCopying] = useState(false);
   const [filterPair, setFilterPair] = useState('all');
 
   // Snackbar
@@ -198,13 +198,13 @@ export default function LeaderboardPage() {
   // Trading Functions
   // ============================================================================
 
-  const handleCopyTrader = async (trader: Trader) => {
+  const handleContentCopyTrader = async (trader: Trader) => {
     if (!copyAmount || parseFloat(copyAmount) <= 0) {
       setSnackbar({ open: true, message: 'Please enter a valid amount', severity: 'error' });
       return;
     }
 
-    setCopying(true);
+    setContentCopying(true);
     try {
       await new Promise(resolve => setTimeout(resolve, 1500));
       
@@ -213,7 +213,7 @@ export default function LeaderboardPage() {
       ));
       
       setShowTraderDetail(false);
-      setCopyAmount('');
+      setContentCopyAmount('');
       setSnackbar({ 
         open: true, 
         message: `Now copying ${trader.ensName || formatAddress(trader.address)} with ${copyAmount} USDC`, 
@@ -222,7 +222,7 @@ export default function LeaderboardPage() {
     } catch (error) {
       setSnackbar({ open: true, message: 'Failed to start copying', severity: 'error' });
     } finally {
-      setCopying(false);
+      setContentCopying(false);
     }
   };
 
@@ -289,7 +289,7 @@ export default function LeaderboardPage() {
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 4 }}>
           <Box>
             <Typography variant="h4" sx={{ color: 'white', fontWeight: 'bold' }}>
-              🏆 Copy Trading Leaderboard
+              🏆 ContentCopy Trading Leaderboard
             </Typography>
             <Typography variant="body2" sx={{ color: '#9ca3af', mt: 1 }}>
               Follow top traders and automatically copy their trades
@@ -366,7 +366,7 @@ export default function LeaderboardPage() {
             >
               <Tab label="All Traders" />
               <Tab label="Following" />
-              <Tab label="Copying" />
+              <Tab label="ContentCopying" />
             </Tabs>
             <FormControl size="small" sx={{ minWidth: 150 }}>
               <Select
@@ -454,7 +454,7 @@ export default function LeaderboardPage() {
                             <Button
                               size="small"
                               variant={entry.trader.isCopiable ? 'contained' : 'outlined'}
-                              startIcon={<Copy />}
+                              startIcon={<ContentCopy />}
                               onClick={() => { setSelectedTrader(entry.trader); setShowTraderDetail(true); }}
                               sx={{ 
                                 bgcolor: entry.trader.isCopiable ? '#00d4aa' : 'transparent', 
@@ -463,7 +463,7 @@ export default function LeaderboardPage() {
                                 minWidth: 0, px: 1
                               }}
                             >
-                              Copy
+                              ContentCopy
                             </Button>
                             <IconButton
                               size="small"
@@ -610,14 +610,14 @@ export default function LeaderboardPage() {
                 </Card>
               </Box>
 
-              <Typography sx={{ color: '#9ca3af', mb: 2 }}>Start Copying</Typography>
+              <Typography sx={{ color: '#9ca3af', mb: 2 }}>Start ContentCopying</Typography>
               <Box sx={{ display: 'flex', gap: 2 }}>
                 <TextField
                   fullWidth
                   type="number"
                   placeholder="Enter amount in USDC"
                   value={copyAmount}
-                  onChange={(e) => setCopyAmount(e.target.value)}
+                  onChange={(e) => setContentCopyAmount(e.target.value)}
                   InputProps={{
                     startAdornment: <Typography sx={{ color: '#9ca3af', mr: 1 }}>$</Typography>,
                   }}
@@ -628,12 +628,12 @@ export default function LeaderboardPage() {
                 />
                 <Button
                   variant="contained"
-                  startIcon={<Copy />}
-                  onClick={() => handleCopyTrader(selectedTrader)}
+                  startIcon={<ContentCopy />}
+                  onClick={() => handleContentCopyTrader(selectedTrader)}
                   disabled={copying || !selectedTrader.isCopiable}
                   sx={{ bgcolor: '#00d4aa', color: 'black', px: 4 }}
                 >
-                  {copying ? <CircularProgress size={20} sx={{ color: 'black' }} /> : 'Copy'}
+                  {copying ? <CircularProgress size={20} sx={{ color: 'black' }} /> : 'ContentCopy'}
                 </Button>
               </Box>
               {!selectedTrader.isCopiable && (
