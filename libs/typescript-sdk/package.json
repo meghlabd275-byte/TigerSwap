@@ -1,5 +1,5 @@
 {
-  "name": "@tigerswap/sdk",
+  "name": "@tigerswap/ts-sdk",
   "version": "1.0.0",
   "description": "TigerSwap TypeScript SDK - Complete DEX functionality",
   "main": "dist/index.js",

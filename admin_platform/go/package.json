@@ -1,5 +1,5 @@
 {
-  "name": "@tigerswap/go",
+  "name": "@tigerswap/admin-go",
   "version": "1.0.0",
   "description": "TigerSwap go module",
   "main": "src/index.ts",

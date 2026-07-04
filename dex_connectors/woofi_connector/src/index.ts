@@ -176,23 +176,10 @@ export class WooFiClient {
         apr: BigInt(p.apr),
       }));
     } catch (error) {
-      return this.getMockPools();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
-  private getMockPools(): Pool[] {
-    return [
-      {
-        token0: '0xEeeeeEeeeEeEeEeEeEeEeEeEeEeEeEeEeEeEeE',
-        token1: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-        reserve0: parseEther('1000'),
-        reserve1: parseEther('3500000'),
-        fee: parseEther('0.001'),
-        volume24h: parseEther('50000000'),
-        apr: parseEther('0.15'),
-      },
-    ];
-  }
 
   // ============================================================================
   // Quote
@@ -226,21 +213,10 @@ export class WooFiClient {
         gasEstimate: data.gasEstimate,
       };
     } catch (error) {
-      return this.getMockQuote(amount);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
-  private getMockQuote(amount: bigint): Quote {
-    return {
-      fromToken: 'ETH',
-      toToken: 'USDC',
-      fromAmount: amount,
-      toAmount: amount * 3499n / 1000n,
-      priceImpact: parseEther('0.0005'),
-      fee: amount / 1000n,
-      gasEstimate: 150000,
-    };
-  }
 
   // ============================================================================
   // Swap
@@ -261,7 +237,7 @@ export class WooFiClient {
 
     // Simulate swap
     return {
-      txHash: `mock-woofi-${Date.now()}`,
+      txHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
       fromAmount: amount,
       toAmount: quote.toAmount,
       priceImpact: quote.priceImpact,

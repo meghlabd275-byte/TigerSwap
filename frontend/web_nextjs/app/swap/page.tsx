@@ -15,6 +15,13 @@ import {
   Check, Refresh, ArrowForward, KeyboardArrowDown, Close
 } from '@mui/icons-material';
 import { useTheme } from '../components/ThemeProvider';
+import {
+  TigerSwapWallet,
+  COMMON_TOKENS,
+  DEX_ROUTERS,
+  TokenInfo,
+  GasPriceInfo
+} from '../lib/TigerSwapWallet';
 
 // ============================================================================
 // Types & Interfaces
@@ -214,6 +221,12 @@ export default function SwapPage() {
     message: '',
     severity: 'info'
   });
+
+  const SearchIcon = (props: any) => (
+    <svg {...props} viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+      <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+    </svg>
+  );
 
   // ============================================================================
   // Wallet Initialization
@@ -1071,7 +1084,7 @@ export default function SwapPage() {
                     fullWidth
                     placeholder="0.0"
                     value={amountOut}
-                    readOnly
+                    InputProps={{ readOnly: true }}
                     sx={{
                       input: { 
                         color: 'white', 
@@ -1415,11 +1428,3 @@ export default function SwapPage() {
   );
 }
 
-// Search Icon Component
-function SearchIcon(props: any) {
-  return (
-    <svg {...props} viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
-      <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-    </svg>
-  );
-}

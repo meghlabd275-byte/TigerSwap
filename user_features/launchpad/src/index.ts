@@ -1,3 +1,4 @@
+import { Interface } from "ethers";
 /**
  * TigerSwap User Features - Launchpad Module
  * 
@@ -15,6 +16,7 @@
  */
 
 import { EVMClient, EVMWallet } from '@tigerswap/evm-sdk';
+import { Interface } from 'ethers';
 
 // ============================================================================
 // Types & Interfaces

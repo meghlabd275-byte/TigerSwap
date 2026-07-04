@@ -180,22 +180,13 @@ export class OdosClient {
       const data = await response.json();
       return data.tokens;
     } catch (error) {
-      return this.getMockTokens();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock tokens
    */
-  private getMockTokens(): Token[] {
-    return [
-      { address: '0xEeeeeEeeeEeEeEeEeEeEeEeEeEeEeEeEeEeEeE', symbol: 'ETH', decimals: 18, chainId: this.config.chainId },
-      { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', decimals: 6, chainId: this.config.chainId },
-      { address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', symbol: 'USDT', decimals: 6, chainId: this.config.chainId },
-      { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C805', symbol: 'WBTC', decimals: 8, chainId: this.config.chainId },
-      { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', decimals: 18, chainId: this.config.chainId },
-    ];
-  }
 
   // ============================================================================
   // Quote
@@ -249,40 +240,13 @@ export class OdosClient {
       this.cachedQuotes.set(cacheKey, quote);
       return quote;
     } catch (error) {
-      return this.getMockQuote(tokenIn, tokenOut, amountIn);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock quote
    */
-  private getMockQuote(tokenIn: string, tokenOut: string, amountIn: bigint): Quote {
-    const rates: Record<string, bigint> = {
-      'ETH-USDC': 3500n,
-      'USDC-ETH': BigInt('285714285714285714'),
-      'WBTC-USDC': 65000n,
-    };
-
-    const key = `${tokenIn}-${tokenOut}`;
-    const rate = rates[key] || 1n;
-    const amountOut = (amountIn * rate) / parseEther('1');
-
-    return {
-      tokenIn,
-      amountIn,
-      tokenOut,
-      amountOut,
-      paths: [{
-        path: [tokenIn, tokenOut],
-        poolAddresses: ['0x0000000000000000000000000000000000000001'],
-        inputAmount: amountIn,
-        outputAmount: amountOut,
-        poolGas: 150000,
-      }],
-      totalGas: 200000,
-      priceImpact: parseEther('0.001'),
-    };
-  }
 
   // ============================================================================
   // Swap
@@ -328,23 +292,13 @@ export class OdosClient {
         chainId: this.config.chainId,
       };
     } catch (error) {
-      return this.getMockSwapTransaction(tokenIn, amountIn, to);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock swap transaction
    */
-  private getMockSwapTransaction(tokenIn: string, amountIn: bigint, to: string): TransactionGas {
-    return {
-      gas: '300000',
-      gasPrice: '100000000000',
-      value: tokenIn === '0xEeeeeEeeeEeEeEeEeEeEeEeEeEeEeEeEeEeEeEe' ? amountIn.toString() : '0',
-      data: '0x',
-      to: this.config.routerContract,
-      chainId: this.config.chainId,
-    };
-  }
 
   /**
    * Execute swap
@@ -385,7 +339,7 @@ export class OdosClient {
       const transaction = await this.wallet.sendTransaction(txRequest);
       return transaction.hash;
     } catch (error) {
-      return `mock-odos-swap-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

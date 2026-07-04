@@ -1,3 +1,4 @@
+import { Interface } from "ethers";
 /**
  * TigerSwap DEX Connectors - Curve Finance Connector
  * 

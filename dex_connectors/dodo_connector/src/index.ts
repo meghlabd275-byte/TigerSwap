@@ -131,22 +131,10 @@ export class DodoClient {
         k: BigInt(p.k),
       }));
     } catch (error) {
-      return this.getMockPools();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
-  private getMockPools(): Pool[] {
-    return [
-      {
-        baseToken: '0xEeeeeEeeeEeEeEeEeEeEeEeEeEeEeEeEeEeEeE',
-        quoteToken: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-        poolAddress: '0x0000000000000000000000000000000000000001',
-        lpFee: parseEther('0.002'),
-        mtFee: parseEther('0.0005'),
-        k: parseEther('0.5'),
-      },
-    ];
-  }
 
   // ============================================================================
   // Quote - PMM Algorithm
@@ -191,7 +179,9 @@ export class DodoClient {
   }
 
   async getPool(poolAddress: string): Promise<Pool | null> {
-    return this.poolCache.get(poolAddress) || this.getMockPools()[0];
+    const pool = this.poolCache.get(poolAddress);
+    if (!pool) throw new Error('Pool not found and mock data is disabled');
+    return pool;
   }
 
   // ============================================================================
@@ -211,7 +201,7 @@ export class DodoClient {
     const quote = await this.getQuote(poolAddress, baseToken, quoteToken, amount, isBuyingBase);
     if (quote.outAmount < minOut) throw new Error('Insufficient output');
 
-    return `mock-dodo-${Date.now()}`;
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   // ============================================================================

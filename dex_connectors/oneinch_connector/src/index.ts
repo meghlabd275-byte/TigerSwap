@@ -216,7 +216,7 @@ export class OneInchClient {
         logoUrl: t.logoUrl,
       }));
     } catch (error) {
-      return this.getMockTokens();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -239,15 +239,6 @@ export class OneInchClient {
   /**
    * Get mock tokens
    */
-  private getMockTokens(): SwapToken[] {
-    return [
-      { address: NATIVE_TOKENS[this.config.chainId] || NATIVE_TOKENS[1], symbol: 'ETH', decimals: 18, name: 'Ethereum' },
-      { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', decimals: 6, name: 'USD Coin' },
-      { address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', symbol: 'USDT', decimals: 6, name: 'Tether USD' },
-      { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C805', symbol: 'WBTC', decimals: 8, name: 'Wrapped Bitcoin' },
-      { address: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', symbol: 'WETH', decimals: 18, name: 'Wrapped Ether' },
-    ];
-  }
 
   // ============================================================================
   // Quote
@@ -296,40 +287,13 @@ export class OneInchClient {
       this.cachedQuotes.set(cacheKey, quote);
       return quote;
     } catch (error) {
-      return this.getMockQuote(fromToken, toToken, amount);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock quote
    */
-  private getMockQuote(fromToken: string, toToken: string, amount: bigint): Quote {
-    const rates: Record<string, bigint> = {
-      'ETH-USDC': 3500n,
-      'USDC-ETH': BigInt('285714285714285714'),
-      'WBTC-USDC': 65000n,
-      'USDC-WBTC': BigInt('15384615384615'),
-      'ETH-USDT': 3500n,
-      'USDT-ETH': BigInt('285714285714285714'),
-    };
-
-    const key = `${fromToken}-${toToken}`;
-    const rate = rates[key] || 1n;
-    const amountOut = (amount * rate) / parseEther('1');
-    const fee = amountOut / 1000n;
-
-    return {
-      fromToken,
-      toToken,
-      fromTokenAmount: amount,
-      toTokenAmount: amountOut - fee,
-      toTokenAmountWei: amountOut - fee,
-      protocols: [],
-      estimatedGas: 200000,
-      fee,
-      feeInToken: fee,
-    };
-  }
 
   // ============================================================================
   // Swap
@@ -372,31 +336,13 @@ export class OneInchClient {
         fee: quote.fee,
       };
     } catch (error) {
-      return this.getMockSwapTransaction(fromToken, toToken, amount, fromAddress, toAddress, minReturn);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock swap transaction
    */
-  private getMockSwapTransaction(
-    fromToken: string,
-    toToken: string,
-    amount: bigint,
-    fromAddress: string,
-    toAddress: string,
-    minReturn: bigint
-  ): TransactionRequest {
-    return {
-      from: fromAddress,
-      to: this.config.routerContract,
-      data: '0x',
-      value: fromToken === NATIVE_TOKENS[this.config.chainId] ? amount : 0n,
-      gas: 300000,
-      gasPrice: this.config.gasSettings.maxFeePerGas,
-      fee: amount / 1000n,
-    };
-  }
 
   /**
    * Execute swap
@@ -428,7 +374,7 @@ export class OneInchClient {
       const transaction = await this.wallet.sendTransaction(txRequest);
       return transaction.hash;
     } catch (error) {
-      return `mock-swap-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

@@ -164,12 +164,16 @@ export class EthereumProvider {
     return '0x' + '0'.repeat(64);
   }
 
-  private async handleEstimateGas(): Promise<string> {
-    return '0x5208'; // 21000 gas
+  private async handleEstimateGas(params: any[]): Promise<string> {
+    if (!this.isConnected) throw new Error('Wallet not connected');
+    // Forward to an actual provider or aggregator API in production
+    // For now, we make it clear this is a placeholder that needs real backend integration
+    throw new Error('Real gas estimation requires a production RPC provider integration');
   }
 
-  private async handleGetReceipt(): Promise<any> {
-    return { status: '0x1', transactionHash: '0x0' };
+  private async handleGetReceipt(params: any[]): Promise<any> {
+    // In production, this would poll the RPC provider
+    throw new Error('Transaction tracking requires a production RPC provider integration');
   }
 
   private async handlePersonalSign(): Promise<string> {

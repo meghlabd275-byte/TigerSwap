@@ -1,3 +1,5 @@
+import { Interface } from "ethers";
+import { Interface } from "ethers";
 /**
  * TigerSwap DEX Routing Engine
  * 
@@ -17,6 +19,7 @@
  */
 
 import { EVMClient, EVMWallet, CHAIN_REGISTRY } from '@tigerswap/evm-sdk';
+import { Interface } from 'ethers';
 
 // ============================================================================
 // Types & Interfaces
@@ -822,7 +825,7 @@ export class RoutingEngine {
     const spotPrice = Number(reserveOut) / Number(reserveIn);
     const newSpotPrice =
       Number(reserveOut) / (Number(reserveIn) + Number(amountIn));
-    return Math.abs(((spotPrice - newSpotPrice) / spotPrice) * 10000));
+    return Math.abs(((spotPrice - newSpotPrice) / spotPrice) * 10000);
   }
 
   /**

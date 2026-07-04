@@ -293,7 +293,7 @@ export class GMXClient {
       this.marketCache.set(marketId, market);
       return market;
     } catch (error) {
-      return this.getMockMarket(marketId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -332,21 +332,6 @@ export class GMXClient {
   /**
    * Get mock market
    */
-  private getMockMarket(marketId: string): Market {
-    return {
-      indexToken: '0x0000000000000000000000000000000000000000',
-      longToken: '0x0000000000000000000000000000000000000000',
-      shortToken: '0x0000000000000000000000000000000000000000',
-      marketId,
-      currentFundingRate: 0n,
-      cumulativeFundingRate: 0n,
-      lastFundingTime: Math.floor(Date.now() / 1000),
-      priceFeed: '0x0000000000000000000000000000000000000000',
-      priceFeedModifier: '0x0000000000000000000000000000000000000000',
-      savedPrice: parseEther('1'),
-      savedPriceTimestamp: Math.floor(Date.now() / 1000),
-    };
-  }
 
   // ============================================================================
   // Position Management
@@ -454,7 +439,7 @@ export class GMXClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-gmx-increase-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -483,7 +468,7 @@ export class GMXClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-gmx-decrease-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -498,7 +483,7 @@ export class GMXClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-gmx-swap-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

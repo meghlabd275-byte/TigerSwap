@@ -167,7 +167,7 @@ export class OrcaClient {
         fee: BigInt(p.fee),
       }));
     } catch (error) {
-      return this.getMockPools();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -194,53 +194,16 @@ export class OrcaClient {
     const cached = this.whirlpools.get(whirlpoolAddress);
     if (cached) return cached;
 
-    return this.getMockWhirlpool(whirlpoolAddress);
+    throw new Error("Mock data is disabled in production");
   }
 
   /**
    * Get mock pools
    */
-  private getMockPools(): Pool[] {
-    return [
-      {
-        address: ' poolsol-usdc',
-        tokenA: 'SOL',
-        tokenB: 'USDC',
-        liquidity: parseEther('1000000'),
-        tickSpacing: 64,
-        sqrtPrice: BigInt('500000000000000000000000'),
-        tick: 45000,
-        fee: parseEther('0.003'),
-      },
-      {
-        address: ' pooleth-usdc',
-        tokenA: 'ETH',
-        tokenB: 'USDC',
-        liquidity: parseEther('500000'),
-        tickSpacing: 64,
-        sqrtPrice: BigInt('800000000000000000000000000'),
-        tick: 50000,
-        fee: parseEther('0.003'),
-      },
-    ];
-  }
 
   /**
    * Get mock whirlpool
    */
-  private getMockWhirlpool(address: string): Whirlpool {
-    return {
-      address,
-      tokenA: SOLANA_TOKENS.SOL,
-      tokenB: SOLANA_TOKENS.USDC,
-      tickSpacing: 64,
-      sqrtPriceX96: BigInt('500000000000000000000000'),
-      liquidity: parseEther('1000000'),
-      currentTick: 45000,
-      feeGrowthGlobal: 0n,
-      protocolFeeGrowth: 0n,
-    };
-  }
 
   // ============================================================================
   // Trading
@@ -273,35 +236,13 @@ export class OrcaClient {
         oraclePrice: BigInt(data.oraclePrice),
       };
     } catch (error) {
-      return this.getMockQuote(fromToken, toToken, amountIn);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock quote
    */
-  private getMockQuote(
-    fromToken: PublicKey,
-    toToken: PublicKey,
-    amountIn: bigint
-  ): Quote {
-    const rate = fromToken.equals(SOLANA_TOKENS.SOL) && toToken.equals(SOLANA_TOKENS.USDC)
-      ? 180n
-      : fromToken.equals(SOLANA_TOKENS.ETH) && toToken.equals(SOLANA_TOKENS.USDC)
-      ? 3500n
-      : 1n;
-
-    const amountOut = amountIn * rate / parseEther('1');
-    const fee = amountOut / 1000n;
-
-    return {
-      amountOut: amountOut - fee,
-      priceImpact: parseEther('0.001'),
-      fee,
-      swapPrice: rate,
-      oraclePrice: rate,
-    };
-  }
 
   /**
    * Execute swap

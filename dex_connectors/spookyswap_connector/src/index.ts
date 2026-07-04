@@ -87,7 +87,7 @@ export class SpookyClient {
 
   async swap(tokenIn: string, tokenOut: string, amount: bigint, minOut: bigint): Promise<string> {
     if (!this.wallet) throw new Error('Wallet required');
-    return `mock-spooky-${Date.now()}`;
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   async getPool(token0: string, token1: string): Promise<Pool | null> {

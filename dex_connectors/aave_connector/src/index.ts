@@ -301,7 +301,7 @@ export class AaveClient {
       this.marketCache.set(underlyingAddress, market);
       return market;
     } catch (error) {
-      return this.getMockMarket(underlyingAddress);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -341,24 +341,6 @@ export class AaveClient {
   /**
    * Get mock market
    */
-  private getMockMarket(underlyingAddress: string): Market {
-    return {
-      symbol: 'TOKEN',
-      underlyingAddress,
-      decimals: 18,
-      aTokenAddress: '0x0000000000000000000000000000000000000000',
-      totalSupply: parseEther('10000000'),
-      totalBorrows: parseEther('5000000'),
-      availableLiquidity: parseEther('5000000'),
-      supplyRate: parseEther('0.05'),
-      borrowRate: parseEther('0.08'),
-      collateralFactor: BigInt(8000),
-      liquidationThreshold: BigInt(8500),
-      liquidationBonus: BigInt(500),
-      isActive: true,
-      isFrozen: false,
-    };
-  }
 
   // ============================================================================
   // User Account
@@ -447,7 +429,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-supply-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -469,7 +451,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-withdraw-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -497,7 +479,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-borrow-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -525,7 +507,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-repay-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -548,7 +530,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-collateral-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -611,7 +593,7 @@ export class AaveClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-aave-liquidate-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

@@ -390,28 +390,13 @@ export class HyperliquidClient {
       };
     } catch (error) {
       // Return mock data
-      return this.getMockUserState();
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock user state for development
    */
-  private getMockUserState(): UserState {
-    return {
-      account: this.address || '',
-      vaultAddress: this.config.vaultContract,
-      balances: new Map([
-        [0, parseEther('1.5')], // BTC
-        [1, parseEther('10')],   // ETH
-        [2, parseEther('100')],  // SOL
-      ]),
-      positions: [],
-      openOrders: [],
-      totalValue: parseEther('50000'),
-      availableValue: parseEther('25000'),
-    };
-  }
 
   /**
    * Get account balances
@@ -461,37 +446,13 @@ export class HyperliquidClient {
       return await response.json();
     } catch (error) {
       // Return mock data
-      return this.getMockMarketStats(assetId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock market stats
    */
-  private getMockMarketStats(assetId: number): MarketStats {
-    const basePrices: Record<number, bigint> = {
-      0: parseEther('65000'),
-      1: parseEther('3500'),
-      2: parseEther('180'),
-      3: parseEther('0.6'),
-      4: parseEther('0.5'),
-      5: parseEther('0.15'),
-      100: parseEther('65000'),
-      101: parseEther('3500'),
-      102: parseEther('180'),
-    };
-
-    return {
-      assetId,
-      lastPrice: basePrices[assetId] || parseEther('1'),
-      change24h: parseEther('0.025'),
-      volume24h: parseEther('1000000'),
-      openInterest: parseEther('50000000'),
-      fundingRate: BigInt(100),
-      markPrice: basePrices[assetId] || parseEther('1'),
-      indexPrice: basePrices[assetId] || parseEther('1'),
-    };
-  }
 
   /**
    * Get current price
@@ -555,34 +516,13 @@ export class HyperliquidClient {
         timestamp: now,
       };
     } catch (error) {
-      return this.getMockOrderbook(assetId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock order book
    */
-  private getMockOrderbook(assetId: number): Orderbook {
-    const basePrice = this.getMockMarketStats(assetId).lastPrice;
-    const bids: OrderbookLevel[] = [];
-    const asks: OrderbookLevel[] = [];
-    
-    // Generate realistic order book
-    for (let i = 0; i < 20; i++) {
-      const offset = BigInt(i) * (basePrice / 1000n);
-      const size = BigInt(Math.floor(Math.random() * 50000 + 5000));
-      
-      bids.push({ price: basePrice - offset, size, orders: Math.floor(Math.random() * 5 + 1) });
-      asks.push({ price: basePrice + offset, size, orders: Math.floor(Math.random() * 5 + 1) });
-    }
-
-    return {
-      bids,
-      asks,
-      assetId,
-      timestamp: Date.now(),
-    };
-  }
 
   /**
    * Construct order book from cache
@@ -863,36 +803,13 @@ export class HyperliquidClient {
         timestamp: c.timestamp,
       }));
     } catch (error) {
-      return this.getMockCandles(assetId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock candles
    */
-  private getMockCandles(assetId: number): Candle[] {
-    const basePrice = this.getMockMarketStats(assetId).lastPrice;
-    const candles: Candle[] = [];
-    
-    for (let i = 0; i < 100; i++) {
-      const volatility = basePrice / 100n;
-      const open = basePrice + BigInt(Math.floor(Math.random() * Number(volatility)) - Number(volatility) / 2);
-      const close = open + BigInt(Math.floor(Math.random() * Number(volatility)) - Number(volatility) / 2);
-      const high = open > close ? open : close;
-      const low = open > close ? close : open;
-      
-      candles.push({
-        open,
-        high: high + BigInt(Math.floor(Math.random() * Number(volatility) / 10)),
-        low: low - BigInt(Math.floor(Math.random() * Number(volatility) / 10)),
-        close,
-        volume: BigInt(Math.floor(Math.random() * 1000000)),
-        timestamp: Math.floor(Date.now() / 1000) - (100 - i) * 3600,
-      });
-    }
-    
-    return candles;
-  }
 
   /**
    * Get recent trades
@@ -951,7 +868,7 @@ export class HyperliquidClient {
     }
 
     // Simulate deposit
-    return 'mock-vault-deposit-' + Date.now();
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   /**
@@ -959,7 +876,7 @@ export class HyperliquidClient {
    */
   async withdrawFromVault(vaultAddress: string, shares: bigint): Promise<string> {
     // Simulate withdrawal
-    return 'mock-vault-withdraw-' + Date.now();
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   // ============================================================================
@@ -985,14 +902,14 @@ export class HyperliquidClient {
    * Stake tokens
    */
   async stake(amount: bigint): Promise<string> {
-    return 'mock-stake-' + Date.now();
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   /**
    * Unstake tokens
    */
   async unstake(amount: bigint): Promise<string> {
-    return 'mock-unstake-' + Date.now();
+    throw new Error("Transaction execution failed and mock hashes are disabled");
   }
 
   // ============================================================================
