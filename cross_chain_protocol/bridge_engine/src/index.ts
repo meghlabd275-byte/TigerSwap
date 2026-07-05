@@ -1,3 +1,4 @@
+import { Interface } from "ethers";
 /**
  * TigerSwap Cross-Chain Protocol
  * 

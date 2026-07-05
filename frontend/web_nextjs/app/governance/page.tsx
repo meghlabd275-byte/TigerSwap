@@ -5,7 +5,8 @@ import {
   Box, Typography, Card, CardContent, Button, TextField,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow,
   Chip, IconButton, LinearProgress, Snackbar, Alert,
-  CircularProgress, Tabs, Tab, Divider, Avatar, Badge
+  CircularProgress, Tabs, Tab, Divider, Avatar, Badge,
+  Dialog, DialogTitle, DialogContent
 } from '@mui/material';
 import {
   HowToVote, CheckCircle, Cancel, Schedule, PlayArrow,

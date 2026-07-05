@@ -55,13 +55,13 @@ interface Transaction {
 // ============================================================================
 
 const DEFAULT_CHAINS: Chain[] = [
-  { id: 1, name: 'Ethereum', symbol: 'ETH', isEVM: true, explorer: 'https://etherscan.io', rpc: 'https://eth-mainnet.alchemyapi.io' },
+  { id: 1, name: 'Ethereum', symbol: 'ETH', isEVM: true, explorer: 'https://etherscan.io', rpc: process.env.NEXT_PUBLIC_ETH_RPC || 'https://eth.llamarpc.com' },
   { id: 56, name: 'BNB Chain', symbol: 'BNB', isEVM: true, explorer: 'https://bscscan.com', rpc: 'https://bsc-dataseed.binance.org' },
   { id: 137, name: 'Polygon', symbol: 'MATIC', isEVM: true, explorer: 'https://polygonscan.com', rpc: 'https://polygon-rpc.com' },
   { id: 42161, name: 'Arbitrum', symbol: 'ETH', isEVM: true, explorer: 'https://arbiscan.io', rpc: 'https://arb1.arbitrum.io' },
   { id: 10, name: 'Optimism', symbol: 'ETH', isEVM: true, explorer: 'https://optimistic.etherscan.io', rpc: 'https://mainnet.optimism.io' },
   { id: 8453, name: 'Base', symbol: 'ETH', isEVM: true, explorer: 'https://basescan.org', rpc: 'https://mainnet.base.org' },
-  { id: 43114, name: 'Avalanche', symbol: 'AVAX', isEVM: true explorer: 'https://snowtrace.io', rpc: 'https://api.avax.network' },
+  { id: 43114, name: 'Avalanche', symbol: 'AVAX', isEVM: true, explorer: 'https://snowtrace.io', rpc: 'https://api.avax.network' },
   { id: 101, name: 'Solana', symbol: 'SOL', isEVM: false, explorer: 'https://solscan.io', rpc: 'https://api.mainnet-beta.solana.com' },
 ];
 

@@ -475,7 +475,7 @@ export class DydxClient {
       };
     } catch (error) {
       // Fallback to mock data for development
-      return this.getMockOrderbook(marketId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -512,31 +512,6 @@ export class DydxClient {
   /**
    * Get mock orderbook for development
    */
-  private getMockOrderbook(marketId: number): Orderbook {
-    const basePrice = await this.getMarketPrice(marketId);
-    const bids: OrderbookLevel[] = [];
-    const asks: OrderbookLevel[] = [];
-    
-    // Generate realistic order book around market price
-    for (let i = 0; i < 25; i++) {
-      const offset = BigInt(i) * BigInt(1000);
-      bids.push({
-        price: basePrice - offset,
-        size: BigInt(Math.random() * 1000000 + 100000),
-      });
-      asks.push({
-        price: basePrice + offset,
-        size: BigInt(Math.random() * 1000000 + 100000),
-      });
-    }
-    
-    return {
-      bids,
-      asks,
-      marketId: marketId.toString(),
-      timestamp: Date.now(),
-    };
-  }
 
   // ============================================================================
   // Trading
@@ -794,7 +769,7 @@ export class DydxClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return 'mock-tx-' + Date.now();
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

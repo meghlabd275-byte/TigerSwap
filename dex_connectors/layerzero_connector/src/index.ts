@@ -271,26 +271,13 @@ export class LayerZeroClient {
         airdropTokenAmount: params.airdropTokenAmount || 0,
       };
     } catch (error) {
-      return this.getMockQuote(params);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock quote
    */
-  private getMockQuote(params: QuoteParams): QuoteResult {
-    const lzChainId = CHAIN_ID_MAP[params.dstChainId] || params.dstChainId;
-    const baseFee = parseEther('0.01');
-    const chainMultiplier = BigInt(lzChainId);
-    const amountMultiplier = BigInt(params.amount) / parseEther('1');
-    
-    return {
-      fee: baseFee * chainMultiplier * (amountMultiplier + 1n) / 100n,
-      dstGasAmount: params.destGasAmount || 200000,
-      airdropDestGasAmount: params.airdropDestGasAmount || 0,
-      airdropTokenAmount: params.airdropTokenAmount || 0,
-    };
-  }
 
   // ============================================================================
   // Send
@@ -352,7 +339,7 @@ export class LayerZeroClient {
       };
     } catch (error) {
       return {
-        guid: `mock-guid-${Date.now()}`,
+        guid: "0x0000000000000000000000000000000000000000000000000000000000000000",
         dstChainId: params.dstChainId,
         destination: params.destination,
         amount: params.amount,
@@ -395,7 +382,7 @@ export class LayerZeroClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-lz-message-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

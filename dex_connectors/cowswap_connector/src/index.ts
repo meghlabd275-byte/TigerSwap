@@ -251,42 +251,13 @@ export class CowswapClient {
 
       return await response.json();
     } catch (error) {
-      return this.getMockQuote(sellToken, buyToken, sellAmount, buyAmount, kind);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
   /**
    * Get mock quote
    */
-  private getMockQuote(
-    sellToken: string,
-    buyToken: string,
-    sellAmount: bigint,
-    buyAmount: bigint,
-    kind: 'sell' | 'buy'
-  ): Quote {
-    const rates: Record<string, bigint> = {
-      'ETH-USDC': parseEther('3500'),
-      'USDC-ETH': BigInt('285714285714285714'),
-    };
-
-    const key = `${sellToken}-${buyToken}`;
-    const rate = rates[key] || 1n;
-    const amount = kind === 'sell' ? sellAmount : sellAmount * rate / parseEther('1');
-    const fee = amount / 100n;
-
-    return {
-      sellToken,
-      buyToken,
-      sellAmount: sellAmount,
-      buyAmount: amount - fee,
-      validTo: Math.floor(Date.now() / 1000) + 3600,
-      appData: '0x',
-      feeAmount: fee,
-      amount,
-      chainId: this.config.chainId,
-    };
-  }
 
   // ============================================================================
   // Order Signing
@@ -350,7 +321,7 @@ export class CowswapClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-cowswap-presign-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -489,7 +460,7 @@ export class CowswapClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-cowswap-approve-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 

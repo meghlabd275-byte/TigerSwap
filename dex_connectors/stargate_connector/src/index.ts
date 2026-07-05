@@ -242,7 +242,7 @@ export class StargateClient {
       this.poolCache.set(poolId, pool);
       return pool;
     } catch (error) {
-      return this.getMockPool(poolId);
+      throw new Error("Mock data is disabled in production");
     }
   }
 
@@ -264,44 +264,6 @@ export class StargateClient {
   /**
    * Get mock pool
    */
-  private getMockPool(poolId: number): PoolInfo {
-    const mockPools: Record<number, PoolInfo> = {
-      1: {
-        token: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
-        poolId: 1,
-        lpToken: '0x1aB3C6f4d4aC4D3c4D3c4D3C4D3C4D3',
-        totalLiquidity: parseEther('100000000'),
-        decimals: 6,
-        factor: BigInt(1000),
-        convertRate: parseEther('1'),
-        minSwapAmount: BigInt(100),
-        maxSwapAmount: parseEther('10000000'),
-      },
-      2: {
-        token: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-        poolId: 2,
-        lpToken: '0x2aB3C6f4d4aC4D3c4D3c4D3C4D3C4D3',
-        totalLiquidity: parseEther('50000000'),
-        decimals: 6,
-        factor: BigInt(1000),
-        convertRate: parseEther('1'),
-        minSwapAmount: BigInt(100),
-        maxSwapAmount: parseEther('10000000'),
-      },
-    };
-
-    return mockPools[poolId] || {
-      token: '0x0000000000000000000000000000000000000000',
-      poolId,
-      lpToken: '0x0000000000000000000000000000000000000000',
-      totalLiquidity: parseEther('1000000'),
-      decimals: 6,
-      factor: BigInt(1000),
-      convertRate: parseEther('1'),
-      minSwapAmount: BigInt(100),
-      maxSwapAmount: parseEther('10000000'),
-    };
-  }
 
   // ============================================================================
   // Quotes
@@ -357,7 +319,7 @@ export class StargateClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-stargate-swap-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -382,7 +344,7 @@ export class StargateClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-stargate-add-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -403,7 +365,7 @@ export class StargateClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-stargate-remove-${Date.now()}`;
+      throw new Error("Transaction execution failed and mock hashes are disabled");
     }
   }
 
@@ -461,7 +423,7 @@ export class StargateClient {
       };
     } catch (error) {
       return {
-        txHash: `mock-stargate-send-${Date.now()}`,
+        txHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
         chainId: params.dstChainId,
         amount: params.amount,
         fee: params.fee,

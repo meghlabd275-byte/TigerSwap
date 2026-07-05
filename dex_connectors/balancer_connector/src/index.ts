@@ -264,7 +264,7 @@ export class BalancerClient {
         holdersCount: p.holdersCount,
       }));
     } catch (error) {
-      return this.getMockPools();
+      throw new Error(`Failed to fetch Balancer pools: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 
@@ -282,28 +282,6 @@ export class BalancerClient {
     } catch (error) {
       return null;
     }
-  }
-
-  /**
-   * Get mock pools
-   */
-  private getMockPools(): Pool[] {
-    return [
-      {
-        id: '0x0000000000000000000000000000000000000001',
-        address: '0x0000000000000000000000000000000000000001',
-        poolType: 'WEIGHTED',
-        tokens: [
-          { address: '0xEeeeeEeeeEeEeEeEeEeEeEeEeEeEeEeEeEeEeE', balance: parseEther('1000'), weight: parseEther('0.5'), symbol: 'ETH', decimals: 18 },
-          { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', balance: parseEther('3500000'), weight: parseEther('0.5'), symbol: 'USDC', decimals: 6 },
-        ],
-        swapFee: parseEther('0.003'),
-        totalShares: parseEther('1000000'),
-        totalLiquidity: parseEther('4500000'),
-        tokensCount: 2,
-        holdersCount: 100,
-      },
-    ];
   }
 
   // ============================================================================
@@ -365,19 +343,8 @@ export class BalancerClient {
       this.cachedQuotes.set(cacheKey, quote);
       return quote;
     } catch (error) {
-      return this.getMockQuote(amountIn);
+      throw new Error(`Failed to fetch Balancer quote: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
-  }
-
-  /**
-   * Get mock quote
-   */
-  private getMockQuote(amountIn: bigint): Quote {
-    return {
-      amount: amountIn * 3499n / 1000n,
-      value: amountIn,
-      priceImpact: parseEther('0.001'),
-    };
   }
 
   // ============================================================================
@@ -452,7 +419,7 @@ export class BalancerClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-balancer-batch-${Date.now()}`;
+      throw new Error(`Balancer batch swap failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 
@@ -485,7 +452,7 @@ export class BalancerClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-balancer-join-${Date.now()}`;
+      throw new Error(`Balancer join pool failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 
@@ -514,7 +481,7 @@ export class BalancerClient {
       await tx.wait();
       return tx.hash;
     } catch (error) {
-      return `mock-balancer-exit-${Date.now()}`;
+      throw new Error(`Balancer exit pool failed: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 

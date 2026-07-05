@@ -1,3 +1,4 @@
+import { Interface } from "ethers";
 /**
  * TigerSwap Wallet Ecosystem - HD Wallet
  * 

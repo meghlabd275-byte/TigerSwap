@@ -1,3 +1,4 @@
+import { Interface } from "ethers";
 /**
  * TigerSwap EVM Blockchain SDK
  * 
@@ -134,7 +135,7 @@ export const CHAIN_REGISTRY: Record<number, EVMChainConfig> = {
     chainId: 1,
     name: 'Ethereum',
     symbol: 'ETH',
-    rpcUrl: '${TIGERSWAP_ETHEREUM_RPC_URL}',
+    rpcUrl: process.env.TIGERSWAP_ETHEREUM_RPC_URL || 'https://eth.llamarpc.com',
     explorerUrl: 'https://etherscan.io',
     explorerApiUrl: 'https://api.etherscan.io/api',
     nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
@@ -144,7 +145,7 @@ export const CHAIN_REGISTRY: Record<number, EVMChainConfig> = {
     chainId: 11155111,
     name: 'Sepolia',
     symbol: 'ETH',
-    rpcUrl: '${TIGERSWAP_SEPOLIA_RPC_URL}',
+    rpcUrl: process.env.TIGERSWAP_SEPOLIA_RPC_URL || 'https://rpc.sepolia.org',
     explorerUrl: 'https://sepolia.etherscan.io',
     explorerApiUrl: 'https://api-sepolia.etherscan.io/api',
     nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },

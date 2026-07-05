@@ -37,11 +37,11 @@ TigerSwap is **not production-ready yet**. This document replaces the previous c
 ## Release gates
 
 ### Phase 1: Honest and buildable
-- [ ] Root TypeScript configuration has no invalid compiler options.
-- [ ] Package-level TypeScript configs exist for buildable TS packages.
-- [ ] Frontend production build passes.
-- [ ] Root build script validates JS/TS, Go, Rust, and Solidity scopes that are ready for CI.
-- [ ] This tracker is updated when a module changes readiness state.
+- [x] Root TypeScript configuration has no invalid compiler options.
+- [x] Package-level TypeScript configs exist for buildable TS packages.
+- [x] Frontend production build passes.
+- [x] Root build script validates JS/TS, Go, Rust, and Solidity scopes that are ready for CI.
+- [x] This tracker is updated when a module changes readiness state.
 
 ### Phase 2: No unsafe demo behavior in production
 - [ ] Browser extension never reports swap/transfer success unless the API returns a transaction hash.

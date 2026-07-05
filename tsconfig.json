@@ -20,8 +20,8 @@
     "paths": {
       "@/*": ["src/*"],
       "@tigerswap/*": ["packages/*"]
-    }
+    },
+    "jsx": "preserve"
   },
-  "include": ["types/**/*.d.ts"],
   "exclude": ["node_modules", "dist", "build", "target"]
 }

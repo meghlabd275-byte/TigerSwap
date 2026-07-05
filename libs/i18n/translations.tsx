@@ -715,12 +715,12 @@ export function TranslationProvider({ children }: { children: ReactNode }) {
   }, [language]);
 
   const t = (key: string, params?: Record<string, string | number>): string => {
-    const translation = translations[language]?.[key] || translations.en[key] || key;
+    const translation = translations[language][key] || translations.en[key] || key;
     
     if (!params) return translation;
     
     return translation.replace(/\{(\w+)\}/g, (_, paramKey) => {
-      return params[paramKey]?.toString() || `{${paramKey}}`;
+      return params[paramKey].toString() || `{${paramKey}}`;
     });
   };
 
