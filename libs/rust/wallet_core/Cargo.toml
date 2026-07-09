@@ -1,0 +1,63 @@
+[package]
+name = "tiger-wallet-core"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap"]
+license = "MIT"
+description = "High-performance secure wallet core for TigerSwap DEX"
+
+[dependencies]
+# Cryptography
+k256 = { version = "0.15", features = ["ecdsa", "serde"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core", "serde"] }
+sha2 = "0.10"
+sha3 = "0.10"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", features = ["simple"] }
+argon2 = "0.5"
+rand = "0.8"
+zeroize = { version = "1.7", features = ["derive"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async
+tokio = { version = "1.35", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Base64 encoding
+base64 = "0.22"
+
+# Hex encoding
+hex = "0.4"
+
+[features]
+default = ["std"]
+std = []
+
+# Enable WASM support
+wasm = ["getrandom/wasm-bindgen"]
+
+[lib]
+name = "tiger_wallet_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "wallet-cli"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
