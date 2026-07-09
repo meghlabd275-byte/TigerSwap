@@ -1,11 +1,20 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Search, ArrowDown, Settings, RefreshCw, Wallet, TrendingUp, Activity, X } from 'lucide-react';
+import { Search, ArrowDown, Settings, RefreshCw, Wallet, TrendingUp, Activity, X, Loader2 } from 'lucide-react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { calculateSwapOutput, getTokensWithPrices, PriceData } from '../lib/services/priceService';
 
-// Token list
-const TOKENS = [
+// Token interface
+interface Token {
+  symbol: string;
+  name: string;
+  address: string;
+  logo: string;
+}
+
+// Token list with real contract addresses
+const TOKENS: Token[] = [
   { symbol: 'ETH', name: 'Ethereum', address: '0x0000000000000000000000000000000000000000', logo: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png' },
   { symbol: 'USDT', name: 'Tether USD', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', logo: 'https://assets.coingecko.com/coins/images/325/small/Tether.png' },
   { symbol: 'USDC', name: 'USD Coin', address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', logo: 'https://assets.coingecko.com/coins/images/6319/small/USD_Coin_icon.png' },
@@ -34,26 +43,58 @@ const CHART_DATA = [
 ];
 
 export default function SwapPage() {
-  const [fromToken, setFromToken] = useState(TOKENS[0]);
-  const [toToken, setToToken] = useState(TOKENS[1]);
-  const [fromAmount, setFromAmount] = useState('');
-  const [toAmount, setToAmount] = useState('');
-  const [slippage, setSlippage] = useState('0.5');
-  const [showTokenSelect, setShowTokenSelect] = useState(false);
+  const [fromToken, setFromToken] = useState<Token>(TOKENS[0]);
+  const [toToken, setToToken] = useState<Token>(TOKENS[1]);
+  const [fromAmount, setFromAmount] = useState<string>('');
+  const [toAmount, setToAmount] = useState<string>('');
+  const [slippage, setSlippage] = useState<string>('0.5');
+  const [showTokenSelect, setShowTokenSelect] = useState<boolean>(false);
   const [selectingToken, setSelectingToken] = useState<'from' | 'to'>('from');
-  const [isSwapping, setIsSwapping] = useState(false);
-  const [currentMarket, setCurrentMarket] = useState('ETH-USDT');
+  const [isSwapping, setIsSwapping] = useState<boolean>(false);
+  const [currentMarket, setCurrentMarket] = useState<string>('ETH-USDT');
+  const [isLoadingPrice, setIsLoadingPrice] = useState<boolean>(false);
+  const [priceData, setPriceData] = useState<Map<string, PriceData>>(new Map());
 
-  // Calculate swap output (simplified)
+  // Fetch prices on mount
   useEffect(() => {
-    if (fromAmount && fromToken && toToken) {
-      // Mock calculation - in production would call API
-      const rate = fromToken.symbol === 'ETH' && toToken.symbol === 'USDT' ? 3250 : 1;
-      setToAmount((parseFloat(fromAmount) * rate).toFixed(2));
-    } else {
-      setToAmount('');
-    }
-  }, [fromAmount, fromToken, toToken]);
+    const loadPrices = async () => {
+      const prices = await getTokensWithPrices();
+      const priceMap = new Map<string, PriceData>();
+      prices.forEach(p => priceMap.set(p.symbol, p));
+      setPriceData(priceMap);
+    };
+    loadPrices();
+  }, []);
+
+  // Calculate swap output using real prices
+  useEffect(() => {
+    const calculateOutput = async () => {
+      if (fromAmount && fromToken && toToken && parseFloat(fromAmount) > 0) {
+        setIsLoadingPrice(true);
+        try {
+          const quote = await calculateSwapOutput(fromToken.symbol, toToken.symbol, fromAmount);
+          if (quote) {
+            setToAmount(quote.toAmount);
+          } else {
+            // Fallback calculation if API fails
+            const fromPrice = priceData.get(fromToken.symbol)?.price || 1;
+            const toPrice = priceData.get(toToken.symbol)?.price || 1;
+            const rate = fromPrice / toPrice;
+            setToAmount((parseFloat(fromAmount) * rate).toFixed(toPrice < 1 ? 8 : 2));
+          }
+        } catch (error) {
+          console.error('Price calculation error:', error);
+        } finally {
+          setIsLoadingPrice(false);
+        }
+      } else {
+        setToAmount('');
+      }
+    };
+
+    const debounceTimer = setTimeout(calculateOutput, 300);
+    return () => clearTimeout(debounceTimer);
+  }, [fromAmount, fromToken, toToken, priceData]);
 
   const handleSwap = async () => {
     if (!fromAmount || !toAmount) return;
@@ -67,7 +108,7 @@ export default function SwapPage() {
     alert('Swap completed successfully!');
   };
 
-  const handleTokenSelect = (token: typeof TOKENS[0]) => {
+  const handleTokenSelect = (token: Token) => {
     if (selectingToken === 'from') {
       setFromToken(token);
     } else {
