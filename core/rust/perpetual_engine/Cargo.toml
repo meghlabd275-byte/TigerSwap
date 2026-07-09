@@ -1,0 +1,30 @@
+[package]
+name = "tiger-perpetual-engine"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap"]
+description = "High-performance perpetual trading engine"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1.33", features = ["serde", "tokio"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+tracing = "0.1"
+parking_lot = "0.12"
+sha2 = "0.10"
+
+[lib]
+name = "tiger_perpetual_engine"
+path = "src/lib.rs"
+
+[[bin]]
+name = "perpetual-engine"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
