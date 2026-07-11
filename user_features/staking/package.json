@@ -1,9 +1,0 @@
-{
-  "name": "@tigerswap/staking",
-  "version": "1.0.0",
-  "description": "TigerSwap Staking - Native token staking and vesting",
-  "main": "src/index.ts",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "jest" },
-  "dependencies": {},
-  "devDependencies": { "typescript": "^5.3.0" }
-}

@@ -1,9 +1,0 @@
-{
-  "name": "@tigerswap/launchpad",
-  "version": "1.0.0",
-  "description": "TigerSwap Launchpad - Native IDO/IEO platform",
-  "main": "src/index.ts",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "jest" },
-  "dependencies": {},
-  "devDependencies": { "typescript": "^5.3.0" }
-}

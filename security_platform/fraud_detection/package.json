@@ -1,9 +1,0 @@
-{
-  "name": "@tigerswap/fraud-detection",
-  "version": "1.0.0",
-  "description": "TigerSwap Security - Fraud detection, rate limiting, circuit breaker",
-  "main": "src/index.ts",
-  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "jest" },
-  "dependencies": {},
-  "devDependencies": { "typescript": "^5.3.0" }
-}

@@ -1,1 +1,0 @@
-import React from 'react'; import { Box, Typography } from '@mui/material'; const Security: React.FC = () => { return <Box><Typography variant="h4">Security</Typography></Box>; }; export default Security;
