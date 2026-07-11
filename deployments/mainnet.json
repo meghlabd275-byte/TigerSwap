@@ -1,0 +1,36 @@
+{
+  "name": "tigerswap-mainnet",
+  "version": "1.0.0",
+  "chainId": 1,
+  "contracts": {
+    "TigerRouter": {
+      "address": "0x0000000000000000000000000000000000000001",
+      "abi": []
+    },
+    "TigerFactory": {
+      "address": "0x0000000000000000000000000000000000000002",
+      "abi": []
+    },
+    "TigerToken": {
+      "address": "0x0000000000000000000000000000000000000003",
+      "abi": []
+    },
+    "TIGER": {
+      "address": "0x0000000000000000000000000000000000000003",
+      "symbol": "TIGER",
+      "name": "TigerSwap Token",
+      "decimals": 18,
+      "maxSupply": "1000000000"
+    }
+  },
+  "parameters": {
+    "factoryFee": 30,
+    "routerFee": 3,
+    "governanceDelay": 86400,
+    "maxSlippage": 1000
+  },
+  "oracles": {
+    "chainlink": "0x000000000000000000000000000000000000000C",
+    "pyth": "0x000000000000000000000000000000000000000P"
+  }
+}
