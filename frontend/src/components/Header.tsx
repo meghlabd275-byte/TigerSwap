@@ -42,6 +42,9 @@ export function Header() {
             <Link href="/wallet" className="px-3 py-2 text-sm font-medium rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-white/5">
               Wallet
             </Link>
+            <Link href="/admin" className="px-3 py-2 text-sm font-medium rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-white/5">
+              Admin
+            </Link>
             
             {/* Features Dropdown */}
             <div className="relative group">
