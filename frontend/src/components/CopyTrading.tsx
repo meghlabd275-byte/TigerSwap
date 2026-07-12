@@ -193,7 +193,7 @@ export function CopyTrading({ isAdmin = false }: CopyTradingProps) {
     }, 2000);
   };
 
-  const allStrategies = [...new Set(MOCK_TRADERS.flatMap(t => t.strategies))];
+  const allStrategies = Array.from(new Set(MOCK_TRADERS.flatMap((t: Trader) => t.strategies)));
 
   return (
     <div className="space-y-6">
