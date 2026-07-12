@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Wallet, Menu, X, ChevronDown, Rocket, Zap, Shield, Globe } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import Link from 'next/link';
 
 export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -38,6 +39,9 @@ export function Header() {
             <NavLink href="#perpetuals">Perpetuals</NavLink>
             <NavLink href="#bridge">Bridge</NavLink>
             <NavLink href="#staking">Staking</NavLink>
+            <Link href="/wallet" className="px-3 py-2 text-sm font-medium rounded-lg transition-colors text-gray-400 hover:text-white hover:bg-white/5">
+              Wallet
+            </Link>
             
             {/* Features Dropdown */}
             <div className="relative group">
