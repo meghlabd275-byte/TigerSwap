@@ -20,14 +20,33 @@ var (
 )
 
 func InitDB() (*gorm.DB, error) {
-	host := getEnv("DB_HOST", "localhost")
-	port := getEnv("DB_PORT", "5432")
-	user := getEnv("DB_USER", "tigerswap")
-	password := getEnv("DB_PASSWORD", "tigerswap")
-	dbname := getEnv("DB_NAME", "tigerswap")
+	// All database credentials must be provided via environment variables
+	// No defaults for security - fail if not configured
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	user := os.Getenv("DB_USER")
+	password := os.Getenv("DB_PASSWORD")
+	dbname := os.Getenv("DB_NAME")
+
+	// Validate required environment variables
+	if host == "" {
+		return nil, fmt.Errorf("DB_HOST environment variable is required")
+	}
+	if user == "" {
+		return nil, fmt.Errorf("DB_USER environment variable is required")
+	}
+	if password == "" {
+		return nil, fmt.Errorf("DB_PASSWORD environment variable is required")
+	}
+	if dbname == "" {
+		return nil, fmt.Errorf("DB_NAME environment variable is required")
+	}
+	if port == "" {
+		port = "5432" // Default only if explicitly empty
+	}
 
 	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%s sslmode=disable TimeZone=UTC",
+		"host=%s user=%s password=%s dbname=%s port=%s sslmode=require TimeZone=UTC",
 		host, user, password, dbname, port,
 	)
 

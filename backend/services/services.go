@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -548,10 +549,15 @@ type AuthService struct {
 }
 
 func NewAuthService(db *gorm.DB) *AuthService {
-	secret := []byte("tigerswap-jwt-secret-change-in-production")
+	// JWT secret must be provided via environment variable
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		panic("JWT_SECRET environment variable is required for security")
+	}
+	
 	return &AuthService{
 		db:           db,
-		jwtSecret:    secret,
+		jwtSecret:    []byte(jwtSecret),
 		accessExpiry: time.Hour * 24 * 7, // 7 days
 	}
 }
