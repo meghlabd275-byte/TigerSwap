@@ -318,63 +318,222 @@ func (s *SwapService) GetRecentTrades(c *gin.Context) {
 	c.JSON(200, gin.H{"trades": trades})
 }
 
+// Global swap executor instance
+var globalSwapExecutor *SwapExecutor
+
+func SetSwapExecutor(exec *SwapExecutor) {
+	globalSwapExecutor = exec
+}
+
 func (s *SwapService) ExecuteSwap(c *gin.Context) {
 	var req struct {
-		TokenIn  string `json:"token_in" binding:"required"`
-		TokenOut string `json:"token_out" binding:"required"`
-		Amount   string `json:"amount" binding:"required"`
-		To       string `json:"to" binding:"required"`
+		ChainID    int64  `json:"chain_id"`
+		PrivateKey string `json:"private_key" binding:"required"`
+		TokenIn    string `json:"token_in" binding:"required"`
+		TokenOut   string `json:"token_out" binding:"required"`
+		Amount     string `json:"amount" binding:"required"`
+		To         string `json:"to" binding:"required"`
+		Slippage   string `json:"slippage"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Mock transaction
-	tx := models.Transaction{
-		Hash:       "0x" + generateRandomHex(64),
-		Type:       "swap",
-		FromToken:  req.TokenIn,
-		ToToken:    req.TokenOut,
-		FromAmount: req.Amount,
-		Status:     "confirmed",
-		Timestamp:  time.Now(),
+	chainID := req.ChainID
+	if chainID == 0 {
+		chainID = 1 // Default to Ethereum
 	}
-	s.db.Create(&tx)
 
-	c.JSON(200, gin.H{
-		"success":      true,
-		"transaction":  tx,
-		"message":      "Swap executed successfully",
-	})
+	slippage := "0.5"
+	if req.Slippage != "" {
+		slippage = req.Slippage
+	}
+
+	// Execute real swap via swap executor
+	if globalSwapExecutor != nil {
+		result, err := globalSwapExecutor.ExecuteSwap(
+			c.Request.Context(),
+			chainID,
+			req.PrivateKey,
+			req.TokenIn,
+			req.TokenOut,
+			req.Amount,
+			req.To,
+			slippage,
+		)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+
+		// Record transaction
+		tx := models.Transaction{
+			Hash:       result.TxHash,
+			Type:       "swap",
+			FromToken:  req.TokenIn,
+			ToToken:    req.TokenOut,
+			FromAmount: req.Amount,
+			Status:     "confirmed",
+			Timestamp:  time.Now(),
+		}
+		s.db.Create(&tx)
+
+		c.JSON(200, gin.H{
+			"success":      true,
+			"transaction":  tx,
+			"tx_hash":     result.TxHash,
+			"message":      "Swap executed successfully",
+		})
+		return
+	}
+
+	// Fallback if no executor configured
+	c.JSON(500, gin.H{"error": "Swap executor not configured"})
+}
+
+// Global blockchain client for real transactions
+var globalBlockchainClient *BlockchainClient
+
+func SetBlockchainClient(client *BlockchainClient) {
+	globalBlockchainClient = client
 }
 
 func (s *SwapService) ApproveToken(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"success":     true,
-		"tx_hash":     "0x" + generateRandomHex(64),
-		"message":     "Token approved",
-	})
+	var req struct {
+		ChainID    int64  `json:"chain_id"`
+		PrivateKey string `json:"private_key" binding:"required"`
+		TokenAddr  string `json:"token_address" binding:"required"`
+		Amount     string `json:"amount" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	chainID := req.ChainID
+	if chainID == 0 {
+		chainID = 1
+	}
+
+	// Execute real approval transaction
+	if globalBlockchainClient != nil {
+		txHash, err := globalBlockchainClient.ApproveToken(
+			c.Request.Context(),
+			chainID,
+			req.PrivateKey,
+			req.TokenAddr,
+			req.Amount,
+		)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{
+			"success":  true,
+			"tx_hash": txHash,
+			"message": "Token approved",
+		})
+		return
+	}
+
+	c.JSON(500, gin.H{"error": "Blockchain client not configured"})
 }
 
 func (s *SwapService) CreateOrder(c *gin.Context) {
+	// Orders handled by perpetual engine
 	c.JSON(200, gin.H{"order_id": uuid.New().String(), "status": "pending"})
 }
 
 func (s *SwapService) GetOrders(c *gin.Context) {
+	// Orders handled by perpetual engine
 	c.JSON(200, gin.H{"orders": []interface{}{}})
 }
 
 func (s *SwapService) CancelOrder(c *gin.Context) {
+	// Orders handled by perpetual engine
 	c.JSON(200, gin.H{"success": true, "status": "cancelled"})
 }
 
 func (s *SwapService) AddLiquidity(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true, "tx_hash": "0x" + generateRandomHex(64)})
+	var req struct {
+		ChainID    int64  `json:"chain_id"`
+		PrivateKey string `json:"private_key" binding:"required"`
+		TokenA     string `json:"token_a" binding:"required"`
+		TokenB     string `json:"token_b" binding:"required"`
+		AmountA    string `json:"amount_a" binding:"required"`
+		AmountB    string `json:"amount_b" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	chainID := req.ChainID
+	if chainID == 0 {
+		chainID = 1
+	}
+
+	// Execute real add liquidity via swap executor
+	if globalSwapExecutor != nil {
+		txHash, err := globalSwapExecutor.AddLiquidity(
+			c.Request.Context(),
+			chainID,
+			req.PrivateKey,
+			req.TokenA,
+			req.TokenB,
+			req.AmountA,
+			req.AmountB,
+		)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "tx_hash": txHash})
+		return
+	}
+
+	c.JSON(500, gin.H{"error": "Swap executor not configured"})
 }
 
 func (s *SwapService) RemoveLiquidity(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true, "tx_hash": "0x" + generateRandomHex(64)})
+	var req struct {
+		ChainID    int64  `json:"chain_id"`
+		PrivateKey string `json:"private_key" binding:"required"`
+		PoolAddr   string `json:"pool_address" binding:"required"`
+		Liquidity  string `json:"liquidity" binding:"required"`
+		AmountA    string `json:"amount_a"`
+		AmountB    string `json:"amount_b"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	chainID := req.ChainID
+	if chainID == 0 {
+		chainID = 1
+	}
+
+	if globalSwapExecutor != nil {
+		txHash, err := globalSwapExecutor.RemoveLiquidity(
+			c.Request.Context(),
+			chainID,
+			req.PrivateKey,
+			req.PoolAddr,
+			req.Liquidity,
+			req.AmountA,
+			req.AmountB,
+		)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"success": true, "tx_hash": txHash})
+		return
+	}
+
+	c.JSON(500, gin.H{"error": "Swap executor not configured"})
 }
 
 func (s *SwapService) GetPositions(c *gin.Context) {
