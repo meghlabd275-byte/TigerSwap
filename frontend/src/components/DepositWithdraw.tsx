@@ -74,8 +74,29 @@ export function DepositWithdraw({ currentWallet, tokens, chainId }: DepositWithd
   const handleDeposit = async () => {
     if (!depositAmount || parseFloat(depositAmount) <= 0) return;
     setIsProcessing(true);
-    // Simulate deposit processing
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    try {
+      // Call real deposit API to generate deposit address
+      const response = await fetch('/api/v1/wallet/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: currentWallet?.address,
+          chain_id: chainId,
+          token: selectedToken?.symbol,
+          amount: depositAmount
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        // Display the deposit address to user
+        console.log('Deposit address:', data.deposit_address);
+      }
+    } catch (error) {
+      console.error('Deposit failed:', error);
+    }
+    
     setIsProcessing(false);
     setDepositAmount('');
   };

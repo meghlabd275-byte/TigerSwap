@@ -52,13 +52,52 @@ export function SwapInterface() {
              token.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  // Real price fetching from API
   useEffect(() => {
-    // Simulate price calculation
-    if (amountIn && tokenIn && tokenOut) {
-      // Mock conversion rate
-      const rate = Math.random() * 0.1 + 0.9;
-      setAmountOut((parseFloat(amountIn) * rate).toFixed(6));
-    }
+    const fetchPrice = async () => {
+      if (amountIn && tokenIn && tokenOut && parseFloat(amountIn) > 0) {
+        try {
+          // Call real API endpoint for price quote
+          const response = await fetch('/api/v1/swap/quote', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chain_id: tokenIn.chainId,
+              from_token: tokenIn.address,
+              to_token: tokenOut.address,
+              amount: amountIn
+            })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            if (data.amount_out) {
+              setAmountOut(data.amount_out);
+            }
+          } else {
+            // Fallback: fetch from price service
+            const priceRes = await fetch(`/api/v1/prices?symbols=${tokenIn.symbol},${tokenOut.symbol}`);
+            if (priceRes.ok) {
+              const prices = await priceRes.json();
+              const inPrice = prices[tokenIn.symbol]?.usd || 1;
+              const outPrice = prices[tokenOut.symbol]?.usd || 1;
+              const rate = inPrice / outPrice;
+              setAmountOut((parseFloat(amountIn) * rate * 0.995).toFixed(6)); // 0.5% fee
+            }
+          }
+        } catch (error) {
+          console.error('Failed to fetch price:', error);
+          // Fallback: use stored price from token list
+          if (tokenIn.price && tokenOut.price) {
+            const rate = tokenIn.price / tokenOut.price;
+            setAmountOut((parseFloat(amountIn) * rate * 0.995).toFixed(6));
+          }
+        }
+      }
+    };
+    
+    const debounceTimer = setTimeout(fetchPrice, 300);
+    return () => clearTimeout(debounceTimer);
   }, [amountIn, tokenIn, tokenOut]);
 
   const handleSwap = async () => {
@@ -66,17 +105,40 @@ export function SwapInterface() {
     
     setIsSwapping(true);
     
-    // Simulate swap execution
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    setIsSwapping(false);
-    setSwapSuccess(true);
-    
-    setTimeout(() => {
-      setSwapSuccess(false);
-      setAmountIn('');
-      setAmountOut('');
-    }, 3000);
+    try {
+      // Call real swap execution API
+      const response = await fetch('/api/v1/swap/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chain_id: tokenIn.chainId,
+          from_token: tokenIn.address,
+          to_token: tokenOut.address,
+          amount: amountIn,
+          slippage: slippage.toString()
+        })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.tx_hash) {
+          setSwapSuccess(true);
+          setTimeout(() => {
+            setSwapSuccess(false);
+            setAmountIn('');
+            setAmountOut('');
+          }, 3000);
+        }
+      } else {
+        throw new Error('Swap failed');
+      }
+    } catch (error) {
+      console.error('Swap execution failed:', error);
+      // Show error to user
+      alert('Swap failed. Please try again or use a different slippage.');
+    } finally {
+      setIsSwapping(false);
+    }
   };
 
   const handleSelectToken = (token: Token) => {

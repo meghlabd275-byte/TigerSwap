@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { 
   TrendingUp, 
@@ -14,23 +14,79 @@ import {
   Layers
 } from 'lucide-react';
 
-const PERPETUAL_PAIRS = [
-  { symbol: 'BTC-PERP', name: 'Bitcoin Perpetual', price: 68500, change: 2.5, volume: '1.2B', long: 65, short: 35, icon: '₿' },
-  { symbol: 'ETH-PERP', name: 'Ethereum Perpetual', price: 3450, change: 1.8, volume: '890M', long: 58, short: 42, icon: 'Ξ' },
-  { symbol: 'SOL-PERP', name: 'Solana Perpetual', price: 145, change: -1.2, volume: '450M', long: 45, short: 55, icon: '☀️' },
-  { symbol: 'ARB-PERP', name: 'Arbitrum Perpetual', price: 1.85, change: 3.2, volume: '120M', long: 70, short: 30, icon: '🔵' },
-  { symbol: 'AVAX-PERP', name: 'Avalanche Perpetual', price: 38.5, change: 0.8, volume: '95M', long: 52, short: 48, icon: '🔺' },
+// Real perpetual pairs from API - updated dynamically
+interface PerpetualPair {
+  symbol: string;
+  name: string;
+  price: number;
+  change: number;
+  volume: string;
+  long: number;
+  short: number;
+  icon: string;
+}
+
+const DEFAULT_PAIRS: PerpetualPair[] = [
+  { symbol: 'BTC-PERP', name: 'Bitcoin Perpetual', price: 0, change: 0, volume: '0', long: 50, short: 50, icon: '₿' },
+  { symbol: 'ETH-PERP', name: 'Ethereum Perpetual', price: 0, change: 0, volume: '0', long: 50, short: 50, icon: 'Ξ' },
+  { symbol: 'SOL-PERP', name: 'Solana Perpetual', price: 0, change: 0, volume: '0', long: 50, short: 50, icon: '☀️' },
+  { symbol: 'ARB-PERP', name: 'Arbitrum Perpetual', price: 0, change: 0, volume: '0', long: 50, short: 50, icon: '🔵' },
+  { symbol: 'AVAX-PERP', name: 'Avalanche Perpetual', price: 0, change: 0, volume: '0', long: 50, short: 50, icon: '🔺' },
 ];
+
+// Fetch real prices from API
+const fetchPerpetualPrices = async (): Promise<PerpetualPair[]> => {
+  try {
+    const response = await fetch('/api/v1/perpetuals/prices');
+    if (response.ok) {
+      const data = await response.json();
+      return data.pairs || DEFAULT_PAIRS;
+    }
+  } catch (error) {
+    console.error('Failed to fetch perpetual prices:', error);
+  }
+  // Fallback to fetching individual token prices
+  try {
+    const priceRes = await fetch('/api/v1/prices?symbols=BTC,ETH,SOL,ARB,AVAX');
+    if (priceRes.ok) {
+      const prices = await priceRes.json();
+      return DEFAULT_PAIRS.map(pair => {
+        const symbol = pair.symbol.replace('-PERP', '');
+        const priceData = prices[symbol];
+        return {
+          ...pair,
+          price: priceData?.usd || 0,
+          change: priceData?.usd_change_24h || 0,
+          volume: priceData?.usd_volume_24h ? `${(priceData.usd_volume_24h / 1e9).toFixed(1)}B` : '0'
+        };
+      });
+    }
+  } catch (error) {
+    console.error('Failed to fetch prices:', error);
+  }
+  return DEFAULT_PAIRS;
+};
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20, 50];
 
 export function PerpetualTrading() {
-  const [selectedPair, setSelectedPair] = useState(PERPETUAL_PAIRS[0]);
+  const [perpPairs, setPerpPairs] = useState<PerpetualPair[]>(DEFAULT_PAIRS);
+  const [selectedPair, setSelectedPair] = useState<PerpetualPair>(DEFAULT_PAIRS[0]);
   const [leverage, setLeverage] = useState(10);
   const [orderType, setOrderType] = useState<'limit' | 'market'>('limit');
   const [positionSide, setPositionSide] = useState<'long' | 'short'>('long');
   const [amount, setAmount] = useState('');
   const [limitPrice, setLimitPrice] = useState('');
+  
+  // Fetch real prices on mount
+  useEffect(() => {
+    fetchPerpetualPrices().then(pairs => {
+      setPerpPairs(pairs);
+      if (pairs.length > 0) {
+        setSelectedPair(pairs[0]);
+      }
+    });
+  }, []);
 
   const estimatedCollateral = amount ? (parseFloat(amount) * selectedPair.price / leverage).toFixed(2) : '0.00';
   const liquidationPrice = positionSide === 'long'
@@ -53,7 +109,7 @@ export function PerpetualTrading() {
       {/* Market Ticker */}
       <div className="mb-6 overflow-x-auto">
         <div className="flex space-x-2">
-          {PERPETUAL_PAIRS.map((pair) => (
+          {perpPairs.map((pair) => (
             <button
               key={pair.symbol}
               onClick={() => setSelectedPair(pair)}
