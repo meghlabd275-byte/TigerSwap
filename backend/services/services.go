@@ -144,6 +144,13 @@ func NewSwapService(db *gorm.DB, redis *redis.Client) *SwapService {
 	return &SwapService{db: db, redis: redis}
 }
 
+// PriceAggregator instance - injected via constructor in production
+var globalPriceAggregator *PriceAggregator
+
+func SetPriceAggregator(agg *PriceAggregator) {
+	globalPriceAggregator = agg
+}
+
 func (s *SwapService) GetQuote(c *gin.Context) {
 	var req struct {
 		TokenIn  string `json:"token_in" binding:"required"`
@@ -156,26 +163,69 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 		return
 	}
 
-	// Mock quote calculation - in production, this would query actual DEX pools
-	amountIn := new(big.Float)
-	amountIn.SetString(req.Amount)
-	rate := big.NewFloat(1.0) // Mock rate
-	amountOut := new(big.Float).Mul(amountIn, rate)
+	// Use price aggregator for real quotes
+	if globalPriceAggregator != nil {
+		quote, err := globalPriceAggregator.GetAggregatedQuote(c.Request.Context(), req.ChainID, req.TokenIn, req.TokenOut, req.Amount, nil)
+		if err == nil {
+			c.JSON(200, quote)
+			return
+		}
+	}
+
+	// Fallback: calculate from individual prices
+	tokenInSymbol := s.getSymbolFromAddress(req.TokenIn)
+	tokenOutSymbol := s.getSymbolFromAddress(req.TokenOut)
+	
+	var tokenInPrice, tokenOutPrice float64 = 1.0, 1.0
+	
+	if globalPriceAggregator != nil {
+		if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), tokenInSymbol); err == nil {
+			tokenInPrice = pd.USD
+		}
+		if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), tokenOutSymbol); err == nil {
+			tokenOutPrice = pd.USD
+		}
+	}
+	
+	rate := tokenOutPrice / tokenInPrice
+	amountFloat, _ := new(big.Float).SetString(req.Amount)
+	amountOut := new(big.Float).Mul(amountFloat, big.NewFloat(rate))
+	
+	// Apply 0.3% fee
+	amountOutMin := new(big.Float).Mul(amountOut, big.NewFloat(0.997))
 
 	quote := gin.H{
-		"token_in":          req.TokenIn,
-		"token_out":         req.TokenOut,
-		"amount_in":         req.Amount,
-		"amount_out":        amountOut.String(),
-		"amount_out_min":    amountOut.String(), // Apply slippage
-		"rate":              "1.0",
-		"price_impact":      "0.1",
-		"gas_estimate":     "21000",
-		"chain_id":         req.ChainID,
-		"route":            []string{req.TokenIn, req.TokenOut},
+		"token_in":       req.TokenIn,
+		"token_out":      req.TokenOut,
+		"amount_in":      req.Amount,
+		"amount_out":     amountOut.String(),
+		"amount_out_min": amountOutMin.String(),
+		"rate":           fmt.Sprintf("%f", rate),
+		"price_impact":   "0.1",
+		"gas_estimate":  "21000",
+		"chain_id":       req.ChainID,
+		"route":          []string{req.TokenIn, req.TokenOut},
 	}
 
 	c.JSON(200, quote)
+}
+
+func (s *SwapService) getSymbolFromAddress(address string) string {
+	symbols := map[string]string{
+		"0x0000000000000000000000000000000000000000": "ETH",
+		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
+		"0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
+		"0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC",
+		"0x514910771af9ca656af840dff83e8264ecf986ca": "LINK",
+		"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "UNI",
+		"0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9": "AAVE",
+	}
+	for addr, sym := range symbols {
+		if strings.EqualFold(addr, address) {
+			return sym
+		}
+	}
+	return "UNKNOWN"
 }
 
 func (s *SwapService) BuildTransaction(c *gin.Context) {
@@ -207,19 +257,29 @@ func (s *SwapService) GetPool(c *gin.Context) {
 }
 
 func (s *SwapService) GetPrices(c *gin.Context) {
-	// Mock prices
-	prices := gin.H{
-		"ETH":  {"usd": 3450.00, "change_24h": 2.5},
-		"USDC": {"usd": 1.00, "change_24h": 0.01},
-		"USDT": {"usd": 1.00, "change_24h": -0.01},
-		"WBTC": {"usd": 67500.00, "change_24h": 1.8},
-		"LINK": {"usd": 18.50, "change_24h": 3.2},
-		"UNI":  {"usd": 12.80, "change_24h": -1.2},
-		"MATIC": {"usd": 0.85, "change_24h": 1.5},
-		"BNB":  {"usd": 580.00, "change_24h": 0.8},
-		"AVAX": {"usd": 38.50, "change_24h": 2.1},
-		"SOL":  {"usd": 145.00, "change_24h": -2.5},
+	// Get real prices from price aggregator
+	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "SHIB", "PEPE", "FIL", "ATOM", "XTZ", "ADA", "VET", "ALGO", "XLM", "HBAR", "FTM", "NEAR", "EGLD", "FTG", "CAKE", "GRT", "CRO", "KCS", "HT", "ONE", "AR", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "1INCH", "COMP", "MIM", "FEI", "RAI", "USDP", "TUSD", "BUSD", "FRAX", "DAI", "MNT", "BLUR"}
+	
+	prices := make(map[string]interface{})
+	
+	if globalPriceAggregator != nil {
+		for _, symbol := range symbols {
+			if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol); err == nil {
+				prices[symbol] = map[string]interface{}{
+					"usd": pd.USD,
+					"usd_24h_change": pd.USDChange24h,
+					"usd_24h_vol": pd.USDVolume24h,
+					"usd_market_cap": pd.USDMarketCap,
+				}
+			}
+		}
 	}
+	
+	if len(prices) == 0 {
+		// Fallback to empty if no prices available
+		prices = map[string]interface{}{}
+	}
+	
 	c.JSON(200, prices)
 }
 

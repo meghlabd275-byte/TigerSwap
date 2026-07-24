@@ -318,7 +318,7 @@ export async function getEVMMnemonicTokenBalance(
   }
 }
 
-// Swap tokens on EVM chain (simplified - would integrate with aggregators)
+// Swap tokens on EVM chain - calls real API for execution
 export async function swapEVMTokens(
   mnemonic: string,
   fromToken: string,
@@ -328,25 +328,36 @@ export async function swapEVMTokens(
   slippage: number = 0.5
 ): Promise<TransactionResult> {
   try {
-    // In production, this would use 1inch, Uniswap, etc.
-    // Simplified implementation
+    // Get private key from mnemonic
     const wallet = ethers.Wallet.fromMnemonic(mnemonic, EVM_DERIVATION_PATH);
-    const provider = new ethers.providers.JsonRpcProvider(getRPCForChain(chainId));
-    const signer = wallet.connect(provider);
-
-    // This is a mock - real implementation would call DEX router
-    const tx = await signer.sendTransaction({
-      to: wallet.address, // Would be router address
-      value: ethers.utils.parseEther(amount)
+    const privateKey = wallet.privateKey;
+    
+    // Call real swap execution API
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
+    const response = await fetch(`${API_BASE}/swap/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chain_id: chainId,
+        private_key: privateKey,
+        from_token: fromToken,
+        to_token: toToken,
+        amount: amount,
+        slippage: slippage.toString()
+      })
     });
-
-    const receipt = await tx.wait();
+    
+    if (!response.ok) {
+      throw new Error('Swap execution failed');
+    }
+    
+    const data = await response.json();
     
     return {
-      hash: tx.hash,
-      status: receipt.status === 1 ? 'confirmed' : 'failed',
-      blockNumber: receipt.blockNumber,
-      gasUsed: receipt.gasUsed.toString()
+      hash: data.tx_hash,
+      status: data.status,
+      blockNumber: data.block_number,
+      gasUsed: data.gas_used?.toString() || '0'
     };
   } catch (error) {
     throw new Error(`Swap failed: ${error}`);
