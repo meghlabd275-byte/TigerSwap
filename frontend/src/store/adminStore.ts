@@ -952,15 +952,28 @@ export const useAdminStore = create<AdminState>()(
         totalRevenue: '375000',
       },
 
-      // Authenticate admin (simplified - in production would verify properly)
-      authenticateAdmin: (seedPhrase: string) => {
-        // In production, this would verify against stored credentials
-        // For demo, accept any seed phrase that validates
-        if (seedPhrase.split(' ').length === 24) {
-          const address = '0x' + Buffer.from(seedPhrase.slice(0, 32)).toString('hex').slice(0, 40);
-          set({ adminSeedPhrase: seedPhrase, adminAddress: address, isAdminAuthenticated: true });
-          get().logActivity('Admin Login', 'Admin authenticated successfully');
-          return true;
+      // Authenticate admin via API
+      authenticateAdmin: async (seedPhrase: string) => {
+        try {
+          // Call real admin authentication API
+          const response = await fetch('/api/v1/admin/authenticate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ seed_phrase: seedPhrase })
+          });
+          
+          if (response.ok) {
+            const data = await response.json();
+            set({ 
+              adminSeedPhrase: seedPhrase, 
+              adminAddress: data.address, 
+              isAdminAuthenticated: true 
+            });
+            get().logActivity('Admin Login', 'Admin authenticated successfully');
+            return true;
+          }
+        } catch (error) {
+          console.error('Admin authentication failed:', error);
         }
         return false;
       },

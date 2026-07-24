@@ -900,6 +900,34 @@ func HandleWebSocket(c *gin.Context) {
 	}()
 }
 
+// BankDetailsHandler returns bank transfer details for fiat deposits
+type BankDetails struct {
+	BankName      string `json:"bank_name"`
+	AccountName   string `json:"account_name"`
+	AccountNumber string `json:"account_number"`
+	RoutingNumber string `json:"routing_number"`
+	IBAN          string `json:"iban"`
+	SWIFT         string `json:"swift"`
+	Reference     string `json:"reference"`
+}
+
+func GetBankDetails(c *gin.Context) {
+	// Generate unique reference for this transaction
+	reference := fmt.Sprintf("TGR%d", time.Now().Unix())
+	
+	bankDetails := BankDetails{
+		BankName:      os.Getenv("BANK_NAME"),
+		AccountName:   os.Getenv("BANK_ACCOUNT_NAME"),
+		AccountNumber: os.Getenv("BANK_ACCOUNT_NUMBER"),
+		RoutingNumber: os.Getenv("BANK_ROUTING_NUMBER"),
+		IBAN:          os.Getenv("BANK_IBAN"),
+		SWIFT:         os.Getenv("BANK_SWIFT"),
+		Reference:     reference,
+	}
+	
+	c.JSON(200, bankDetails)
+}
+
 // Helper function to generate random hex
 func generateRandomHex(length int) string {
 	bytes := make([]byte, length/2)

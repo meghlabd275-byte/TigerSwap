@@ -829,9 +829,17 @@ export const useStore = create<StoreState>()(
       tokens: [],
       selectedTokenIn: null,
       selectedTokenOut: null,
-      connectWallet: () => {
-        // Mock wallet connection
-        set({ connected: true, address: '0x742d35Cc6634C0532925a3b844Bc9e7595f0fEb1' });
+      connectWallet: async () => {
+        // Real wallet connection via walletService
+        try {
+          const { connectWallet } = await import('@/services/walletService');
+          const result = await connectWallet();
+          if (result) {
+            set({ connected: true, address: result.address });
+          }
+        } catch (error) {
+          console.error('Wallet connection failed:', error);
+        }
       },
       disconnectWallet: () => {
         set({ connected: false, address: null });

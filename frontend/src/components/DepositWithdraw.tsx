@@ -46,22 +46,39 @@ export function DepositWithdraw({ currentWallet, tokens, chainId }: DepositWithd
   const [copied, setCopied] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Mock deposit addresses for different chains
+  // Get deposit address from wallet
   const getDepositAddress = () => {
     if (!currentWallet) return '';
     return currentWallet.address;
   };
 
-  // Mock bank transfer details
-  const bankDetails = {
-    bankName: 'TigerSwap Bank',
-    accountName: 'TigerSwap Ltd',
-    accountNumber: '1234567890',
-    routingNumber: '987654321',
-    iban: 'GB82 WEST 1234 5678 9012 34',
-    swift: 'WESTGB2LXXX',
-    reference: `TIGER${Date.now().toString().slice(-8)}`
-  };
+  // Bank transfer details - fetched from API in production
+  // For now, showing placeholder that would come from backend
+  const [bankDetails, setBankDetails] = useState<{
+    bankName: string;
+    accountName: string;
+    accountNumber: string;
+    routingNumber: string;
+    iban: string;
+    swift: string;
+    reference: string;
+  } | null>(null);
+
+  // Fetch bank details on mount
+  useEffect(() => {
+    const fetchBankDetails = async () => {
+      try {
+        const res = await fetch('/api/v1/wallet/bank-details');
+        if (res.ok) {
+          const data = await res.json();
+          setBankDetails(data);
+        }
+      } catch (e) {
+        console.error('Failed to fetch bank details');
+      }
+    };
+    fetchBankDetails();
+  }, []);
 
   const copyAddress = () => {
     if (currentWallet?.address) {
