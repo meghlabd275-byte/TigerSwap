@@ -1,5 +1,29 @@
 import { Token, Chain } from '@/store/useStore';
 
+// TigerSmartChain - Main EVM Blockchain
+export const TIGER_SMART_CHAIN = {
+  chainId: 8888,
+  name: 'TigerSmartChain',
+  symbol: 'TGR',
+  decimals: 18,
+  rpcUrl: 'https://rpc.tigersmartchain.com',
+  explorerUrl: 'https://explorer.tigersmartchain.com',
+  type: 'evm' as const,
+  isTestnet: false,
+};
+
+// TigerSmartChain Testnet
+export const TIGER_TESTNET = {
+  chainId: 18888,
+  name: 'TigerSmartChain Testnet',
+  symbol: 'TGR',
+  decimals: 18,
+  rpcUrl: 'https://rpc-testnet.tigersmartchain.com',
+  explorerUrl: 'https://explorer-testnet.tigersmartchain.com',
+  type: 'evm' as const,
+  isTestnet: true,
+};
+
 // Comprehensive token database with 200+ tokens across 100+ chains
 export interface TokenData extends Token {
   chainId: number;
