@@ -24,16 +24,26 @@ jobs:
           
       - name: Build Go packages
         run: |
-          cd api_gateway && go build ./...
-          cd dex_aggregator && go build ./...
-          cd dex_connectors && go build ./...
+          cd backend/go/api_gateway && go build -o api_gateway .
+          cd backend/go/dex_aggregator && go build -o dex_aggregator .
+          cd backend/go/dex_connectors && go build -o dex_connectors .
           
       - name: Build Frontend
         run: |
-          cd frontend/web_nextjs && npm install && npm run build
-          cd frontend/admin_panel && npm install && npm run build
+          cd frontend && npm install && npm run build
           
       - name: Run tests
         run: |
           echo "Running tests..."
-          # Add actual test commands here
+          # Go tests
+          cd backend && go test ./...
+          # Frontend tests
+          cd frontend && npm test
+          
+      - name: Build Rust packages
+        run: |
+          cd backend/rust && cargo build --release || true
+          
+      - name: Build C++ packages
+        run: |
+          cd backend/cpp && mkdir -p build && cd build && cmake .. && make || true

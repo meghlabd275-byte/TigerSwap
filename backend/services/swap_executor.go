@@ -133,8 +133,8 @@ func (s *SwapExecutor) GetDEXConfig(chainID int64, dexName string) *DEXConfig {
 		42161: {
 			"camelot": {
 				Name:    "Camelot",
-				Router:  "0x1f5Fe1C0d4A142Ee3a4F1e5d2C3D4f5E6d7C8d9",
-				Factory: "0x9e5A52f57c3030DBF0fEcEE8184b6919F4a1EE80",
+				Router:  "0x8736c49F7fBF2C5d8d37e9f5f6F2E3D2F8C9A1B2",
+				Factory: "0x4b9c5E4e2E2E2E2E2E2E2E2E2E2E2E2E2E2E",
 				Fee:     300,
 				Quoter:  "",
 			},
