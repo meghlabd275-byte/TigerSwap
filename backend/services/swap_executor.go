@@ -3,8 +3,11 @@ package services
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,442 +19,445 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+
+	"tigerswap/backend/go/amm"
+	"tigerswap/backend/go/tigerswap"
 )
 
-// SwapExecutor handles real swap execution
+// Pool family selectors understood by the TigerSwap factory and router.
+const (
+	FamilyV2       uint8 = 0
+	FamilyV3       uint8 = 1
+	FamilyStable   uint8 = 2
+	FamilyWeighted uint8 = 3
+)
+
+// SwapExecutor executes swaps against TigerSwap's own contracts. It holds no
+// third-party DEX routers: every quote and every transaction targets a
+// TigerSwap factory or router deployed on the requested chain.
 type SwapExecutor struct {
-	blockchain   *BlockchainClient
-	priceAgg     *PriceAggregator
-	redis        *redis.Client
-	supportedDEX map[int64][]string // chainID -> DEX names
+	blockchain *BlockchainClient
+	priceAgg   *PriceAggregator
+	redis      *redis.Client
+
+	deployments map[int64]tigerswap.Deployment
+	signer      *ecdsa.PrivateKey
 }
 
-// DEXConfig holds DEX router configuration
-type DEXConfig struct {
-	Name         string
-	Router       string
-	Factory      string
-	Fee          uint32 // in 10000 (e.g., 300 = 0.03%)
-	Quoter       string
-}
-
-// SwapResult represents the result of a swap
+// SwapResult is the outcome of a swap execution.
 type SwapResult struct {
-	TxHash             string        `json:"tx_hash"`
-	Status             string        `json:"status"` // pending, confirmed, failed
-	FromToken          string        `json:"from_token"`
-	ToToken            string        `json:"to_token"`
-	AmountIn           string        `json:"amount_in"`
-	AmountOut          string        `json:"amount_out"`
-	AmountOutMin       string        `json:"amount_out_min"`
-	PriceImpact        float64       `json:"price_impact"`
-	GasUsed            uint64        `json:"gas_used"`
-	GasFee             string        `json:"gas_fee"`
-	DEX                string        `json:"dex"`
-	Route              []string      `json:"route"`
-	BlockNumber        uint64        `json:"block_number"`
-	ConfirmationTime   time.Duration `json:"confirmation_time"`
+	TxHash           string        `json:"tx_hash"`
+	Status           string        `json:"status"`
+	FromToken        string        `json:"from_token"`
+	ToToken          string        `json:"to_token"`
+	AmountIn         string        `json:"amount_in"`
+	AmountOut        string        `json:"amount_out"`
+	AmountOutMin     string        `json:"amount_out_min"`
+	PriceImpact      float64       `json:"price_impact"`
+	GasUsed          uint64        `json:"gas_used"`
+	GasFee           string        `json:"gas_fee"`
+	DEX              string        `json:"dex"`
+	Route            []string      `json:"route"`
+	BlockNumber      uint64        `json:"block_number"`
+	ConfirmationTime time.Duration `json:"confirmation_time"`
 }
 
+// NewSwapExecutor builds an executor from the TigerSwap deployments configured
+// in the environment. Chains without a deployment are simply unsupported.
 func NewSwapExecutor(blockchain *BlockchainClient, priceAgg *PriceAggregator, redisClient *redis.Client) *SwapExecutor {
-	return &SwapExecutor{
-		blockchain: blockchain,
-		priceAgg:   priceAgg,
-		redis:      redisClient,
-		supportedDEX: map[int64][]string{
-			1:     {"uniswap_v3", "sushiswap", "curve", "balancer"},
-			137:   {"quickswap", "sushiswap", "apeswap"},
-			42161: {"uniswap_v3", "camelot", "sushiswap"},
-			10:    {"uniswap_v3", "velodrome", "sushiswap"},
-			8453:  {"uniswap_v3", "baseswap"},
-			56:    {"pancakeswap", "biswap", "apeswap"},
-			43114: {"traderjoe", "pangolin", "sushiswap"},
-			250:  {"spookyswap", "spirit", "sushiswap"},
-		},
+	executor := &SwapExecutor{
+		blockchain:  blockchain,
+		priceAgg:    priceAgg,
+		redis:       redisClient,
+		deployments: make(map[int64]tigerswap.Deployment),
+	}
+
+	for _, deployment := range tigerswap.LoadDeployments() {
+		executor.deployments[deployment.ChainID] = deployment
+	}
+
+	if signer, err := tigerswap.LoadSigner(); err == nil {
+		executor.signer = signer
+	}
+
+	return executor
+}
+
+// GetDeployment returns the TigerSwap deployment for a chain, if configured.
+func (s *SwapExecutor) GetDeployment(chainID int64) (tigerswap.Deployment, bool) {
+	deployment, ok := s.deployments[chainID]
+	return deployment, ok
+}
+
+// SupportedChains lists the chains with a TigerSwap deployment.
+func (s *SwapExecutor) SupportedChains() []int64 {
+	chains := make([]int64, 0, len(s.deployments))
+	for chainID := range s.deployments {
+		chains = append(chains, chainID)
+	}
+	return chains
+}
+
+// SupportedFamilies lists the pool families a chain can quote against.
+func (s *SwapExecutor) SupportedFamilies() []string {
+	return []string{"tigerswap_v2", "tigerswap_v3", "tigerswap_stable", "tigerswap_weighted"}
+}
+
+func familyFromName(name string) (amm.Family, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "", "tigerswap_v2", "v2", "xyk":
+		return amm.FamilyV2, nil
+	case "tigerswap_v3", "v3", "concentrated":
+		return amm.FamilyV3, nil
+	case "tigerswap_stable", "stable", "stableswap":
+		return amm.FamilyStable, nil
+	case "tigerswap_weighted", "weighted", "balancer":
+		return amm.FamilyWeighted, nil
+	default:
+		return amm.FamilyV2, fmt.Errorf("unknown pool family %q", name)
 	}
 }
 
-// GetDEXConfig returns the DEX configuration for a given chain
-func (s *SwapExecutor) GetDEXConfig(chainID int64, dexName string) *DEXConfig {
-	configs := map[int64]map[string]*DEXConfig{
-		1: {
-			"uniswap_v3": {
-				Name:    "Uniswap V3",
-				Router:  "0xE592427A0AEce92De3Edee1F18E0157C05861564",
-				Factory: "0x1F98431c8aD98523631AE4a59f267346ea31F984",
-				Fee:     300,
-				Quoter:  "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6",
-			},
-			"sushiswap": {
-				Name:    "SushiSwap",
-				Router:  "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F",
-				Factory: "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac",
-				Fee:     300,
-				Quoter:  "",
-			},
-			"curve": {
-				Name:    "Curve",
-				Router:  "0xD1606890f11f3D0d36eFeaD7b8D27f7cE9e3d98",
-				Factory: "0x90E00ACe148ca3b23Ac1bDCc2bc2d1480D9e1E0",
-				Fee:     40,
-				Quoter:  "",
-			},
-			"balancer": {
-				Name:    "Balancer",
-				Router:  "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
-				Factory: "0xBA12222222228d8Ba445958a75a0704d566BF2C8",
-				Fee:     100,
-				Quoter:  "",
-			},
-		},
-		56: {
-			"pancakeswap": {
-				Name:    "PancakeSwap",
-				Router:  "0x10ED43C718714eb63d5aA57B78B54704E256024E",
-				Factory: "0xcA143Ce32Fe78f1f7019d7d551a6402fC2270D6",
-				Fee:     250,
-				Quoter:  "",
-			},
-			"biswap": {
-				Name:    "BiSwap",
-				Router:  "0x3a6d8c21D9352b90E4E5f7f7a4E84d0B4f8bF9C",
-				Factory: "0x858e3312ed3C8769f58ae9D1a589a5f9f5FC44b",
-				Fee:     200,
-				Quoter:  "",
-			},
-		},
-		137: {
-			"quickswap": {
-				Name:    "QuickSwap",
-				Router:  "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff",
-				Factory: "0x5757371414417b8C6CAad45bEfF01fC2b748Ba1",
-				Fee:     300,
-				Quoter:  "",
-			},
-		},
-		42161: {
-			"camelot": {
-				Name:    "Camelot",
-				Router:  "0x8736c49F7fBF2C5d8d37e9f5f6F2E3D2F8C9A1B2",
-				Factory: "0x4b9c5E4e2E2E2E2E2E2E2E2E2E2E2E2E2E2E",
-				Fee:     300,
-				Quoter:  "",
-			},
-		},
+// newClient builds a TigerSwap on-chain client for the chain.
+func (s *SwapExecutor) newClient(chainID int64, key *ecdsa.PrivateKey) (*tigerswap.Client, error) {
+	deployment, ok := s.deployments[chainID]
+	if !ok {
+		return nil, fmt.Errorf("TigerSwap is not deployed on chain %d", chainID)
 	}
-	
-	if chainConfigs, ok := configs[chainID]; ok {
-		if config, ok := chainConfigs[dexName]; ok {
-			return config
+	if deployment.RPCURL == "" {
+		if rpc, err := s.blockchain.RPCURLForChain(chainID); err == nil {
+			deployment.RPCURL = rpc
 		}
 	}
-	
-	return configs[1]["uniswap_v3"]
+	return tigerswap.NewClient(deployment, key)
 }
 
-// ExecuteSwap executes a real swap transaction
-func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKey, fromToken, toToken, amountIn, slippageStr string, dexName string) (*SwapResult, error) {
-	amount := new(big.Int)
-	amount.SetString(amountIn, 10)
-	
-	slippage := 500
-	if slippageStr != "" {
-		fmt.Sscanf(slippageStr, "%d", &slippage)
+// GetSwapQuote quotes a swap by reading TigerSwap pool state on-chain and
+// picking the family with the best output.
+func (s *SwapExecutor) GetSwapQuote(ctx context.Context, chainID int64, fromToken, toToken, amount string) (*AggregatedQuote, error) {
+	amountIn, ok := new(big.Int).SetString(amount, 10)
+	if !ok || amountIn.Sign() <= 0 {
+		return nil, fmt.Errorf("invalid amount %q", amount)
 	}
-	
-	dexConfig := s.GetDEXConfig(chainID, dexName)
-	if dexConfig == nil {
-		return nil, fmt.Errorf("DEX %s not supported on chain %d", dexName, chainID)
-	}
-	
-	client, err := s.blockchain.GetClient(chainID)
+
+	client, err := s.newClient(chainID, nil)
 	if err != nil {
 		return nil, err
 	}
-	
-	key, err := crypto.HexToECDSA(privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("invalid private key: %v", err)
-	}
-	
-	fromAddress := crypto.PubkeyToAddress(key.PublicKey)
-	
-	nonce, err := client.PendingNonceAt(ctx, fromAddress)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get nonce: %v", err)
-	}
-	
-	gasPrice, err := client.SuggestGasPrice(ctx)
-	if err != nil {
-		gasPrice = big.NewInt(1000000000)
-	}
-	
-	var data []byte
-	var value *big.Int
-	
-	if strings.EqualFold(fromToken, "0x0000000000000000000000000000000000000000") {
-		data, err = s.buildSwapExactETHForTokensData(dexConfig.Router, toToken, amountIn, slippage)
-		if err != nil {
-			return nil, err
+	defer client.Close()
+
+	path := []common.Address{common.HexToAddress(fromToken), common.HexToAddress(toToken)}
+
+	var best *AggregatedQuote
+	quotes := make(map[string]string)
+
+	for _, candidate := range []struct {
+		family amm.Family
+		name   string
+	}{
+		{amm.FamilyV2, "tigerswap_v2"},
+		{amm.FamilyV3, "tigerswap_v3"},
+		{amm.FamilyStable, "tigerswap_stable"},
+		{amm.FamilyWeighted, "tigerswap_weighted"},
+	} {
+		out, quoteErr := client.QuoteFamily(ctx, candidate.family, path, amountIn, DefaultFeeBps)
+		if quoteErr != nil {
+			// A missing pool for one family is expected; try the next.
+			continue
 		}
-		value = amount
-	} else if strings.EqualFold(toToken, "0x0000000000000000000000000000000000000000") {
-		err = s.approveToken(ctx, client, key, chainID, fromToken, dexConfig.Router, amount)
-		if err != nil {
-			return nil, fmt.Errorf("token approval failed: %v", err)
+		quotes[candidate.name] = out.String()
+
+		if best == nil || out.Cmp(bestAmountOut(best)) > 0 {
+			best = &AggregatedQuote{
+				FromToken:    fromToken,
+				ToToken:      toToken,
+				AmountIn:     amount,
+				AmountOut:    out.String(),
+				AmountOutMin: applySlippage(out, DefaultSlippageBps).String(),
+				BestSource:   candidate.name,
+				BlockNumber:  0,
+				ValidUntil:   time.Now().Add(30 * time.Second),
+			}
 		}
-		
-		data, err = s.buildSwapExactTokensForETHData(dexConfig.Router, fromToken, amountIn, slippage)
-		if err != nil {
-			return nil, err
+	}
+
+	if best == nil {
+		return nil, fmt.Errorf("no TigerSwap pool found for %s/%s on chain %d", fromToken, toToken, chainID)
+	}
+
+	best.SourceQuotes = quotes
+	best.Route = []string{fromToken, toToken}
+
+	return best, nil
+}
+
+func bestAmountOut(q *AggregatedQuote) *big.Int {
+	out, ok := new(big.Int).SetString(q.AmountOut, 10)
+	if !ok {
+		return big.NewInt(0)
+	}
+	return out
+}
+
+// DefaultFeeBps is the fee used when a pool family does not expose its own.
+const DefaultFeeBps uint32 = 30
+
+// DefaultSlippageBps is the default slippage tolerance.
+const DefaultSlippageBps uint32 = 50
+
+func applySlippage(amount *big.Int, slippageBps uint32) *big.Int {
+	if slippageBps >= 10_000 {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Div(new(big.Int).Mul(amount, big.NewInt(int64(10_000-slippageBps))), big.NewInt(10_000))
+}
+
+// ExecuteSwap signs and broadcasts a swap on the TigerSwap router.
+func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKey, fromToken, toToken, amountIn, slippageStr string, familyName string) (*SwapResult, error) {
+	key, err := resolveSignerKey(privateKey, s.signer)
+	if err != nil {
+		return nil, err
+	}
+
+	family, err := familyFromName(familyName)
+	if err != nil {
+		return nil, err
+	}
+
+	amount, ok := new(big.Int).SetString(amountIn, 10)
+	if !ok || amount.Sign() <= 0 {
+		return nil, fmt.Errorf("invalid amount %q", amountIn)
+	}
+
+	slippageBps := DefaultSlippageBps
+	if slippageStr != "" {
+		parsed, parseErr := strconv.ParseUint(strings.TrimSpace(slippageStr), 10, 32)
+		if parseErr != nil {
+			return nil, fmt.Errorf("invalid slippage %q", slippageStr)
 		}
-		value = big.NewInt(0)
-	} else {
-		err = s.approveToken(ctx, client, key, chainID, fromToken, dexConfig.Router, amount)
-		if err != nil {
-			return nil, fmt.Errorf("token approval failed: %v", err)
+		if parsed > 5_000 {
+			return nil, errors.New("slippage above 50% is not permitted")
 		}
-		
-		data, err = s.buildSwapExactTokensForTokensData(dexConfig.Router, fromToken, toToken, amountIn, slippage)
-		if err != nil {
-			return nil, err
-		}
-		value = big.NewInt(0)
+		slippageBps = uint32(parsed)
 	}
-	
-	routerAddr := common.HexToAddress(dexConfig.Router)
-	gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
-		From:  fromAddress,
-		To:    &routerAddr,
-		Value: value,
-		Data:  data,
-	})
+
+	client, err := s.newClient(chainID, key)
 	if err != nil {
-		gasLimit = 200000
+		return nil, err
 	}
-	
-	gasLimit = gasLimit + gasLimit/5
-	
-	tx := types.NewTransaction(nonce, common.HexToAddress(dexConfig.Router), value, gasLimit, gasPrice, data)
-	
-	chainIDBig := big.NewInt(chainID)
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainIDBig), key)
+	defer client.Close()
+
+	path := []common.Address{common.HexToAddress(fromToken), common.HexToAddress(toToken)}
+
+	expectedOut, err := client.QuoteFamily(ctx, family, path, amount, DefaultFeeBps)
 	if err != nil {
-		return nil, fmt.Errorf("failed to sign transaction: %v", err)
+		return nil, fmt.Errorf("quote failed: %w", err)
 	}
-	
-	err = client.SendTransaction(ctx, signedTx)
+	amountOutMin := applySlippage(expectedOut, slippageBps)
+
+	from := crypto.PubkeyToAddress(key.PublicKey)
+
+	if err := s.ensureAllowance(ctx, client, key, chainID, fromToken, amount); err != nil {
+		return nil, fmt.Errorf("approve token: %w", err)
+	}
+
+	deadline := big.NewInt(time.Now().Add(20 * time.Minute).Unix())
+	tx, err := client.Swap(ctx, family, path, amount, amountOutMin, from, deadline)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send transaction: %v", err)
+		return nil, fmt.Errorf("submit swap: %w", err)
 	}
-	
-	startTime := time.Now()
-	
-	receipt, err := waitForReceipt(ctx, client, signedTx.Hash(), 120*time.Second)
-	confirmationTime := time.Since(startTime)
-	
-	if err != nil {
-		return &SwapResult{
-			TxHash:   signedTx.Hash().Hex(),
-			Status:    "pending",
-			FromToken: fromToken,
-			ToToken:   toToken,
-			AmountIn:  amountIn,
-			DEX:       dexConfig.Name,
-		}, nil
-	}
-	
-	gasFee := new(big.Int).Mul(big.NewInt(int64(receipt.GasUsed)), gasPrice)
-	
+
 	result := &SwapResult{
-		TxHash:           signedTx.Hash().Hex(),
-		Status:           "confirmed",
-		FromToken:        fromToken,
-		ToToken:          toToken,
-		AmountIn:         amountIn,
-		AmountOut:        "0",
-		AmountOutMin:     "0",
-		PriceImpact:      0,
-		GasUsed:          receipt.GasUsed,
-		GasFee:           weiToDecimal(gasFee, 18),
-		DEX:              dexConfig.Name,
-		BlockNumber:      receipt.BlockNumber.Uint64(),
-		ConfirmationTime: confirmationTime,
+		TxHash:       tx.Hash().Hex(),
+		Status:       "pending",
+		FromToken:    fromToken,
+		ToToken:      toToken,
+		AmountIn:     amountIn,
+		AmountOut:    expectedOut.String(),
+		AmountOutMin: amountOutMin.String(),
+		DEX:          "tigerswap",
+		Route:        []string{fromToken, toToken},
 	}
-	
+
+	start := time.Now()
+	receipt, waitErr := waitForReceipt(ctx, client.RPC(), tx.Hash(), 120*time.Second)
+	result.ConfirmationTime = time.Since(start)
+
+	if waitErr != nil {
+		return result, nil
+	}
+
+	gasPrice, gasErr := client.RPC().SuggestGasPrice(ctx)
+	if gasErr != nil {
+		gasPrice = big.NewInt(0)
+	}
+
+	result.Status = "confirmed"
+	result.GasUsed = receipt.GasUsed
+	result.GasFee = weiToDecimal(new(big.Int).Mul(big.NewInt(int64(receipt.GasUsed)), gasPrice), 18)
+	result.BlockNumber = receipt.BlockNumber.Uint64()
+
 	return result, nil
 }
 
-func (s *SwapExecutor) approveToken(ctx context.Context, client *ethclient.Client, key *ecdsa.PrivateKey, chainID int64, tokenAddress, spender string, amount *big.Int) error {
-	addr := common.HexToAddress(tokenAddress)
+// ensureAllowance approves the TigerSwap router if the current allowance is low.
+func (s *SwapExecutor) ensureAllowance(ctx context.Context, client *tigerswap.Client, key *ecdsa.PrivateKey, chainID int64, token string, amount *big.Int) error {
+	deployment, ok := s.deployments[chainID]
+	if !ok {
+		return fmt.Errorf("TigerSwap is not deployed on chain %d", chainID)
+	}
+
+	tokenAddr := common.HexToAddress(token)
 	owner := crypto.PubkeyToAddress(key.PublicKey)
-	
-	maxApproval := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
-	
-	approvalData, _ := abi.JSON(strings.NewReader(`[{"constant":false,"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"}]`))
-	data, _ := approvalData.Pack("approve", common.HexToAddress(spender), maxApproval)
-	
-	nonce, _ := client.PendingNonceAt(ctx, owner)
-	gasPrice, _ := client.SuggestGasPrice(ctx)
-	
-	tx := types.NewTransaction(nonce, addr, big.NewInt(0), 50000, gasPrice, data)
-	
-	chainIDBig := big.NewInt(chainID)
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainIDBig), key)
+
+	allowance, err := readAllowance(ctx, client.RPC(), tokenAddr, owner, deployment.Router)
+	if err == nil && allowance.Cmp(amount) >= 0 {
+		return nil
+	}
+
+	approveABI, err := abi.JSON(strings.NewReader(erc20ApproveABI))
 	if err != nil {
 		return err
 	}
-	
-	return client.SendTransaction(ctx, signedTx)
+
+	maxApproval := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+	data, err := approveABI.Pack("approve", deployment.Router, maxApproval)
+	if err != nil {
+		return err
+	}
+
+	_, err = signAndSend(ctx, client.RPC(), key, chainID, tokenAddr, big.NewInt(0), data)
+	return err
 }
 
-func (s *SwapExecutor) buildSwapExactETHForTokensData(router, toToken, amountIn string, slippage int) ([]byte, error) {
-	swapABI, _ := abi.JSON(strings.NewReader(`[{"inputs":[{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactETHForTokens","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"payable","type":"function"}]`))
-	
-	amountInWei := new(big.Int)
-	amountInWei.SetString(amountIn, 10)
-	
-	minOut := new(big.Int).Div(amountInWei, big.NewInt(10000))
-	minOut = new(big.Int).Mul(minOut, big.NewInt(10000-int64(slippage)))
-	
-	path := []common.Address{
-		common.HexToAddress("0x0000000000000000000000000000000000000000"),
-		common.HexToAddress(toToken),
+var erc20AllowanceABI = mustParseABI(`[{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"}],"name":"allowance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}]`)
+
+func mustParseABI(raw string) abi.ABI {
+	parsed, err := abi.JSON(strings.NewReader(raw))
+	if err != nil {
+		panic(fmt.Sprintf("invalid embedded ABI: %v", err))
 	}
-	
-	deadline := big.NewInt(time.Now().Add(10 * time.Minute).Unix())
-	
-	data, err := swapABI.Pack("swapExactETHForTokens", minOut, path, common.HexToAddress("0x0000000000000000000000000000000000000000"), deadline)
+	return parsed
+}
+
+func readAllowance(ctx context.Context, client *ethclient.Client, token, owner, spender common.Address) (*big.Int, error) {
+	data, err := erc20AllowanceABI.Pack("allowance", owner, spender)
 	if err != nil {
 		return nil, err
 	}
-	
-	return data, nil
-}
 
-func (s *SwapExecutor) buildSwapExactTokensForETHData(router, fromToken, amountIn string, slippage int) ([]byte, error) {
-	swapABI, _ := abi.JSON(strings.NewReader(`[{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForETH","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"nonpayable","type":"function"}]`))
-	
-	amountInWei := new(big.Int)
-	amountInWei.SetString(amountIn, 10)
-	
-	minOut := new(big.Int).Div(amountInWei, big.NewInt(10000))
-	minOut = new(big.Int).Mul(minOut, big.NewInt(10000-int64(slippage)))
-	
-	path := []common.Address{
-		common.HexToAddress(fromToken),
-		common.HexToAddress("0x0000000000000000000000000000000000000000"),
-	}
-	
-	deadline := big.NewInt(time.Now().Add(10 * time.Minute).Unix())
-	
-	data, err := swapABI.Pack("swapExactTokensForETH", amountInWei, minOut, path, common.HexToAddress("0x0000000000000000000000000000000000000000"), deadline)
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &token, Data: data}, nil)
 	if err != nil {
 		return nil, err
 	}
-	
-	return data, nil
+
+	values, err := erc20AllowanceABI.Unpack("allowance", out)
+	if err != nil || len(values) == 0 {
+		return nil, fmt.Errorf("unpack allowance: %w", err)
+	}
+
+	allowance, ok := values[0].(*big.Int)
+	if !ok {
+		return nil, errors.New("unexpected allowance type")
+	}
+	return allowance, nil
 }
 
-func (s *SwapExecutor) buildSwapExactTokensForTokensData(router, fromToken, toToken, amountIn string, slippage int) ([]byte, error) {
-	swapABI, _ := abi.JSON(strings.NewReader(`[{"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"path","type":"address[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256[]","name":"amounts","type":"uint256[]"}],"stateMutability":"nonpayable","type":"function"}]`))
-	
-	amountInWei := new(big.Int)
-	amountInWei.SetString(amountIn, 10)
-	
-	minOut := new(big.Int).Div(amountInWei, big.NewInt(10000))
-	minOut = new(big.Int).Mul(minOut, big.NewInt(10000-int64(slippage)))
-	
-	path := []common.Address{
-		common.HexToAddress(fromToken),
-		common.HexToAddress("0x0000000000000000000000000000000000000000"),
-		common.HexToAddress(toToken),
+// resolveSignerKey prefers a request-supplied key and falls back to the
+// process-wide signer configured in the environment.
+func resolveSignerKey(privateKey string, fallback *ecdsa.PrivateKey) (*ecdsa.PrivateKey, error) {
+	if privateKey != "" {
+		key, err := crypto.HexToECDSA(strings.TrimPrefix(privateKey, "0x"))
+		if err != nil {
+			return nil, fmt.Errorf("invalid private key: %w", err)
+		}
+		return key, nil
 	}
-	
-	deadline := big.NewInt(time.Now().Add(10 * time.Minute).Unix())
-	
-	data, err := swapABI.Pack("swapExactTokensForTokens", amountInWei, minOut, path, common.HexToAddress("0x0000000000000000000000000000000000000000"), deadline)
-	if err != nil {
-		return nil, err
+	if fallback != nil {
+		return fallback, nil
 	}
-	
-	return data, nil
+	return nil, errors.New("no signer key available")
 }
 
-func (s *SwapExecutor) GetSwapQuote(ctx context.Context, chainID int64, fromToken, toToken, amount string) (*AggregatedQuote, error) {
-	return s.priceAgg.GetAggregatedQuote(ctx, chainID, fromToken, toToken, amount, nil)
-}
-
-func (s *SwapExecutor) ExecuteSwapHandler(c *gin.Context) {
-	var req struct {
-		ChainID     int64  `json:"chain_id" binding:"required"`
-		PrivateKey string `json:"private_key" binding:"required"`
-		FromToken  string `json:"from_token" binding:"required"`
-		ToToken    string `json:"to_token" binding:"required"`
-		Amount     string `json:"amount" binding:"required"`
-		Slippage   string `json:"slippage"`
-		DEX        string `json:"dex"`
-	}
-	
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	
-	dexName := req.DEX
-	if dexName == "" {
-		dexName = "uniswap_v3"
-	}
-	
-	result, err := s.ExecuteSwap(c.Request.Context(), req.ChainID, req.PrivateKey, req.FromToken, req.ToToken, req.Amount, req.Slippage, dexName)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
-		return
-	}
-	
-	c.JSON(200, result)
-}
-
-func (s *SwapExecutor) GetQuoteHandler(c *gin.Context) {
+// GetSwapQuoteHandler serves a quote from TigerSwap pools.
+func (s *SwapExecutor) GetSwapQuoteHandler(c *gin.Context) {
 	var req struct {
 		ChainID   int64  `json:"chain_id" binding:"required"`
 		FromToken string `json:"from_token" binding:"required"`
 		ToToken   string `json:"to_token" binding:"required"`
 		Amount    string `json:"amount" binding:"required"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	quote, err := s.GetSwapQuote(c.Request.Context(), req.ChainID, req.FromToken, req.ToToken, req.Amount)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	c.JSON(200, quote)
 }
 
+// ExecuteSwapHandler executes a swap on the TigerSwap router.
+func (s *SwapExecutor) ExecuteSwapHandler(c *gin.Context) {
+	var req struct {
+		ChainID    int64  `json:"chain_id" binding:"required"`
+		PrivateKey string `json:"private_key"`
+		FromToken  string `json:"from_token" binding:"required"`
+		ToToken    string `json:"to_token" binding:"required"`
+		Amount     string `json:"amount" binding:"required"`
+		Slippage   string `json:"slippage"`
+		Family     string `json:"family"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	result, err := s.ExecuteSwap(
+		c.Request.Context(), req.ChainID, req.PrivateKey,
+		req.FromToken, req.ToToken, req.Amount, req.Slippage, req.Family,
+	)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, result)
+}
+
+// GetSupportedDEXHandler reports the TigerSwap families available on a chain.
 func (s *SwapExecutor) GetSupportedDEXHandler(c *gin.Context) {
-	chainID := c.Param("chain_id")
-	
-	chainIDInt, err := parseInt64(chainID)
+	chainID, err := parseInt64(c.Param("chain_id"))
 	if err != nil {
 		c.JSON(400, gin.H{"error": "invalid chain_id"})
 		return
 	}
-	
-	dexList, ok := s.supportedDEX[chainIDInt]
-	if !ok {
-		dexList = []string{"uniswap_v3"}
+
+	if _, ok := s.deployments[chainID]; !ok {
+		c.JSON(404, gin.H{"error": fmt.Sprintf("TigerSwap is not deployed on chain %d", chainID)})
+		return
 	}
-	
+
 	c.JSON(200, gin.H{
-		"chain_id": chainIDInt,
-		"dex_list": dexList,
+		"chain_id": chainID,
+		"dex_list": s.SupportedFamilies(),
 	})
 }
 
+// LoadExecutorSigner reads the TigerSwap signer from the environment.
+func LoadExecutorSigner() (*ecdsa.PrivateKey, error) {
+	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")
+	if raw == "" {
+		return nil, errors.New("TIGERSWAP_SIGNER_KEY is not configured")
+	}
+	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
+}
 
+// Ensure the unused imports stay meaningful: types is used by signAndSend.
+var _ = types.NewTransaction

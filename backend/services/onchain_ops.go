@@ -116,10 +116,11 @@ func (s *SwapExecutor) AddLiquidity(ctx context.Context, chainID int64, privateK
 	}
 	owner := crypto.PubkeyToAddress(key.PublicKey)
 
-	router := s.GetDEXConfig(chainID, s.preferredDEX(chainID))
-	if router == nil || router.Router == "" {
-		return "", fmt.Errorf("no router configured for chain %d", chainID)
+	deployment, ok := s.GetDeployment(chainID)
+	if !ok || deployment.Router == (common.Address{}) {
+		return "", fmt.Errorf("TigerSwap is not deployed on chain %d", chainID)
 	}
+	router := deployment.Router.Hex()
 
 	liqABI, err := abi.JSON(strings.NewReader(pairLiquidityABI))
 	if err != nil {
@@ -136,10 +137,10 @@ func (s *SwapExecutor) AddLiquidity(ctx context.Context, chainID int64, privateK
 	}
 
 	// Approve both tokens to the router before adding liquidity.
-	if _, err := s.blockchain.ApproveToken(ctx, chainID, privateKeyHex, tokenA, router.Router); err != nil {
+	if _, err := s.blockchain.ApproveToken(ctx, chainID, privateKeyHex, tokenA, router); err != nil {
 		return "", fmt.Errorf("approve tokenA: %w", err)
 	}
-	if _, err := s.blockchain.ApproveToken(ctx, chainID, privateKeyHex, tokenB, router.Router); err != nil {
+	if _, err := s.blockchain.ApproveToken(ctx, chainID, privateKeyHex, tokenB, router); err != nil {
 		return "", fmt.Errorf("approve tokenB: %w", err)
 	}
 
@@ -154,7 +155,7 @@ func (s *SwapExecutor) AddLiquidity(ctx context.Context, chainID int64, privateK
 		return "", err
 	}
 
-	return signAndSend(ctx, client, key, chainID, common.HexToAddress(router.Router), big.NewInt(0), data)
+	return signAndSend(ctx, client, key, chainID, common.HexToAddress(router), big.NewInt(0), data)
 }
 
 // RemoveLiquidity burns LP tokens and returns the underlying assets.
@@ -199,10 +200,11 @@ func (s *SwapExecutor) RemoveLiquidity(ctx context.Context, chainID int64, priva
 	return signAndSend(ctx, client, key, chainID, common.HexToAddress(poolAddr), big.NewInt(0), data)
 }
 
-// preferredDEX returns the primary DEX name configured for a chain.
-func (s *SwapExecutor) preferredDEX(chainID int64) string {
-	if names, ok := s.supportedDEX[chainID]; ok && len(names) > 0 {
-		return names[0]
+// TigerSwapRouterAddress returns the TigerSwap router address for a chain.
+func (s *SwapExecutor) TigerSwapRouterAddress(chainID int64) (string, error) {
+	deployment, ok := s.GetDeployment(chainID)
+	if !ok || deployment.Router == (common.Address{}) {
+		return "", fmt.Errorf("TigerSwap is not deployed on chain %d", chainID)
 	}
-	return ""
+	return deployment.Router.Hex(), nil
 }

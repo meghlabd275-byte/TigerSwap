@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 )
 
@@ -24,48 +25,48 @@ const (
 
 // BlockchainConfig represents a blockchain configuration
 type BlockchainConfig struct {
-	ChainID           int64           `json:"chainId"`
-	Name              string          `json:"name"`
-	Symbol            string          `json:"symbol"`
-	Type              ChainType       `json:"type"`
-	RPCURLs           []string        `json:"rpcUrls"`
-	ExplorerURL       string          `json:"explorerUrl"`
-	ExplorerAPI       string          `json:"explorerApi"`
-	BlockTime         int             `json:"blockTime"` // seconds
-	Decimals         int             `json:"decimals"`
-	ChainIDHex       string          `json:"chainIdHex"`
-	NetworkID         uint64          `json:"networkId"`
-	GasStationURL     string          `json:"gasStationUrl"`
-	NativeToken       *NativeToken    `json:"nativeToken"`
-	MulticallAddress  string          `json:"multicallAddress"`
-	IsTestnet        bool            `json:"isTestnet"`
-	SupportsEIP1559  bool            `json:"supportsEIP1559"`
-	SupportsWebSocket bool            `json:"supportsWebSocket"`
-	IconURL          string          `json:"iconUrl"`
-	CoingeckoID      string          `json:"coingeckoId"`
+	ChainID           int64        `json:"chainId"`
+	Name              string       `json:"name"`
+	Symbol            string       `json:"symbol"`
+	Type              ChainType    `json:"type"`
+	RPCURLs           []string     `json:"rpcUrls"`
+	ExplorerURL       string       `json:"explorerUrl"`
+	ExplorerAPI       string       `json:"explorerApi"`
+	BlockTime         int          `json:"blockTime"` // seconds
+	Decimals          int          `json:"decimals"`
+	ChainIDHex        string       `json:"chainIdHex"`
+	NetworkID         uint64       `json:"networkId"`
+	GasStationURL     string       `json:"gasStationUrl"`
+	NativeToken       *NativeToken `json:"nativeToken"`
+	MulticallAddress  string       `json:"multicallAddress"`
+	IsTestnet         bool         `json:"isTestnet"`
+	SupportsEIP1559   bool         `json:"supportsEIP1559"`
+	SupportsWebSocket bool         `json:"supportsWebSocket"`
+	IconURL           string       `json:"iconUrl"`
+	CoingeckoID       string       `json:"coingeckoId"`
 }
 
 // NativeToken represents the native token of a blockchain
 type NativeToken struct {
-	Name       string `json:"name"`
-	Symbol     string `json:"symbol"`
-	Decimals   int    `json:"decimals"`
-	Address    string `json:"address"` // Usually 0x000... for EVM
-	LogoURL    string `json:"logoUrl"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Decimals    int    `json:"decimals"`
+	Address     string `json:"address"` // Usually 0x000... for EVM
+	LogoURL     string `json:"logoUrl"`
 	CoingeckoID string `json:"coingeckoId"`
 }
 
 // TokenConfig represents a token configuration
 type TokenConfig struct {
-	Address    string `json:"address"`
-	ChainID    int64  `json:"chainId"`
-	Name       string `json:"name"`
-	Symbol     string `json:"symbol"`
-	Decimals   int    `json:"decimals"`
-	LogoURI    string `json:"logoUri"`
+	Address     string `json:"address"`
+	ChainID     int64  `json:"chainId"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Decimals    int    `json:"decimals"`
+	LogoURI     string `json:"logoUri"`
 	CoingeckoID string `json:"coingeckoId"`
-	IsVerified bool   `json:"isVerified"`
-	IsNative   bool   `json:"isNative"`
+	IsVerified  bool   `json:"isVerified"`
+	IsNative    bool   `json:"isNative"`
 }
 
 // GetBlockchainConfigs returns all supported blockchain configurations
@@ -87,11 +88,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			GasStationURL:     "https://api.etherscan.io/api?module=gastracker&action=gasoracle",
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
 			MulticallAddress:  "0x5BA1e12693D8fE830872dEa0c463c2bEF5b55E0b",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/279/small/ethereum.png",
-			CoingeckoID:      "ethereum",
+			IconURL:           "https://assets.coingecko.com/coins/images/279/small/ethereum.png",
+			CoingeckoID:       "ethereum",
 		},
 		// BNB Chain
 		56: {
@@ -108,11 +109,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         56,
 			NativeToken:       &NativeToken{Name: "BNB", Symbol: "BNB", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png", CoingeckoID: "binancecoin"},
 			MulticallAddress:  "0xD5c32C9Cec2D6D8bC9D1D2cE3fF4A5B6C7D8E9F0",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png",
-			CoingeckoID:      "binancecoin",
+			IconURL:           "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png",
+			CoingeckoID:       "binancecoin",
 		},
 		// Polygon
 		137: {
@@ -129,11 +130,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         137,
 			NativeToken:       &NativeToken{Name: "Polygon", Symbol: "MATIC", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/4713/small/polygon.png", CoingeckoID: "matic-network"},
 			MulticallAddress:  "0x275617327c958bD06bDb6F499046E2aA4d7E8d7C",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/4713/small/polygon.png",
-			CoingeckoID:      "matic-network",
+			IconURL:           "https://assets.coingecko.com/coins/images/4713/small/polygon.png",
+			CoingeckoID:       "matic-network",
 		},
 		// Arbitrum One
 		42161: {
@@ -150,11 +151,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         42161,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
 			MulticallAddress:  "0x80C7DD92B6A8b6E6d5B5E3E4a2F1C0D9E8F7B6A5",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/16547/small/photo_2023-03-29_21.47.00.jpeg",
-			CoingeckoID:      "arbitrum",
+			IconURL:           "https://assets.coingecko.com/coins/images/16547/small/photo_2023-03-29_21.47.00.jpeg",
+			CoingeckoID:       "arbitrum",
 		},
 		// Optimism
 		10: {
@@ -171,11 +172,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         10,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
 			MulticallAddress:  "0x2DC5F50D9B8D88E3aF2b2F2E4E5A6B7C8D9E0F1A",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/25244/small/Optimism.png",
-			CoingeckoID:      "optimism",
+			IconURL:           "https://assets.coingecko.com/coins/images/25244/small/Optimism.png",
+			CoingeckoID:       "optimism",
 		},
 		// Base
 		8453: {
@@ -192,11 +193,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         8453,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
 			MulticallAddress:  "0xE4cB7C243163f91F8b4e0b0d9E1dF5a3b7C8D9E0",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/31081/small/base.png",
-			CoingeckoID:      "base",
+			IconURL:           "https://assets.coingecko.com/coins/images/31081/small/base.png",
+			CoingeckoID:       "base",
 		},
 		// Avalanche
 		43114: {
@@ -213,11 +214,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         43114,
 			NativeToken:       &NativeToken{Name: "Avalanche", Symbol: "AVAX", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/12559/small/Avalanche_Circle_RedWhite_Trans.png", CoingeckoID: "avalanche-2"},
 			MulticallAddress:  "0xC3D5795d9D16a56A9D8eC4d7F1E2C3A4B5C6D7E8",
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/12559/small/Avalanche_Circle_RedWhite_Trans.png",
-			CoingeckoID:      "avalanche-2",
+			IconURL:           "https://assets.coingecko.com/coins/images/12559/small/Avalanche_Circle_RedWhite_Trans.png",
+			CoingeckoID:       "avalanche-2",
 		},
 		// Fantom
 		250: {
@@ -234,11 +235,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         250,
 			NativeToken:       &NativeToken{Name: "Fantom", Symbol: "FTM", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/4001/small/Fantom_round.png", CoingeckoID: "fantom"},
 			MulticallAddress:  "0xC9D2D4aB4D5E6F7A8B9C0D1E2F3A4B5C6D7E8F9A",
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/4001/small/Fantom_round.png",
-			CoingeckoID:      "fantom",
+			IconURL:           "https://assets.coingecko.com/coins/images/4001/small/Fantom_round.png",
+			CoingeckoID:       "fantom",
 		},
 		// Harmony
 		1666600000: {
@@ -253,11 +254,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x63564C40",
 			NetworkID:         1666600000,
 			NativeToken:       &NativeToken{Name: "Harmony", Symbol: "ONE", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/4343/small/Yellow_Icon.png", CoingeckoID: "harmony"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/4343/small/Yellow_Icon.png",
-			CoingeckoID:      "harmony",
+			IconURL:           "https://assets.coingecko.com/coins/images/4343/small/Yellow_Icon.png",
+			CoingeckoID:       "harmony",
 		},
 		// Gnosis Chain
 		100: {
@@ -273,11 +274,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x64",
 			NetworkID:         100,
 			NativeToken:       &NativeToken{Name: "Gnosis", Symbol: "xDAI", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/662/small/xdai.png", CoingeckoID: "xdai"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/662/small/xdai.png",
-			CoingeckoID:      "xdai",
+			IconURL:           "https://assets.coingecko.com/coins/images/662/small/xdai.png",
+			CoingeckoID:       "xdai",
 		},
 		// Cronos
 		25: {
@@ -293,11 +294,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x19",
 			NetworkID:         25,
 			NativeToken:       &NativeToken{Name: "Cronos", Symbol: "CRO", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/7310/small/cro.png", CoingeckoID: "crypto-com-chain"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/7310/small/cro.png",
-			CoingeckoID:      "crypto-com-chain",
+			IconURL:           "https://assets.coingecko.com/coins/images/7310/small/cro.png",
+			CoingeckoID:       "crypto-com-chain",
 		},
 		// Moonriver
 		1285: {
@@ -313,11 +314,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x505",
 			NetworkID:         1285,
 			NativeToken:       &NativeToken{Name: "Moonriver", Symbol: "MOVR", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/11195/small/moonriver.png", CoingeckoID: "moonriver"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/11195/small/moonriver.png",
-			CoingeckoID:      "moonriver",
+			IconURL:           "https://assets.coingecko.com/coins/images/11195/small/moonriver.png",
+			CoingeckoID:       "moonriver",
 		},
 		// Celo
 		42220: {
@@ -332,11 +333,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xa4ec",
 			NetworkID:         42220,
 			NativeToken:       &NativeToken{Name: "Celo", Symbol: "CELO", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/5568/small/Celo_Asset_Utility_Currency_Rock.png", CoingeckoID: "celo"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/5568/small/Celo_Asset_Utility_Currency_Rock.png",
-			CoingeckoID:      "celo",
+			IconURL:           "https://assets.coingecko.com/coins/images/5568/small/Celo_Asset_Utility_Currency_Rock.png",
+			CoingeckoID:       "celo",
 		},
 		// Aurora
 		1313161554: {
@@ -352,11 +353,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x4e454152",
 			NetworkID:         1313161554,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/27482/small/aurora.jpeg",
-			CoingeckoID:      "aurora",
+			IconURL:           "https://assets.coingecko.com/coins/images/27482/small/aurora.jpeg",
+			CoingeckoID:       "aurora",
 		},
 		// Klaytn
 		8217: {
@@ -371,11 +372,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x2019",
 			NetworkID:         8217,
 			NativeToken:       &NativeToken{Name: "Klaytn", Symbol: "KLAY", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/9672/small/klaytn.png", CoingeckoID: "klaytn"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/9672/small/klaytn.png",
-			CoingeckoID:      "klaytn",
+			IconURL:           "https://assets.coingecko.com/coins/images/9672/small/klaytn.png",
+			CoingeckoID:       "klaytn",
 		},
 		// Astar
 		592: {
@@ -390,11 +391,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x250",
 			NetworkID:         592,
 			NativeToken:       &NativeToken{Name: "Astar", Symbol: "ASTR", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/22617/small/astr.png", CoingeckoID: "astar"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/22617/small/astr.png",
-			CoingeckoID:      "astar",
+			IconURL:           "https://assets.coingecko.com/coins/images/22617/small/astr.png",
+			CoingeckoID:       "astar",
 		},
 		// zkSync Era
 		324: {
@@ -410,11 +411,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x144",
 			NetworkID:         324,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coinsimages/49372/small/sync_era_p_500px.png",
-			CoingeckoID:      "zksync",
+			IconURL:           "https://assets.coingecko.com/coinsimages/49372/small/sync_era_p_500px.png",
+			CoingeckoID:       "zksync",
 		},
 		// Linea
 		59144: {
@@ -429,11 +430,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xe708",
 			NetworkID:         59144,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/46786/small/Linea_Logo_Normal-03_FD_600.png",
-			CoingeckoID:      "linea",
+			IconURL:           "https://assets.coingecko.com/coins/images/46786/small/Linea_Logo_Normal-03_FD_600.png",
+			CoingeckoID:       "linea",
 		},
 		// Mantle
 		5000: {
@@ -448,11 +449,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x1388",
 			NetworkID:         5000,
 			NativeToken:       &NativeToken{Name: "Mantle", Symbol: "MNT", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/49699/small/mantle.png", CoingeckoID: "mantle"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/49699/small/mantle.png",
-			CoingeckoID:      "mantle",
+			IconURL:           "https://assets.coingecko.com/coins/images/49699/small/mantle.png",
+			CoingeckoID:       "mantle",
 		},
 		// Scroll
 		534352: {
@@ -467,11 +468,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x82750",
 			NetworkID:         534352,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/56433/small/scroll.png",
-			CoingeckoID:      "scroll",
+			IconURL:           "https://assets.coingecko.com/coins/images/56433/small/scroll.png",
+			CoingeckoID:       "scroll",
 		},
 		// PulseChain
 		369: {
@@ -486,11 +487,11 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x171",
 			NetworkID:         369,
 			NativeToken:       &NativeToken{Name: "PulseChain", Symbol: "PLS", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/50110/small/pulsechain.png", CoingeckoID: "pulsechain"},
-			IsTestnet:        false,
-			SupportsEIP1559:  true,
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/50110/small/pulsechain.png",
-			CoingeckoID:      "pulsechain",
+			IconURL:           "https://assets.coingecko.com/coins/images/50110/small/pulsechain.png",
+			CoingeckoID:       "pulsechain",
 		},
 		// Dogecoin
 		2000: {
@@ -505,13 +506,13 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x7D0",
 			NetworkID:         2000,
 			NativeToken:       &NativeToken{Name: "Dogecoin", Symbol: "DOGE", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/5/small/dogecoin.png", CoingeckoID: "dogecoin"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: false,
-			IconURL:          "https://assets.coingecko.com/coins/images/5/small/dogecoin.png",
-			CoingeckoID:      "dogecoin",
+			IconURL:           "https://assets.coingecko.com/coins/images/5/small/dogecoin.png",
+			CoingeckoID:       "dogecoin",
 		},
-		// Solana (Non-EVM placeholder - would need separate integration)
+		// Solana (non-EVM)
 		-1: {
 			ChainID:           -1,
 			Name:              "Solana",
@@ -523,13 +524,13 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Decimals:          9,
 			NetworkID:         0,
 			NativeToken:       &NativeToken{Name: "Solana", Symbol: "SOL", Decimals: 9, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/4128/small/solana.png", CoingeckoID: "solana"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/4128/small/solana.png",
-			CoingeckoID:      "solana",
+			IconURL:           "https://assets.coingecko.com/coins/images/4128/small/solana.png",
+			CoingeckoID:       "solana",
 		},
-		// Cosmos (Non-EVM placeholder)
+		// Cosmos Hub (non-EVM)
 		-2: {
 			ChainID:           -2,
 			Name:              "Cosmos Hub",
@@ -541,11 +542,83 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Decimals:          6,
 			NetworkID:         0,
 			NativeToken:       &NativeToken{Name: "Cosmos", Symbol: "ATOM", Decimals: 6, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/1481/small/cosmos_hub.png", CoingeckoID: "cosmos"},
-			IsTestnet:        false,
-			SupportsEIP1559:  false,
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
-			IconURL:          "https://assets.coingecko.com/coins/images/1481/small/cosmos_hub.png",
-			CoingeckoID:      "cosmos",
+			IconURL:           "https://assets.coingecko.com/coins/images/1481/small/cosmos_hub.png",
+			CoingeckoID:       "cosmos",
+		},
+		// Bitcoin (non-EVM, UTXO)
+		-3: {
+			ChainID:           -3,
+			Name:              "Bitcoin",
+			Symbol:            "BTC",
+			Type:              ChainTypeBitcoin,
+			RPCURLs:           []string{"https://bitcoin-rpc.publicnode.com"},
+			ExplorerURL:       "https://mempool.space",
+			BlockTime:         600,
+			Decimals:          8,
+			NetworkID:         0,
+			NativeToken:       &NativeToken{Name: "Bitcoin", Symbol: "BTC", Decimals: 8, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/1/small/bitcoin.png", CoingeckoID: "bitcoin"},
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
+			SupportsWebSocket: false,
+			IconURL:           "https://assets.coingecko.com/coins/images/1/small/bitcoin.png",
+			CoingeckoID:       "bitcoin",
+		},
+		// Aptos (non-EVM)
+		-4: {
+			ChainID:           -4,
+			Name:              "Aptos",
+			Symbol:            "APT",
+			Type:              ChainTypeAptos,
+			RPCURLs:           []string{"https://fullnode.mainnet.aptoslabs.com/v1"},
+			ExplorerURL:       "https://explorer.aptoslabs.com",
+			BlockTime:         4,
+			Decimals:          8,
+			NetworkID:         0,
+			NativeToken:       &NativeToken{Name: "Aptos", Symbol: "APT", Decimals: 8, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/26455/small/aptos_round.png", CoingeckoID: "aptos"},
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
+			SupportsWebSocket: true,
+			IconURL:           "https://assets.coingecko.com/coins/images/26455/small/aptos_round.png",
+			CoingeckoID:       "aptos",
+		},
+		// NEAR (non-EVM)
+		-5: {
+			ChainID:           -5,
+			Name:              "NEAR",
+			Symbol:            "NEAR",
+			Type:              ChainTypeNear,
+			RPCURLs:           []string{"https://rpc.mainnet.near.org"},
+			ExplorerURL:       "https://nearblocks.io",
+			BlockTime:         1,
+			Decimals:          24,
+			NetworkID:         0,
+			NativeToken:       &NativeToken{Name: "NEAR", Symbol: "NEAR", Decimals: 24, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/10365/small/near.jpg", CoingeckoID: "near"},
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
+			SupportsWebSocket: true,
+			IconURL:           "https://assets.coingecko.com/coins/images/10365/small/near.jpg",
+			CoingeckoID:       "near",
+		},
+		// TON (non-EVM)
+		-6: {
+			ChainID:           -6,
+			Name:              "TON",
+			Symbol:            "TON",
+			Type:              ChainTypeTON,
+			RPCURLs:           []string{"https://toncenter.com/api/v2/jsonRPC"},
+			ExplorerURL:       "https://tonviewer.com",
+			BlockTime:         5,
+			Decimals:          9,
+			NetworkID:         0,
+			NativeToken:       &NativeToken{Name: "Toncoin", Symbol: "TON", Decimals: 9, Address: "", LogoURL: "https://assets.coingecko.com/coins/images/17980/small/ton_symbol.png", CoingeckoID: "the-open-network"},
+			IsTestnet:         false,
+			SupportsEIP1559:   false,
+			SupportsWebSocket: false,
+			IconURL:           "https://assets.coingecko.com/coins/images/17980/small/ton_symbol.png",
+			CoingeckoID:       "the-open-network",
 		},
 	}
 }
@@ -572,15 +645,47 @@ func GetBlockchainBySymbol(symbol string) *BlockchainConfig {
 	return nil
 }
 
-// GetAllChainIDs returns all supported chain IDs
+// GetAllChainIDs returns every supported chain ID, EVM and non-EVM alike.
 func GetAllChainIDs() []int64 {
-	ids := make([]int64, 0, len(GetBlockchainConfigs()))
-	for id := range GetBlockchainConfigs() {
-		if id > 0 { // Skip non-EVM placeholders
+	configs := GetBlockchainConfigs()
+	ids := make([]int64, 0, len(configs))
+	for id := range configs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
+// GetEVMChainIDs returns only the EVM-compatible chain IDs.
+func GetEVMChainIDs() []int64 {
+	configs := GetBlockchainConfigs()
+	ids := make([]int64, 0, len(configs))
+	for id, cfg := range configs {
+		if cfg.Type == ChainTypeEVM {
 			ids = append(ids, id)
 		}
 	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	return ids
+}
+
+// GetChainsByType returns every chain in the given family, ordered by chain ID.
+func GetChainsByType(chainType ChainType) []*BlockchainConfig {
+	configs := GetBlockchainConfigs()
+	result := make([]*BlockchainConfig, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg.Type == chainType {
+			result = append(result, cfg)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ChainID < result[j].ChainID })
+	return result
+}
+
+// IsEVMChain reports whether the chain ID belongs to an EVM network.
+func IsEVMChain(chainID int64) bool {
+	cfg, ok := GetBlockchainConfigs()[chainID]
+	return ok && cfg.Type == ChainTypeEVM
 }
 
 // GetTokenConfigs returns common token configurations for all chains
