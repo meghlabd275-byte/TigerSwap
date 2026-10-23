@@ -44,3 +44,9 @@ backend/api_gateway
 backend/order_matching
 backend/api
 backend/cli
+
+# Foundry build artifacts
+contracts/cache/
+contracts/out/
+contracts/lib/
+contracts/broadcast/

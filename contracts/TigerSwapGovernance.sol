@@ -140,7 +140,7 @@ contract TigerSwapGovernance {
      */
     function castVoteWithReason(uint256 proposalId, bool support, string memory reason) public {
         Proposal storage proposal = proposals[proposalId];
-        require(proposal.state() == ProposalState.Active, "TigerSwap: NOT_ACTIVE");
+        require(state(proposalId) == ProposalState.Active, "TigerSwap: NOT_ACTIVE");
         
         uint256 weight = governanceToken.balanceOf(msg.sender);
         require(weight > 0, "TigerSwap: NO_VOTING_POWER");
@@ -163,7 +163,7 @@ contract TigerSwapGovernance {
      */
     function queueProposal(uint256 proposalId) public {
         Proposal storage proposal = proposals[proposalId];
-        require(proposal.state() == ProposalState.Succeeded, "TigerSwap: NOT_SUCCEEDED");
+        require(state(proposalId) == ProposalState.Succeeded, "TigerSwap: NOT_SUCCEEDED");
         
         proposalTimestamps[proposalId] = block.timestamp + queuePeriod;
         
@@ -176,7 +176,7 @@ contract TigerSwapGovernance {
      */
     function executeProposal(uint256 proposalId) public payable {
         Proposal storage proposal = proposals[proposalId];
-        require(proposal.state() == ProposalState.Queued, "TigerSwap: NOT_QUEUED");
+        require(state(proposalId) == ProposalState.Queued, "TigerSwap: NOT_QUEUED");
         require(block.timestamp >= proposalTimestamps[proposalId], "TigerSwap: TOO_EARLY");
         require(block.timestamp <= proposalTimestamps[proposalId] + gracePeriod, "TigerSwap: EXPIRED");
         
@@ -199,7 +199,7 @@ contract TigerSwapGovernance {
     function cancelProposal(uint256 proposalId) public {
         Proposal storage proposal = proposals[proposalId];
         require(msg.sender == proposal.proposer || msg.sender == owner, "TigerSwap: NOT_AUTHORIZED");
-        require(proposal.state() == ProposalState.Pending || proposal.state() == ProposalState.Active, "TigerSwap: CANNOT_CANCEL");
+        require(state(proposalId) == ProposalState.Pending || state(proposalId) == ProposalState.Active, "TigerSwap: CANNOT_CANCEL");
         
         proposal.canceled = true;
         
@@ -241,13 +241,6 @@ contract TigerSwapGovernance {
         }
         
         return ProposalState.Queued;
-    }
-
-    /**
-     * @notice Get proposal count
-     */
-    function proposalCount() public view returns (uint256) {
-        return proposals.length;
     }
 
     /**

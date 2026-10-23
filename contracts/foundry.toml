@@ -1,8 +1,15 @@
 [profile.default]
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+]
 src = "."
 out = "out"
-libs = ["node_modules"]
+libs = ["node_modules", "lib"]
 solc = "0.8.20"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
 
 [rpc_endpoints]
 mainnet = "${MAINNET_RPC_URL}"

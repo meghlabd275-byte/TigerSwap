@@ -28,6 +28,7 @@ contract TigerSwapPerpetuals {
     
     // Position tracking
     struct Position {
+        bytes32 marketId;
         address trader;
         uint256 size;
         uint256 collateral;
@@ -139,6 +140,7 @@ contract TigerSwapPerpetuals {
         
         // Create position
         positions[positionId] = Position({
+            marketId: marketId,
             trader: msg.sender,
             size: size,
             collateral: collateral,
@@ -162,10 +164,11 @@ contract TigerSwapPerpetuals {
         require(position.trader == msg.sender, "TigerSwap: NOT_TRADER");
         require(position.size > 0, "TigerSwap: POSITION_NOT_EXISTS");
         
-        Market memory market = markets[getMarketId(positionId)];
-        
+        bytes32 marketId = position.marketId;
+        Market memory market = markets[marketId];
+
         // Get current price
-        uint256 currentPrice = getMarkPrice(getMarketId(positionId));
+        uint256 currentPrice = getMarkPrice(marketId);
         
         // Calculate PnL
         int256 pnl = calculatePnL(position, currentPrice);
@@ -185,7 +188,7 @@ contract TigerSwapPerpetuals {
         // Delete position
         delete positions[positionId];
         
-        emit PositionClosed(getMarketId(positionId), msg.sender, uint256(pnl));
+        emit PositionClosed(marketId, msg.sender, uint256(pnl));
     }
     
     /**
@@ -202,23 +205,37 @@ contract TigerSwapPerpetuals {
         // Get current price
         uint256 currentPrice = getMarkPrice(marketId);
         
-        // Calculate margin ratio
+        // Calculate margin ratio against the signed position value. A losing
+        // position has less equity, so losses must reduce the numerator.
         int256 pnl = calculatePnL(position, currentPrice);
-        uint256 totalValue = position.collateral + (pnl > 0 ? uint256(pnl) : 0);
-        uint256 marginRatio = totalValue * LEVERAGE_PRECISION / (position.size * currentPrice / PRICE_PRECISION);
-        
-        require(marginRatio < market.maintenanceMargin, "TigerSwap: CANNOT_LIQUIDATE");
-        
-        // Calculate liquidation fee
+        int256 equity = int256(position.collateral) + pnl;
+        uint256 positionValue = position.size * currentPrice / PRICE_PRECISION;
+        require(positionValue > 0, "TigerSwap: INVALID_POSITION");
+
+        // A position is liquidatable when equity is negative or the margin
+        // ratio falls below the maintenance margin.
+        bool belowMaintenance = equity < 0
+            || uint256(equity) * LEVERAGE_PRECISION / positionValue < market.maintenanceMargin;
+        require(belowMaintenance, "TigerSwap: CANNOT_LIQUIDATE");
+
+        // The liquidator receives a fee capped at the remaining equity.
+        uint256 remainingEquity = equity > 0 ? uint256(equity) : 0;
         uint256 liquidationFee = position.collateral * market.liquidationFee / LEVERAGE_PRECISION;
-        
-        // Transfer collateral minus fee to liquidator
+        if (liquidationFee > remainingEquity) {
+            liquidationFee = remainingEquity;
+        }
+        address trader = position.trader;
+
+        // Transfer the fee to the liquidator and the remainder to the trader.
         IERC20(market.token).transfer(msg.sender, liquidationFee);
-        
+        if (remainingEquity > liquidationFee) {
+            IERC20(market.token).transfer(trader, remainingEquity - liquidationFee);
+        }
+
         // Delete position
         delete positions[positionId];
-        
-        emit PositionLiquidated(marketId, position.trader, liquidationFee);
+
+        emit PositionLiquidated(marketId, trader, liquidationFee);
     }
     
     /**
@@ -228,7 +245,9 @@ contract TigerSwapPerpetuals {
      */
     function addMargin(bytes32 positionId, uint256 amount) external {
         Position storage position = positions[positionId];
+        require(position.size > 0, "TigerSwap: POSITION_NOT_EXISTS");
         require(position.trader == msg.sender, "TigerSwap: NOT_TRADER");
+        require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         
         bytes32 marketId = getMarketId(positionId);
         Market memory market = markets[marketId];
@@ -248,7 +267,9 @@ contract TigerSwapPerpetuals {
      */
     function removeMargin(bytes32 positionId, uint256 amount) external {
         Position storage position = positions[positionId];
+        require(position.size > 0, "TigerSwap: POSITION_NOT_EXISTS");
         require(position.trader == msg.sender, "TigerSwap: NOT_TRADER");
+        require(amount > 0 && amount < position.collateral, "TigerSwap: INVALID_AMOUNT");
         
         bytes32 marketId = getMarketId(positionId);
         Market memory market = markets[marketId];
@@ -321,6 +342,7 @@ contract TigerSwapPerpetuals {
      * @notice Get position details
      */
     function getPosition(bytes32 positionId) external view returns (
+        bytes32 marketId,
         address trader,
         uint256 size,
         uint256 collateral,
@@ -330,6 +352,7 @@ contract TigerSwapPerpetuals {
     ) {
         Position memory position = positions[positionId];
         return (
+            position.marketId,
             position.trader,
             position.size,
             position.collateral,
@@ -343,8 +366,9 @@ contract TigerSwapPerpetuals {
      * @notice Get mark price for a market
      */
     function getMarkPrice(bytes32 marketId) public view returns (uint256) {
-        FundingInfo memory info = fundingInfo[marketId];
-        return info.markPrice > 0 ? info.markPrice : 1e8; // Default to $1 if not set
+        uint256 markPrice = fundingInfo[marketId].markPrice;
+        require(markPrice > 0, "TigerSwap: MARKET_PRICE_NOT_SET");
+        return markPrice;
     }
     
     /**
@@ -388,11 +412,10 @@ contract TigerSwapPerpetuals {
     }
     
     /**
-     * @notice Get market ID from position
+     * @notice Get the market id a position belongs to
      */
-    function getMarketId(bytes32 positionId) internal pure returns (bytes32) {
-        // Extract market ID from position ID
-        return bytes32(uint256(positionId));
+    function getMarketId(bytes32 positionId) internal view returns (bytes32) {
+        return positions[positionId].marketId;
     }
     
     // --- Admin Functions ---

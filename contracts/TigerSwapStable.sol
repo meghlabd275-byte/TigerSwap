@@ -134,8 +134,8 @@ contract TigerSwapStable {
         uint256 min_dy
     ) external returns (uint256) {
         require(i != j, "Same coin");
-        require(i >= 0 && i < N_COINS, "Invalid i");
-        require(j >= 0 && j < N_COINS, "Invalid j");
+        require(i >= 0 && uint256(uint128(i)) < N_COINS, "Invalid i");
+        require(j >= 0 && uint256(uint128(j)) < N_COINS, "Invalid j");
         require(dx > 0, "Invalid dx");
         
         // Get current balances
@@ -143,20 +143,20 @@ contract TigerSwapStable {
         uint256[N_COINS] memory xp = _xp(rates);
         
         // Calculate output
-        uint256 x = xp[uint256(i)] + dx * rates[uint256(i)] / PRECISION;
+        uint256 x = xp[uint256(uint128(i))] + dx * rates[uint256(uint128(i))] / PRECISION;
         
-        uint256 dy = _exchange(xp, uint256(i), uint256(j), x, rates);
+        uint256 dy = _exchange(xp, uint256(uint128(i)), uint256(uint128(j)), x, rates);
         require(dy >= min_dy, "Slippage");
         
         // Update balances
-        balances[uint256(i)] += dx;
-        balances[uint256(j)] -= dy;
+        balances[uint256(uint128(i))] += dx;
+        balances[uint256(uint128(j))] -= dy;
         
         // Transfer tokens
-        IERC20(coins[uint256(i)]).transferFrom(msg.sender, address(this), dx);
-        IERC20(coins[uint256(j)]).transfer(msg.sender, dy);
+        IERC20(coins[uint256(uint128(i))]).transferFrom(msg.sender, address(this), dx);
+        IERC20(coins[uint256(uint128(j))]).transfer(msg.sender, dy);
         
-        emit TokenExchange(msg.sender, uint256(i), dx, uint256(j), dy);
+        emit TokenExchange(msg.sender, uint256(uint128(i)), dx, uint256(uint128(j)), dy);
         
         return dy;
     }
@@ -231,7 +231,7 @@ contract TigerSwapStable {
     /**
      * @notice Remove liquidity from the pool
      * @param amount Amount of LP tokens to burn
-     * @param[2] min_amounts Minimum amounts to receive [token0, token1]
+     * @param min_amounts Minimum amounts to receive [token0, token1]
      * @return Actual amounts received
      */
     function remove_liquidity(
@@ -282,7 +282,7 @@ contract TigerSwapStable {
         uint256 min_amount
     ) external returns (uint256) {
         require(amount > 0, "Invalid amount");
-        require(i >= 0 && i < N_COINS, "Invalid i");
+        require(i >= 0 && uint256(uint128(i)) < N_COINS, "Invalid i");
         
         // Calculate dy
         uint256[N_COINS] memory rates = _getRates();
@@ -290,7 +290,7 @@ contract TigerSwapStable {
         uint256 d0 = _invariant(xp);
         
         uint256[N_COINS] memory new_balances = balances;
-        new_balances[uint256(i)] -= amount * xp[uint256(i)] / d0;
+        new_balances[uint256(uint128(i))] -= amount * xp[uint256(uint128(i))] / d0;
         
         uint256 dy = 0;
         uint256 dy_fee = 0;
@@ -299,7 +299,7 @@ contract TigerSwapStable {
             uint256[N_COINS] memory new_xp = _xp_mem(rates, new_balances);
             uint256 d1 = _invariant(new_xp);
             
-            dy = new_balances[uint256(i)] - _getYD(i, d1, new_xp);
+            dy = new_balances[uint256(uint128(i))] - _getYD(uint256(uint128(i)), d1, new_xp);
             
             // Apply fees
             dy_fee = dy * fee / MAX_FEE;
@@ -310,10 +310,10 @@ contract TigerSwapStable {
         
         // Update state
         _burn(msg.sender, amount);
-        balances[uint256(i)] -= (dy + dy_fee);
+        balances[uint256(uint128(i))] -= (dy + dy_fee);
         
         // Transfer
-        IERC20(coins[uint256(i)]).transfer(msg.sender, dy);
+        IERC20(coins[uint256(uint128(i))]).transfer(msg.sender, dy);
         
         emit RemoveLiquidityOne(msg.sender, amount, dy, [dy_fee, 0]);
         
@@ -410,7 +410,7 @@ contract TigerSwapStable {
         return D;
     }
     
-    function _getYD(uint256 i, uint256 D, uint256[N_COINS] memory xp) internal pure returns (uint256) {
+    function _getYD(uint256 i, uint256 D, uint256[N_COINS] memory xp) internal view returns (uint256) {
         require(i < N_COINS, "Invalid i");
         
         uint256 N = N_COINS * PRECISION;

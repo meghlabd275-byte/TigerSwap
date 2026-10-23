@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./TigerSwapInterfaces.sol";
+
 /**
  * @title TigerSwapRouter
  * @notice Router contract for swapping tokens through pools
@@ -10,6 +12,7 @@ contract TigerSwapRouter {
     address public WETH;
 
     uint256 constant MINIMUM_LIQUIDITY = 1000;
+    uint256 constant FEE_DENOMINATOR = 10_000;
 
     event LiquidityAdded(address indexed provider, uint256 amount0, uint256 amount1);
     event LiquidityRemoved(address indexed provider, uint256 amount0, uint256 amount1);
@@ -50,14 +53,14 @@ contract TigerSwapRouter {
         uint256 deadline
     ) external ensure(deadline) returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
         (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
-        address pool = TigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
         
         // Transfer tokens to pool
         IERC20(tokenA).transferFrom(msg.sender, pool, amountA);
         IERC20(tokenB).transferFrom(msg.sender, pool, amountB);
         
         // Mint LP tokens
-        liquidity = TigerSwapPool(pool).mint(to);
+        liquidity = ITigerSwapPool(pool).mint(to);
         
         emit LiquidityAdded(to, amountA, amountB);
     }
@@ -74,13 +77,13 @@ contract TigerSwapRouter {
         uint256 deadline
     ) external payable ensure(deadline) returns (uint256 amountToken, uint256 amountETH, uint256 liquidity) {
         (amountToken, amountETH) = _addLiquidity(token, WETH, amountTokenDesired, msg.value, amountTokenMin, amountETHMin);
-        address pool = TigerSwapFactory(factory).getPoolAddress(token, WETH);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(token, WETH);
         
         IERC20(token).transferFrom(msg.sender, pool, amountToken);
         IWETH(WETH).deposit{value: amountETH}();
         IWETH(WETH).transfer(pool, amountETH);
         
-        liquidity = TigerSwapPool(pool).mint(to);
+        liquidity = ITigerSwapPool(pool).mint(to);
         
         // Return excess ETH
         if (msg.value > amountETH) {
@@ -102,14 +105,14 @@ contract TigerSwapRouter {
         address to,
         uint256 deadline
     ) public ensure(deadline) returns (uint256 amountA, uint256 amountB) {
-        address pool = TigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
         
         // Transfer LP tokens
         IERC20(pool).transferFrom(msg.sender, pool, liquidity);
         
         // Burn and get amounts
-        (amountA, amountB) = TigerSwapPool(pool).burn(to);
+        (amountA, amountB) = ITigerSwapPool(pool).burn(to);
         
         require(amountA >= amountAMin, "TigerSwap: INSUFFICIENT_A");
         require(amountB >= amountBMin, "TigerSwap: INSUFFICIENT_B");
@@ -136,7 +139,9 @@ contract TigerSwapRouter {
         amounts = getAmountsOut(amountIn, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
         
-        IERC20(path[0]).transferFrom(msg.sender, factory, amounts[0]);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+        require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
+        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
         _swap(amounts, path, to);
     }
 
@@ -153,7 +158,9 @@ contract TigerSwapRouter {
         amounts = getAmountsIn(amountOut, path);
         require(amounts[0] <= amountInMax, "TigerSwap: EXCESSIVE_INPUT_AMOUNT");
         
-        IERC20(path[0]).transferFrom(msg.sender, factory, amounts[0]);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+        require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
+        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
         _swap(amounts, path, to);
     }
 
@@ -170,8 +177,10 @@ contract TigerSwapRouter {
         amounts = getAmountsOut(msg.value, path);
         require(amounts[amounts.length - 1] >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
         
+        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+        require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
         IWETH(WETH).deposit{value: amounts[0]}();
-        IERC20(WETH).transfer(factory, amounts[0]);
+        IERC20(WETH).transfer(pool, amounts[0]);
         _swap(amounts, path, to);
     }
 
@@ -187,11 +196,14 @@ contract TigerSwapRouter {
         amounts = getAmountsIn(amountOut, path);
         require(amounts[0] <= amountInMax, "TigerSwap: EXCESSIVE_INPUT_AMOUNT");
         
-        IERC20(path[0]).transferFrom(msg.sender, factory, amounts[0]);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+        require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
+        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
         _swap(amounts, path, address(this));
         
         IWETH(WETH).withdraw(amounts[amounts.length - 1]);
-        payable(to).transfer(amounts[amounts.length - 1]);
+        (bool sent, ) = payable(to).call{value: amounts[amounts.length - 1]}("");
+        require(sent, "TigerSwap: ETH_TRANSFER_FAILED");
     }
 
     /**
@@ -203,11 +215,8 @@ contract TigerSwapRouter {
         amounts[0] = amountIn;
         
         for (uint256 i = 0; i < path.length - 1; i++) {
-            address pool = TigerSwapFactory(factory).getPoolAddress(path[i], path[i + 1]);
-            if (pool == address(0)) {
-                amounts[i + 1] = amounts[i];
-                continue;
-            }
+            address pool = ITigerSwapFactory(factory).getPoolAddress(path[i], path[i + 1]);
+            require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
             
             (uint256 reserve0, uint256 reserve1) = getReserves(pool, path[i], path[i + 1]);
             amounts[i + 1] = getAmountOut(amounts[i], reserve0, reserve1);
@@ -223,6 +232,8 @@ contract TigerSwapRouter {
         amounts[amounts.length - 1] = amountOut;
         
         for (uint256 i = path.length - 1; i > 0; i--) {
+            address pool = ITigerSwapFactory(factory).getPoolAddress(path[i - 1], path[i]);
+            require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
             (uint256 reserve0, uint256 reserve1) = getReserves(pool, path[i - 1], path[i]);
             amounts[i - 1] = getAmountIn(amounts[i], reserve0, reserve1);
         }
@@ -231,13 +242,15 @@ contract TigerSwapRouter {
     /**
      * @notice Calculate output amount for input
      */
-    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256) {
+    function getAmountOut(uint256 amountIn, uint256 reserveIn, uint256 reserveOut) internal view returns (uint256) {
         require(amountIn > 0, "TigerSwap: INSUFFICIENT_INPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "TigerSwap: INSUFFICIENT_LIQUIDITY");
         
-        uint256 amountInWithFee = amountIn * 997;
+        uint256 fee = ITigerSwapFactory(factory).swapFee();
+        require(fee < FEE_DENOMINATOR, "TigerSwap: FEE_TOO_HIGH");
+        uint256 amountInWithFee = amountIn * (FEE_DENOMINATOR - fee);
         uint256 numerator = amountInWithFee * reserveOut;
-        uint256 denominator = reserveIn * 1000 + amountInWithFee;
+        uint256 denominator = reserveIn * FEE_DENOMINATOR + amountInWithFee;
         
         return numerator / denominator;
     }
@@ -245,12 +258,15 @@ contract TigerSwapRouter {
     /**
      * @notice Calculate input amount for output
      */
-    function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256) {
+    function getAmountIn(uint256 amountOut, uint256 reserveIn, uint256 reserveOut) internal view returns (uint256) {
         require(amountOut > 0, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
         require(reserveIn > 0 && reserveOut > 0, "TigerSwap: INSUFFICIENT_LIQUIDITY");
         
-        uint256 numerator = reserveIn * amountOut * 1000;
-        uint256 denominator = (reserveOut - amountOut) * 997;
+        uint256 fee = ITigerSwapFactory(factory).swapFee();
+        require(fee < FEE_DENOMINATOR, "TigerSwap: FEE_TOO_HIGH");
+        require(amountOut < reserveOut, "TigerSwap: INSUFFICIENT_LIQUIDITY");
+        uint256 numerator = reserveIn * amountOut * FEE_DENOMINATOR;
+        uint256 denominator = (reserveOut - amountOut) * (FEE_DENOMINATOR - fee);
         
         return numerator / denominator + 1;
     }
@@ -261,13 +277,21 @@ contract TigerSwapRouter {
     function _swap(uint256[] memory amounts, address[] memory path, address to) internal {
         for (uint256 i = 0; i < path.length - 1; i++) {
             (address input, address output) = (path[i], path[i + 1]);
-            (uint256 reserve0, uint256 reserve1) = getReserves(pool, input, output);
+            (address token0, ) = sortTokens(input, output);
+            address pool = ITigerSwapFactory(factory).getPoolAddress(input, output);
+            require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
+
             uint256 amountOut = amounts[i + 1];
-            
-            address pool = TigerSwapFactory(factory).getPoolAddress(input, output);
-            if (to != address(this)) {
-                IERC20(output).transfer(to, amountOut);
-            }
+            (uint256 amount0Out, uint256 amount1Out) =
+                input == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
+
+            // Intermediate hops forward to the next pool; the final hop pays `to`.
+            address recipient = i < path.length - 2
+                ? ITigerSwapFactory(factory).getPoolAddress(output, path[i + 2])
+                : to;
+            require(recipient != address(0), "TigerSwap: POOL_NOT_FOUND");
+
+            ITigerSwapPool(pool).swap(amount0Out, amount1Out, recipient, new bytes(0));
         }
     }
 
@@ -276,7 +300,7 @@ contract TigerSwapRouter {
      */
     function getReserves(address pool, address tokenA, address tokenB) internal view returns (uint256 reserveA, uint256 reserveB) {
         (address token0, ) = sortTokens(tokenA, tokenB);
-        (uint256 reserve0, uint256 reserve1, , ) = TigerSwapPool(pool).getReserves();
+        (uint256 reserve0, uint256 reserve1, ) = ITigerSwapPool(pool).getReserves();
         (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
     }
 
@@ -291,11 +315,11 @@ contract TigerSwapRouter {
         uint256 amountAMin,
         uint256 amountBMin
     ) internal returns (uint256 amountA, uint256 amountB) {
-        address pool = TigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
+        address pool = ITigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
         
         if (pool == address(0)) {
-            TigerSwapFactory(factory).createPool(tokenA, tokenB);
-            pool = TigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
+            ITigerSwapFactory(factory).createPool(tokenA, tokenB);
+            pool = ITigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
         }
         
         (uint256 reserveA, uint256 reserveB) = getReserves(pool, tokenA, tokenB);
@@ -332,37 +356,4 @@ contract TigerSwapRouter {
     receive() external payable {
         assert(msg.sender == WETH);
     }
-}
-
-/**
- * @title IWETH
- * @notice Interface for WETH
- */
-interface IWETH {
-    function deposit() external payable;
-    function transfer(address to, uint256 value) external returns (bool);
-    function withdraw(uint256) external;
-}
-
-interface IERC20 {
-    function totalSupply() external view returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function transfer(address to, uint256 value) external returns (bool);
-    function allowance(address owner, address spender) external view returns (uint256);
-    function approve(address spender, uint256 value) external returns (bool);
-    function transferFrom(address from, address to, uint256 value) external returns (bool);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
-}
-
-interface TigerSwapFactory {
-    function getPoolAddress(address tokenA, address tokenB) external view returns (address);
-    function createPool(address tokenA, address tokenB) external returns (address pool);
-}
-
-interface TigerSwapPool {
-    function mint(address to) external returns (uint256 liquidity);
-    function burn(address to) external returns (uint256 amount0, uint256 amount1);
-    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
-    function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
 }

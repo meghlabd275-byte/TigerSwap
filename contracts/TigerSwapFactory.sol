@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./TigerSwapInterfaces.sol";
+
 /**
  * @title TigerSwapFactory
  * @notice Factory contract for creating and managing liquidity pools
@@ -179,7 +181,7 @@ contract TigerSwapPool {
     address public token1;
     uint256 public reserve0;
     uint256 public reserve1;
-    uint256 public blockTimestampLast;
+    uint32 public blockTimestampLast;
 
     uint256 public price0CumulativeLast;
     uint256 public price1CumulativeLast;
@@ -190,6 +192,9 @@ contract TigerSwapPool {
     mapping(address => uint256) public nonces;
 
     uint256 private unlocked = 1;
+
+    /// @notice Permanently locked initial liquidity, as in Uniswap V2.
+    uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
     event Mint(address indexed sender, uint256 amount0, uint256 amount1);
     event Burn(address indexed sender, uint256 amount0, uint256 amount1, address indexed to);
@@ -227,6 +232,16 @@ contract TigerSwapPool {
     /**
      * @notice Update reserves
      */
+    /**
+     * @notice Current reserves and the timestamp they were last synced.
+     */
+    function getReserves() external view returns (uint112, uint112, uint32) {
+        return (uint112(reserve0), uint112(reserve1), blockTimestampLast);
+    }
+
+    /**
+     * @notice Update reserves
+     */
     function _update(uint256 balance0, uint256 balance1) internal {
         require(balance0 <= type(uint112).max && balance1 <= type(uint112).max, "TigerSwap: OVERFLOW");
         reserve0 = uint112(balance0);
@@ -255,6 +270,11 @@ contract TigerSwapPool {
         uint256 _totalSupply = totalSupply;
         if (_totalSupply == 0) {
             liquidity = sqrt(amount0 * amount1);
+            require(liquidity > MINIMUM_LIQUIDITY, "TigerSwap: INSUFFICIENT_LIQUIDITY");
+            // Lock the smallest unit of LP forever so the pool can never be
+            // emptied to a zero supply.
+            _mint(address(0), MINIMUM_LIQUIDITY);
+            liquidity -= MINIMUM_LIQUIDITY;
         } else {
             liquidity = min(amount0 * _totalSupply / reserve0, amount1 * _totalSupply / reserve1);
         }
@@ -308,19 +328,10 @@ contract TigerSwapPool {
 
         require(balance0 * balance1 >= reserve0 * reserve1, "TigerSwap: K");
 
-        uint256 swapFee = 30; // 0.3%
         uint256 amount0In = balance0 > reserve0 - amount0Out ? balance0 - (reserve0 - amount0Out) : 0;
         uint256 amount1In = balance1 > reserve1 - amount1Out ? balance1 - (reserve1 - amount1Out) : 0;
 
         require(amount0In > 0 || amount1In > 0, "TigerSwap: INSUFFICIENT_INPUT_AMOUNT");
-
-        // Calculate output with fee
-        if (amount0In > 0) {
-            amount0Out = amount0Out + (amount0In * swapFee) / 1000;
-        }
-        if (amount1In > 0) {
-            amount1Out = amount1Out + (amount1In * swapFee) / 1000;
-        }
 
         _update(balance0, balance1);
 
@@ -413,27 +424,13 @@ contract TigerSwapPool {
         return a < b ? a : b;
     }
 
-    function sqrt(uint256 x) internal pure returns (uint256) {
-        uint256 z = x + 1 >> 1;
-        while (z < x) {
-            x = z;
-            z = (x / z + z) >> 1;
+    function sqrt(uint256 x) internal pure returns (uint256 z) {
+        if (x == 0) return 0;
+        z = x;
+        uint256 y = x / 2 + 1;
+        while (y < z) {
+            z = y;
+            y = (x / y + y) / 2;
         }
-        return x;
     }
-}
-
-/**
- * @title IERC20
- * @notice Interface for ERC20 tokens
- */
-interface IERC20 {
-    function totalSupply() external view returns (uint256);
-    function balanceOf(address account) external view returns (uint256);
-    function transfer(address to, uint256 value) external returns (bool);
-    function allowance(address owner, address spender) external view returns (uint256);
-    function approve(address spender, uint256 value) external returns (bool);
-    function transferFrom(address from, address to, uint256 value) external returns (bool);
-    event Transfer(address indexed from, address indexed to, uint256 value);
-    event Approval(address indexed owner, address indexed spender, uint256 value);
 }
