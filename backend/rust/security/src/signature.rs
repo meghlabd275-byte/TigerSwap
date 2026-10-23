@@ -163,7 +163,6 @@ pub fn verify_personal_message(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use k256::ecdsa::signature::Signer;
     use k256::ecdsa::SigningKey;
 
     fn signing_key() -> SigningKey {

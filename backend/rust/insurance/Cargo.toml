@@ -1,0 +1,20 @@
+[package]
+name = "tigerswap-insurance"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap Team <risk@tigerswap.io>"]
+description = "Insurance fund and secure key storage for TigerSwap"
+license = "MIT"
+
+[lib]
+name = "tigerswap_insurance"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+tigerswap-security = { path = "../security" }
+parking_lot = "0.12"
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"
+

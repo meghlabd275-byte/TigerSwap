@@ -1,0 +1,19 @@
+[package]
+name = "tigerswap-fast"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap Team <engine@tigerswap.io>"]
+description = "Ultra-low-latency trading engine primitives for TigerSwap"
+license = "MIT"
+
+[lib]
+name = "tigerswap_fast"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+parking_lot = "0.12"
+libc = "0.2"
+
+[dev-dependencies]
+criterion = "0.5"
+

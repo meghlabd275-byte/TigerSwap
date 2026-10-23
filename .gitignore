@@ -50,3 +50,7 @@ contracts/cache/
 contracts/out/
 contracts/lib/
 contracts/broadcast/
+
+# Rust build artifacts
+target/
+Cargo.lock
