@@ -58,3 +58,8 @@ Cargo.lock
 # C++ build artifacts
 backend/cpp/build/
 compile_commands.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

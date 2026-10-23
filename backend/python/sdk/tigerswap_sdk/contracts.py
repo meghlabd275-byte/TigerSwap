@@ -46,7 +46,22 @@ POOL_ABI = [
     {"inputs": [{"internalType": "address", "name": "account", "type": "address"}], "name": "balanceOf", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
 ]
 
+# TigerSwapPerpetuals: oracle-priced perp engine
+# (contracts/TigerSwapPerpetuals.sol).
+PERPETUALS_ABI = [
+    {"inputs": [{"internalType": "bytes32", "name": "marketId", "type": "bytes32"}], "name": "getMarket", "outputs": [{"internalType": "address", "name": "token", "type": "address"}, {"internalType": "uint256", "name": "maxLeverage", "type": "uint256"}, {"internalType": "uint256", "name": "liquidationFee", "type": "uint256"}, {"internalType": "uint256", "name": "maintenanceMargin", "type": "uint256"}, {"internalType": "uint256", "name": "initialMargin", "type": "uint256"}, {"internalType": "bool", "name": "isActive", "type": "bool"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "marketId", "type": "bytes32"}], "name": "getMarkPrice", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "marketId", "type": "bytes32"}], "name": "getFundingInfo", "outputs": [{"internalType": "int256", "name": "lastFundingRate", "type": "int256"}, {"internalType": "uint256", "name": "lastUpdateTime", "type": "uint256"}, {"internalType": "uint256", "name": "markPrice", "type": "uint256"}, {"internalType": "uint256", "name": "indexPrice", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}], "name": "getPosition", "outputs": [{"internalType": "bytes32", "name": "marketId", "type": "bytes32"}, {"internalType": "address", "name": "trader", "type": "address"}, {"internalType": "uint256", "name": "size", "type": "uint256"}, {"internalType": "uint256", "name": "collateral", "type": "uint256"}, {"internalType": "uint256", "name": "entryPrice", "type": "uint256"}, {"internalType": "uint256", "name": "lastUpdated", "type": "uint256"}, {"internalType": "bool", "name": "isLong", "type": "bool"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "marketId", "type": "bytes32"}, {"internalType": "uint256", "name": "size", "type": "uint256"}, {"internalType": "uint256", "name": "collateral", "type": "uint256"}, {"internalType": "bool", "name": "isLong", "type": "bool"}], "name": "openPosition", "outputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}], "stateMutability": "nonpayable", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}], "name": "closePosition", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}, {"internalType": "uint256", "name": "amount", "type": "uint256"}], "name": "addMargin", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}, {"internalType": "uint256", "name": "amount", "type": "uint256"}], "name": "removeMargin", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+    {"inputs": [{"internalType": "bytes32", "name": "positionId", "type": "bytes32"}], "name": "liquidatePosition", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+]
+
 # TigerSwapStaking: stake/unstake/claim (contracts/TigerSwapStaking.sol).
+
 STAKING_ABI = [
     {"inputs": [{"internalType": "uint256", "name": "amount", "type": "uint256"}], "name": "stake", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
     {"inputs": [{"internalType": "uint256", "name": "amount", "type": "uint256"}], "name": "withdraw", "outputs": [], "stateMutability": "nonpayable", "type": "function"},
@@ -64,18 +79,21 @@ DEPLOYMENTS: Dict[int, Dict[str, str]] = {
         "router": "0x0000000000000000000000000000000000000000",
         "factory": "0x0000000000000000000000000000000000000000",
         "staking": "0x0000000000000000000000000000000000000000",
+        "perpetuals": "0x0000000000000000000000000000000000000000",
         "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
     },
     56: {
         "router": "0x0000000000000000000000000000000000000000",
         "factory": "0x0000000000000000000000000000000000000000",
         "staking": "0x0000000000000000000000000000000000000000",
+        "perpetuals": "0x0000000000000000000000000000000000000000",
         "weth": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
     },
     137: {
         "router": "0x0000000000000000000000000000000000000000",
         "factory": "0x0000000000000000000000000000000000000000",
         "staking": "0x0000000000000000000000000000000000000000",
+        "perpetuals": "0x0000000000000000000000000000000000000000",
         "weth": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
     },
 }

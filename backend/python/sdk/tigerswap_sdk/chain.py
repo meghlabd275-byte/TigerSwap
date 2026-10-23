@@ -31,10 +31,20 @@ class ChainManager:
         self.client = client
     
     def get_chain(self, chain_id: int) -> Chain:
-        return self.CHAINS.get(chain_id)
+        """Return a chain by id, raising when it is unsupported."""
+        chain = self.CHAINS.get(chain_id)
+        if chain is None:
+            raise KeyError(f"chain {chain_id} is not supported")
+        return chain
     
     def get_all_chains(self) -> List[Chain]:
         return list(self.CHAINS.values())
     
     def switch_chain(self, chain_id: int) -> None:
+        """Point the client at another supported chain."""
+        self.get_chain(chain_id)
         self.client.chain_id = chain_id
+
+    def get_chain_by_type(self, chain_type: str) -> List[Chain]:
+        """All supported chains of a given type, e.g. "evm"."""
+        return [chain for chain in self.CHAINS.values() if chain.chain_type == chain_type]
