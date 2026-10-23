@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -297,16 +296,15 @@ func (i *Indexer) processBlock(blockNum uint64) {
 		return
 	}
 
-	// Process each transaction receipt
-	for _, tx := range block.Receipts() {
-		for _, log := range tx.Logs {
-			// Check if log is from one of our contracts
-			for name, addr := range i.contracts {
-				if log.Address == addr {
-					i.processLog(log, block)
-					break
-				}
-			}
+	// Fetch each transaction receipt and process its logs.
+	for _, tx := range block.Transactions() {
+		receipt, err := i.client.TransactionReceipt(i.ctx, tx.Hash())
+		if err != nil {
+			log.Printf("Failed to get receipt for tx %s: %v", tx.Hash().Hex(), err)
+			continue
+		}
+		for _, logEntry := range receipt.Logs {
+			i.processLog(logEntry, block)
 		}
 	}
 
@@ -320,11 +318,9 @@ func (i *Indexer) processBlock(blockNum uint64) {
 func (i *Indexer) processLog(logEntry *types.Log, block *types.Block) {
 	// Find which contract
 	var contractName string
-	var contractAddr common.Address
 	for name, addr := range i.contracts {
 		if addr == logEntry.Address {
 			contractName = name
-			contractAddr = addr
 			break
 		}
 	}
@@ -559,7 +555,7 @@ func getEnv(key, defaultValue string) string {
 }
 
 func getEnvUint64(key string, defaultValue uint64) uint64 {
-	if value, ok := os.LookupEnv(key); ok != nil {
+	if value, ok := os.LookupEnv(key); ok {
 		var val uint64
 		fmt.Sscanf(value, "%d", &val)
 		if val > 0 {

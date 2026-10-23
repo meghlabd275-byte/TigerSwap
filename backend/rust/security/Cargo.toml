@@ -9,52 +9,28 @@ license = "MIT"
 [dependencies]
 # Cryptography
 aes-gcm = "0.10"
-argon2 = "0.5"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-x25519-dalek = { version = "2", features = ["static_secrets"] }
+argon2 = { version = "0.5", features = ["std"] }
 sha2 = "0.10"
 sha3 = "0.10"
-hmac = "0.12"
 pbkdf2 = { version = "0.12", features = ["simple"] }
 rand = "0.8"
+hex = "0.4"
+log = "0.4"
 zeroize = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 
 # Digital signatures
-eth-keystore = "4"
 secp256k1 = { version = "0.28", features = ["recovery", "rand"] }
-k256 = { version = "0.13", features = ["ecdsa", "recovery"] }
-
-# Encryption
-ring = "0.17"
-rustls = "0.21"
-webpki = "0.22"
-
-# Secure memory
-lock_api = "0.4"
-mimalloc = { version = "0.1", default-features = false }
+k256 = { version = "0.13", features = ["ecdsa"] }
 
 # Error handling
 thiserror = "1"
-anyhow = "1"
-
-# Logging
-log = "0.4"
-env_logger = "0.10"
-
-# Time
-time = "0.3"
 
 # Async
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
 
 [dev-dependencies]
-criterion = "0.5"
-proptest = "1"
 tempfile = "3"
-
-[[bench]]
-name = "benchmarks"
-harness = false
 
 [profile.release]
 lto = true

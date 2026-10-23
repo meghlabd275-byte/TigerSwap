@@ -1,17 +1,18 @@
 //! Key Management Module
-//! 
-//! Provides secure key generation, storage, and management for the DEX
+//!
+//! Secure secp256k1 key generation, storage, signing and verification for the
+//! TigerSwap DEX. Private key material is held in a zeroizing buffer and never
+//! leaves the manager except through explicit accessor calls.
 
-use secp256k1::{PublicKey, SecretKey, SigningKey, VerifyingKey};
-use k256::ecdsa::{SigningKey as K256SigningKey, VerifyingKey as K256VerifyingKey, signature::Signer};
-use k256::ecdsa::signature::Verifier;
-use sha2::{Sha256, Digest};
+use k256::ecdsa::signature::{Signer, Verifier};
+use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-use thiserror::Error;
+use sha3::{Digest, Keccak256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use thiserror::Error;
 use tokio::sync::RwLock;
+use zeroize::Zeroize;
 
 /// Errors that can occur during key operations
 #[derive(Error, Debug)]
@@ -30,13 +31,35 @@ pub enum KeyError {
     PermissionDenied(String),
 }
 
-/// Securely stores a cryptographic key in memory
-#[derive(Zeroize, ZeroizeOnDrop)]
+/// Type of cryptographic key
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyType {
+    /// Ethereum-style secp256k1 key
+    EthKey,
+    /// Master seed for HD wallets
+    MasterSeed,
+    /// Encryption key
+    Encryption,
+    /// API key
+    ApiKey,
+}
+
+/// Securely stores a cryptographic key in memory.
+///
+/// `key_data` is zeroized on drop. Only byte buffers that can hold secrets are
+/// zeroized; the enum and map carry no secret material.
 pub struct SecureKey {
     key_data: Vec<u8>,
     key_type: KeyType,
     created_at: u64,
     metadata: HashMap<String, String>,
+}
+
+impl Drop for SecureKey {
+    fn drop(&mut self) {
+        self.key_data.zeroize();
+        self.metadata.clear();
+    }
 }
 
 impl SecureKey {
@@ -47,41 +70,36 @@ impl SecureKey {
             key_type,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+                .map(|d| d.as_secs())
+                .unwrap_or(0),
             metadata: HashMap::new(),
         }
     }
-    
+
     /// Get the key type
     pub fn key_type(&self) -> KeyType {
         self.key_type
     }
-    
-    /// Get key data as bytes (be careful!)
+
+    /// Creation timestamp (unix seconds)
+    pub fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// Get key data as bytes. Handle with care: the returned slice is secret.
     pub fn as_bytes(&self) -> &[u8] {
         &self.key_data
     }
-    
+
     /// Add metadata to the key
     pub fn add_metadata(&mut self, key: impl Into<String>, value: impl Into<String>) {
         self.metadata.insert(key.into(), value.into());
     }
-}
 
-/// Type of cryptographic key
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyType {
-    /// Ethereum-style secp256k1 key
-    EthKey,
-    /// Ed25519 signing key
-    Ed25519,
-    /// Master seed for HD wallets
-    MasterSeed,
-    /// Encryption key
-    Encryption,
-    /// API key
-    ApiKey,
+    /// Read a metadata value
+    pub fn metadata(&self, key: &str) -> Option<&String> {
+        self.metadata.get(key)
+    }
 }
 
 /// Key manager for handling multiple keys
@@ -98,101 +116,119 @@ impl KeyManager {
             encryption_key: None,
         }
     }
-    
-    /// Generate a new Ethereum-compatible key
+
+    /// Generate a new Ethereum-compatible key.
+    ///
+    /// Returns the checksummed-lowercase address, the 32-byte private key and
+    /// the uncompressed public key.
     pub async fn generate_eth_key(&self) -> Result<(String, Vec<u8>), KeyError> {
-        // Generate random 32 bytes for private key
-        let mut rng = OsRng;
-        let signing_key = SigningKey::random(&mut rng);
-        let verifying_key = VerifyingKey::from(&signing_key);
-        
+        let signing_key = SigningKey::random(&mut OsRng);
+        self.store_signing_key(signing_key).await
+    }
+
+    async fn store_signing_key(&self, signing_key: SigningKey) -> Result<(String, Vec<u8>), KeyError> {
+        let verifying_key = *signing_key.verifying_key();
         let private_key_bytes = signing_key.to_bytes().to_vec();
         let public_key_bytes = verifying_key.to_encoded_point(false).as_bytes().to_vec();
-        
-        // Derive address from public key (simplified - real implementation would use keccak256)
-        let address = format!("0x{}", hex::encode(&public_key_bytes[1..]));
-        
-        // Store the key securely
+        let address = derive_address(&public_key_bytes);
+
         let key = SecureKey::new(private_key_bytes.clone(), KeyType::EthKey);
-        let mut keys = self.keys.write().await;
-        keys.insert(address.clone(), key);
-        
+        self.keys.write().await.insert(address.clone(), key);
+
         Ok((address, private_key_bytes))
     }
-    
-    /// Import an existing Ethereum key
-    pub async fn import_eth_key(&self, private_key: &[u8], address: &str) -> Result<(), KeyError> {
+
+    /// Import an existing Ethereum key. The address is derived from the key
+    /// itself so callers cannot register a mismatched address.
+    pub async fn import_eth_key(&self, private_key: &[u8]) -> Result<String, KeyError> {
         if private_key.len() != 32 {
-            return Err(KeyError::InvalidFormat("Private key must be 32 bytes".to_string()));
+            return Err(KeyError::InvalidFormat(
+                "Private key must be 32 bytes".to_string(),
+            ));
         }
-        
-        let key = SecureKey::new(private_key.to_vec(), KeyType::EthKey);
-        let mut keys = self.keys.write().await;
-        keys.insert(address.to_string(), key);
-        
-        Ok(())
+
+        let signing_key = SigningKey::from_slice(private_key)
+            .map_err(|e| KeyError::InvalidFormat(e.to_string()))?;
+
+        let (address, _private_key) = self.store_signing_key(signing_key).await?;
+        Ok(address)
     }
-    
-    /// Sign a message with a stored key
-    pub async fn sign(&self, address: &str, message: &[u8]) -> Result<Vec<u8>, KeyError> {
+
+    /// Sign a 32-byte digest with a stored key. Returns a 64-byte compact
+    /// signature (r || s), matching the format used by the EVM precompiles.
+    pub async fn sign(&self, address: &str, digest: &[u8]) -> Result<Vec<u8>, KeyError> {
         let keys = self.keys.read().await;
-        
-        let key = keys.get(address)
-            .ok_or_else(|| KeyError::NotFound(format!("Key not found for address: {}", address)))?;
-        
+        let key = keys
+            .get(address)
+            .ok_or_else(|| KeyError::NotFound(format!("Key not found for address: {address}")))?;
+
         if key.key_type() != KeyType::EthKey {
-            return Err(KeyError::InvalidFormat("Wrong key type for signing".to_string()));
+            return Err(KeyError::InvalidFormat(
+                "Wrong key type for signing".to_string(),
+            ));
         }
-        
-        // Sign the message
-        let signing_key = SigningKey::from_bytes(key.as_bytes().try_into()
-            .map_err(|_| KeyError::InvalidFormat("Invalid key length".to_string()))?);
-        
-        let signature = signing_key.sign(message);
-        
+
+        let signing_key = SigningKey::from_slice(key.as_bytes())
+            .map_err(|e| KeyError::InvalidFormat(e.to_string()))?;
+
+        let signature: Signature = signing_key
+            .try_sign(digest)
+            .map_err(|e| KeyError::SigningError(e.to_string()))?;
+
         Ok(signature.to_bytes().to_vec())
     }
-    
-    /// Verify a signature
-    pub fn verify_signature(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<bool, KeyError> {
-        use secp256k1::PublicKey;
-        
-        let pub_key = PublicKey::from_slice(public_key)
+
+    /// Verify a compact ECDSA signature against a public key and digest.
+    pub fn verify_signature(
+        public_key: &[u8],
+        digest: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, KeyError> {
+        let verifying_key = VerifyingKey::from_sec1_bytes(public_key)
             .map_err(|_| KeyError::InvalidFormat("Invalid public key".to_string()))?;
-        
-        let verifying_key = VerifyingKey::from(&pub_key);
-        
-        // Note: In production, use proper signature verification
-        // This is a simplified version
+
+        let signature = Signature::from_slice(signature)
+            .map_err(|_| KeyError::InvalidFormat("Invalid signature".to_string()))?;
+
+        verifying_key
+            .verify(digest, &signature)
+            .map_err(|_| KeyError::VerificationFailed)?;
+
         Ok(true)
     }
-    
+
     /// Delete a key
     pub async fn delete_key(&self, address: &str) -> Result<(), KeyError> {
         let mut keys = self.keys.write().await;
-        
         if keys.remove(address).is_none() {
-            return Err(KeyError::NotFound(format!("Key not found: {}", address)));
+            return Err(KeyError::NotFound(format!("Key not found: {address}")));
         }
-        
         Ok(())
     }
-    
+
     /// List all stored key addresses
     pub async fn list_keys(&self) -> Vec<String> {
-        let keys = self.keys.read().await;
-        keys.keys().cloned().collect()
+        self.keys.read().await.keys().cloned().collect()
     }
-    
+
     /// Check if a key exists
     pub async fn has_key(&self, address: &str) -> bool {
-        let keys = self.keys.read().await;
-        keys.contains_key(address)
+        self.keys.read().await.contains_key(address)
     }
-    
+
     /// Set encryption key for additional security
     pub fn set_encryption_key(&mut self, key: SecureKey) {
         self.encryption_key = Some(key);
+    }
+
+    /// Number of stored keys
+    pub async fn len(&self) -> usize {
+        self.keys.read().await.len()
+    }
+
+    /// Whether the manager holds no keys
+    pub async fn is_empty(&self) -> bool {
+        self.keys.read().await.is_empty()
     }
 }
 
@@ -202,61 +238,109 @@ impl Default for KeyManager {
     }
 }
 
-/// Generate a random address (for testing)
-pub fn generate_random_address() -> String {
-    let mut rng = OsRng;
-    let signing_key = SigningKey::random(&mut rng);
-    let verifying_key = VerifyingKey::from(&signing_key);
-    format!("0x{}", hex::encode(verifying_key.to_encoded_point(false).as_bytes()[1..]))
-}
-
-/// Hash a message using Keccak-256 (Ethereum-style)
+/// Hash data using Keccak-256 (Ethereum-style)
 pub fn keccak256(data: &[u8]) -> [u8; 32] {
-    use sha3::{Keccak256, Digest};
     let mut hasher = Keccak256::new();
     hasher.update(data);
-    let result = hasher.finalize();
-    let mut hash = [0u8; 32];
-    hash.copy_from_slice(&result);
-    hash
+    hasher.finalize().into()
 }
 
-/// Derive an Ethereum address from public key
+/// Derive an Ethereum address from an uncompressed secp256k1 public key.
 pub fn derive_address(public_key: &[u8]) -> String {
-    let hash = keccak256(public_key);
-    format!("0x{}", hex::encode(&hash[12..32]))
+    // Accept both compressed (33-byte) and uncompressed (65-byte) keys by
+    // normalising through the curve point.
+    let point = k256::EncodedPoint::from_bytes(public_key)
+        .ok()
+        .and_then(|p| VerifyingKey::from_encoded_point(&p).ok())
+        .map(|vk| vk.to_encoded_point(false));
+
+    let uncompressed = match point {
+        Some(p) => p.as_bytes().to_vec(),
+        None => public_key.to_vec(),
+    };
+
+    let body = if uncompressed.len() == 65 && uncompressed[0] == 0x04 {
+        &uncompressed[1..]
+    } else {
+        &uncompressed[..]
+    };
+
+    let hash = keccak256(body);
+    format!("0x{}", hex::encode(&hash[12..]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
-    async fn test_generate_key() {
+    async fn test_generate_key_derives_real_address() {
         let manager = KeyManager::new();
-        let (address, _key) = manager.generate_eth_key().await.unwrap();
-        
+        let (address, private_key) = manager.generate_eth_key().await.unwrap();
+
         assert!(address.starts_with("0x"));
+        assert_eq!(address.len(), 42);
+        assert_eq!(private_key.len(), 32);
         assert!(manager.has_key(&address).await);
     }
-    
+
     #[tokio::test]
-    async fn test_sign_message() {
+    async fn test_import_derives_matching_address() {
         let manager = KeyManager::new();
-        let (address, _key) = manager.generate_eth_key().await.unwrap();
-        
-        let message = b"Hello, TigerSwap!";
-        let signature = manager.sign(&address, message).await.unwrap();
-        
-        assert_eq!(signature.len(), 64);
+        let (address, private_key) = manager.generate_eth_key().await.unwrap();
+        let imported = manager.import_eth_key(&private_key).await.unwrap();
+        assert_eq!(address, imported);
     }
-    
+
+    #[tokio::test]
+    async fn test_import_rejects_wrong_length() {
+        let manager = KeyManager::new();
+        assert!(manager.import_eth_key(&[0u8; 31]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sign_and_verify_roundtrip() {
+        let manager = KeyManager::new();
+        let (address, private_key) = manager.generate_eth_key().await.unwrap();
+
+        let digest = keccak256(b"Hello, TigerSwap!");
+        let signature = manager.sign(&address, &digest).await.unwrap();
+        assert_eq!(signature.len(), 64);
+
+        let signing_key = SigningKey::from_slice(&private_key).unwrap();
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+
+        assert!(
+            KeyManager::verify_signature(public_key.as_bytes(), &digest, &signature).unwrap()
+        );
+
+        let tampered = keccak256(b"tampered");
+        assert!(KeyManager::verify_signature(public_key.as_bytes(), &tampered, &signature).is_err());
+    }
+
     #[test]
-    fn test_keccak256() {
-        let data = b"test";
-        let hash = keccak256(data);
-        
-        // Known hash for "test"
-        assert_eq!(hash.len(), 32);
+    fn test_keccak256_known_vector() {
+        // keccak256("") is a well-known constant.
+        let hash = keccak256(b"");
+        assert_eq!(
+            hex::encode(hash),
+            "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+        );
+    }
+
+    #[test]
+    fn test_derive_address_matches_known_key() {
+        // secp256k1 key = 1 => address 0x7e5f4552091a69125d5dfcb7b8c2659029395bdf
+        let signing_key = SigningKey::from_slice(&{
+            let mut k = [0u8; 32];
+            k[31] = 1;
+            k
+        })
+        .unwrap();
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        assert_eq!(
+            derive_address(public_key.as_bytes()),
+            "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+        );
     }
 }

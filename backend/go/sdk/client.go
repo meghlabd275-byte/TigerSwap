@@ -1,6 +1,7 @@
 package tigerswap
 
 import (
+"bytes"
 "context"
 "encoding/json"
 "fmt"
@@ -179,7 +180,7 @@ if err != nil {
 return nil, err
 }
 
-req, err := http.NewRequest("POST", c.baseURL+"/api/v1/swap/quote", nil)
+req, err := http.NewRequest("POST", c.baseURL+"/api/v1/swap/quote", bytes.NewReader(body))
 if err != nil {
 return nil, err
 }
@@ -272,7 +273,7 @@ if err != nil {
 return nil, err
 }
 
-req, err := http.NewRequest("POST", c.baseURL+"/api/v1/swap/execute", nil)
+req, err := http.NewRequest("POST", c.baseURL+"/api/v1/swap/execute", bytes.NewReader(body))
 if err != nil {
 return nil, err
 }

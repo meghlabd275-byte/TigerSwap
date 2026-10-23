@@ -1,515 +1,652 @@
-// Package dex_aggregator provides DEX aggregation services for optimal swap routing
+// Package dex_aggregator is TigerSwap's own aggregator (TigerAggregator).
+//
+// It quotes and routes exclusively across TigerSwap's own pool families
+// (V2 xyK, V3 concentrated, StableSwap, Weighted) by reading reserves from the
+// TigerSwap factory/pool contracts. It never calls a third-party DEX, router or
+// aggregator API.
 package main
 
 import (
 	"context"
-	"encoding/json"
+	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"os/signal"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
+
+	"tigerswap/backend/go/amm"
 )
 
-// DEX represents a decentralized exchange
-type DEX struct {
-	Name      string
-	Router    common.Address
-	Factory   common.Address
-	Fee       uint32
-	Quoter    common.Address
-	ChainID   int64
-	Supported bool
+// factoryABIJSON resolves TigerSwap pools by token pair and family.
+const factoryABIJSON = `[
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPool","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
+]`
+
+// poolABIJSON reads the state needed to quote a TigerSwap pool.
+const poolABIJSON = `[
+ {"inputs":[],"name":"getReserves","outputs":[{"internalType":"uint256","name":"reserve0","type":"uint256"},{"internalType":"uint256","name":"reserve1","type":"uint256"},{"internalType":"uint32","name":"blockTimestampLast","type":"uint32"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"amplification","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256","name":"weight0","type":"uint256"},{"internalType":"uint256","name":"weight1","type":"uint256"}],"stateMutability":"view","type":"function"}
+]`
+
+// routerABIJSON executes a TigerSwap swap.
+const routerABIJSON = `[
+ {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
+]`
+
+var (
+	factoryABI = mustABI(factoryABIJSON)
+	poolABI    = mustABI(poolABIJSON)
+	routerABI  = mustABI(routerABIJSON)
+)
+
+func mustABI(s string) abi.ABI {
+	parsed, err := abi.JSON(strings.NewReader(s))
+	if err != nil {
+		panic(fmt.Sprintf("invalid embedded ABI: %v", err))
+	}
+	return parsed
 }
 
-// Route represents a swap route
+// familyCode maps a pool family to the uint8 used on-chain.
+func familyCode(f amm.Family) uint8 {
+	switch f {
+	case amm.FamilyV2:
+		return 0
+	case amm.FamilyV3:
+		return 1
+	case amm.FamilyStable:
+		return 2
+	case amm.FamilyWeighted:
+		return 3
+	}
+	return 0
+}
+
+// Route is a single-family swap route.
 type Route struct {
-	DEX         string   `json:"dex"`
+	Family      string   `json:"family"`
 	Path        []string `json:"path"`
-	AmountOut   *big.Int `json:"amount_out"`
 	AmountIn    *big.Int `json:"amount_in"`
+	AmountOut   *big.Int `json:"amount_out"`
+	FeeBps      uint32   `json:"fee_bps"`
 	GasEstimate uint64   `json:"gas_estimate"`
 }
 
-// QuoteRequest represents a quote request
+// QuoteRequest is an aggregator quote request.
 type QuoteRequest struct {
-	ChainID     int64    `json:"chain_id"`
-	FromToken   string   `json:"from_token"`
-	ToToken     string   `json:"to_token"`
-	AmountIn    *big.Int `json:"amount_in"`
-	Slippage    float64  `json:"slippage"`
-	 DEX        string   `json:"dex"`
+	ChainID   int64    `json:"chain_id"`
+	FromToken string   `json:"from_token"`
+	ToToken   string   `json:"to_token"`
+	AmountIn  *big.Int `json:"amount_in"`
+	Slippage  float64  `json:"slippage"`
+	Family    string   `json:"family"`
 }
 
-// QuoteResponse represents a quote response
+// QuoteResponse is an aggregator quote response.
 type QuoteResponse struct {
-	FromToken    string    `json:"from_token"`
-	ToToken      string    `json:"to_token"`
-	AmountIn     *big.Int  `json:"amount_in"`
-	AmountOut    *big.Int  `json:"amount_out"`
-	AmountOutMin *big.Int  `json:"amount_out_min"`
-	PriceImpact  float64   `json:"price_impact"`
-	GasEstimate  uint64    `json:"gas_estimate"`
-	Routes       []Route   `json:"routes"`
-	BestRoute    *Route    `json:"best_route"`
+	FromToken    string   `json:"from_token"`
+	ToToken      string   `json:"to_token"`
+	AmountIn     *big.Int `json:"amount_in"`
+	AmountOut    *big.Int `json:"amount_out"`
+	AmountOutMin *big.Int `json:"amount_out_min"`
+	PriceImpact  float64  `json:"price_impact"`
+	GasEstimate  uint64   `json:"gas_estimate"`
+	Routes       []Route  `json:"routes"`
+	BestRoute    *Route   `json:"best_route"`
 }
 
-// Aggregator is the DEX aggregator
+// familyFees maps each family to its default fee tier in bps.
+var familyFees = map[amm.Family]uint32{
+	amm.FamilyV2:       30, // 0.30%
+	amm.FamilyV3:       5,  // 0.05%
+	amm.FamilyStable:   1,  // 0.01%
+	amm.FamilyWeighted: 30, // 0.30%
+}
+
+// chainDeployment holds the TigerSwap contracts for one chain.
+type chainDeployment struct {
+	chainID int64
+	client  *ethclient.Client
+	factory common.Address
+	router  common.Address
+	signer  *ecdsa.PrivateKey
+	mu      sync.RWMutex
+	pools   map[string]common.Address
+}
+
+// Aggregator is TigerSwap's own multi-family aggregator.
 type Aggregator struct {
-	dexes     map[int64][]*DEX
-	mu        sync.RWMutex
-	priceFeed *PriceFeed
+	mu       sync.RWMutex
+	chains   map[int64]*chainDeployment
+	families []amm.Family
 }
 
-// PriceFeed provides price data
-type PriceFeed struct {
-	prices map[string]*big.Float
-	mu     sync.RWMutex
-}
+// NewAggregator builds an aggregator from environment configuration.
+func NewAggregator() (*Aggregator, error) {
+	signer, err := aggregatorSigner()
+	if err != nil {
+		return nil, err
+	}
 
-// NewAggregator creates a new DEX aggregator
-func NewAggregator() *Aggregator {
+	chains := make(map[int64]*chainDeployment)
+	for _, chainID := range configuredChains() {
+		suffix := strconv.FormatInt(chainID, 10)
+		rpc := os.Getenv("TIGERSWAP_RPC_" + suffix)
+		factory := os.Getenv("TIGERSWAP_FACTORY_" + suffix)
+		router := os.Getenv("TIGERSWAP_ROUTER_" + suffix)
+		if rpc == "" || factory == "" || router == "" {
+			log.Printf("chain %d: TigerSwap contracts not fully configured; skipping", chainID)
+			continue
+		}
+		client, err := ethclient.Dial(rpc)
+		if err != nil {
+			log.Printf("chain %d: dial rpc failed: %v", chainID, err)
+			continue
+		}
+		chains[chainID] = &chainDeployment{
+			chainID: chainID,
+			client:  client,
+			factory: common.HexToAddress(factory),
+			router:  common.HexToAddress(router),
+			signer:  signer,
+			pools:   make(map[string]common.Address),
+		}
+	}
+
 	return &Aggregator{
-		dexes:     initDEXes(),
-		priceFeed: &PriceFeed{prices: make(map[string]*big.Float)},
+		chains: chains,
+		families: []amm.Family{
+			amm.FamilyV2, amm.FamilyV3, amm.FamilyStable, amm.FamilyWeighted,
+		},
+	}, nil
+}
+
+// Close releases every chain RPC client.
+func (a *Aggregator) Close() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, d := range a.chains {
+		d.client.Close()
 	}
 }
 
-func initDEXes() map[int64][]*DEX {
-	return map[int64][]*DEX{
-		1: { // Ethereum
-			{Name: "uniswap_v3", Router: common.HexToAddress("0xE592427A0AEce92De3Edee1F18E0157C05861564"), Factory: common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), Fee: 300, Quoter: common.HexToAddress("0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6"), ChainID: 1, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"), Factory: common.HexToAddress("0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac"), Fee: 300, Quoter: common.HexToAddress("0x4A0b08e2d90D592e8C2A0F6f2E3D2F8C9A1B2C3D"), ChainID: 1, Supported: true},
-			{Name: "curve", Router: common.HexToAddress("0xD1606890f11f3D0d36eFeaD7b8D27f7cE9e3d98"), Factory: common.HexToAddress("0x90E00ACe148ca3b23Ac1bDCc2bc2d1480D9e1E0"), Fee: 40, Quoter: common.HexToAddress("0x"), ChainID: 1, Supported: true},
-			{Name: "balancer", Router: common.HexToAddress("0xBA12222222228d8Ba445958a75a0704d566BF2C8"), Factory: common.HexToAddress("0x8A791620dd6260079BF849DCdc7aE3F1c9b6dE9"), Fee: 100, Quoter: common.HexToAddress("0"), ChainID: 1, Supported: true},
-		},
-		56: { // BNB Chain
-			{Name: "pancakeswap", Router: common.HexToAddress("0x10ED43C718714eb63d5aA57B78B54704E256024E"), Factory: common.HexToAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73"), Fee: 250, Quoter: common.HexToAddress("0x"), ChainID: 56, Supported: true},
-			{Name: "biswap", Router: common.HexToAddress("0x3a6d8cA21D1CF76F653A67577FA0D27453380dD6"), Factory: common.HexToAddress("0x858E3312ed3A87694751C1fdCEB2aC5bB00f3F91"), Fee: 200, Quoter: common.HexToAddress("0x"), ChainID: 56, Supported: true},
-			{Name: "apeswap", Router: common.HexToAddress("0xC0788A3aD43d79aa53B09c2Ea3DEBF0fb6f69218"), Factory: common.HexToAddress("0x0841BD0C73477352E2e37D0211481F52B39E5C52"), Fee: 200, Quoter: common.HexToAddress("0x"), ChainID: 56, Supported: true},
-		},
-		137: { // Polygon
-			{Name: "quickswap", Router: common.HexToAddress("0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff"), Factory: common.HexToAddress("0x5757371414417b8C6CAad45bAeF941aBc7d3eD32"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 137, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"), Factory: common.HexToAddress("0xc35DADB65012eC5796536bD9854F0a4059e31d3"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 137, Supported: true},
-			{Name: "apeswap", Router: common.HexToAddress("0xC0788A3aD43d79aa53B09c2Ea3DEBF0fb6f69218"), Factory: common.HexToAddress("0xcf0aC5E0C962e80f2E2E2e2E2E2E2E2E2E2E2E"), Fee: 200, Quoter: common.HexToAddress("0x"), ChainID: 137, Supported: true},
-		},
-		42161: { // Arbitrum
-			{Name: "uniswap_v3", Router: common.HexToAddress("0xE592427A0AEce92De3Edee1F18E0157C05861564"), Factory: common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 42161, Supported: true},
-			{Name: "camelot", Router: common.HexToAddress("0x8736c49F7fBF2C5d8d37e9f5f6F2E3D2F8C9A1B2"), Factory: common.HexToAddress("0x"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 42161, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"), Factory: common.HexToAddress("0xc35DADB65012eC5796536bD9854F0a4059e31d3"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 42161, Supported: true},
-		},
-		10: { // Optimism
-			{Name: "uniswap_v3", Router: common.HexToAddress("0xE592427A0AEce92De3Edee1F18E0157C05861564"), Factory: common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 10, Supported: true},
-			{Name: "velodrome", Router: common.HexToAddress("0x21dF544947ba3E8c3c8E1E9d70DBb1f1d0c7F29"), Factory: common.HexToAddress("0x"), Fee: 200, Quoter: common.HexToAddress("0x"), ChainID: 10, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"), Factory: common.HexToAddress("0x"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 10, Supported: true},
-		},
-		8453: { // Base
-			{Name: "uniswap_v3", Router: common.HexToAddress("0xE592427A0AEce92De3Edee1F18E0157C05861564"), Factory: common.HexToAddress("0x1F98431c8aD98523631AE4a59f267346ea31F984"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 8453, Supported: true},
-			{Name: "baseswap", Router: common.HexToAddress("0x327Df1E6DE05895D2d2b9744E7a47c0469ED3D3"), Factory: common.HexToAddress("0x"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 8453, Supported: true},
-		},
-		43114: { // Avalanche
-			{Name: "traderjoe", Router: common.HexToAddress("0xB4315E873dBcf6F38Ec51a40117e9297A76aF8ed"), Factory: common.HexToAddress("0x9Ad6C38BE94206cA50bb0d90783181662f0C6F10"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 43114, Supported: true},
-			{Name: "pangolin", Router: common.HexToAddress("0xE54Ca86531e17Ef3616d22ca28b0D86b9C275a2"), Factory: common.HexToAddress("0x"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 43114, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F"), Factory: common.HexToAddress("0x"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 43114, Supported: true},
-		},
-		250: { // Fantom
-			{Name: "spookyswap", Router: common.HexToAddress("0xF491e7B69E4244ad4002BC14e878a34207E38c29"), Factory: common.HexToAddress("0x152eE697F2E276fA2090B3b9d44F8E2D44b8b93"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 250, Supported: true},
-			{Name: "spirit", Router: common.HexToAddress("0x16327E3FbdCA3Fcf2c5a1568D4aC4dA2DCaB94E"), Factory: common.HexToAddress("0x3dB52cE0f1d72b3EA17f7C9D2b7E2C5f0b3E8b3"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 250, Supported: true},
-			{Name: "sushiswap", Router: common.HexToAddress("0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506"), Factory: common.HexToAddress("0xc35DADB65012eC5796536bD9854F0a4059e31d3"), Fee: 300, Quoter: common.HexToAddress("0x"), ChainID: 250, Supported: true},
-		},
+func aggregatorSigner() (*ecdsa.PrivateKey, error) {
+	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")
+	if raw == "" {
+		return nil, errors.New("TIGERSWAP_SIGNER_KEY is not configured")
 	}
+	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
 }
 
-// GetQuote returns the best quote for a swap
+func configuredChains() []int64 {
+	raw := os.Getenv("TIGERSWAP_CHAINS")
+	if raw == "" {
+		return nil
+	}
+	var chains []int64
+	for _, part := range strings.Split(raw, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			continue
+		}
+		chains = append(chains, id)
+	}
+	return chains
+}
+
+// poolState captures on-chain pool state for quoting.
+type poolState struct {
+	token0   common.Address
+	reserve0 *big.Int
+	reserve1 *big.Int
+	amp      *big.Int
+	weight0  *big.Int
+	weight1  *big.Int
+}
+
+// resolvePool returns the TigerSwap pool for a pair and family, with caching.
+func (d *chainDeployment) resolvePool(ctx context.Context, tokenA, tokenB common.Address, family amm.Family) (common.Address, error) {
+	key := fmt.Sprintf("%s:%s:%d", strings.ToLower(tokenA.Hex()), strings.ToLower(tokenB.Hex()), familyCode(family))
+	d.mu.RLock()
+	cached, ok := d.pools[key]
+	d.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	data, err := factoryABI.Pack("getPool", tokenA, tokenB, familyCode(family))
+	if err != nil {
+		return common.Address{}, err
+	}
+	out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &d.factory, Data: data}, nil)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("factory.getPool: %w", err)
+	}
+	vals, err := factoryABI.Unpack("getPool", out)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("unpack getPool: %w", err)
+	}
+	pool, _ := vals[0].(common.Address)
+	if pool == (common.Address{}) {
+		return common.Address{}, fmt.Errorf("no %s pool for pair", family)
+	}
+
+	d.mu.Lock()
+	d.pools[key] = pool
+	d.mu.Unlock()
+	return pool, nil
+}
+
+// loadState reads reserves and family parameters from a pool.
+func (d *chainDeployment) loadState(ctx context.Context, pool common.Address, family amm.Family) (*poolState, error) {
+	st := &poolState{amp: big.NewInt(0), weight0: big.NewInt(0), weight1: big.NewInt(0)}
+
+	resOut, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("getReserves: %w", err)
+	}
+	res, err := poolABI.Unpack("getReserves", resOut)
+	if err != nil || len(res) < 2 {
+		return nil, fmt.Errorf("unpack getReserves: %w", err)
+	}
+	st.reserve0, _ = res[0].(*big.Int)
+	st.reserve1, _ = res[1].(*big.Int)
+
+	t0Out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "token0")}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("token0: %w", err)
+	}
+	t0, err := poolABI.Unpack("token0", t0Out)
+	if err != nil {
+		return nil, fmt.Errorf("unpack token0: %w", err)
+	}
+	st.token0, _ = t0[0].(common.Address)
+
+	switch family {
+	case amm.FamilyStable:
+		out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "amplification")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("amplification: %w", err)
+		}
+		vals, err := poolABI.Unpack("amplification", out)
+		if err != nil {
+			return nil, fmt.Errorf("unpack amplification: %w", err)
+		}
+		st.amp, _ = vals[0].(*big.Int)
+	case amm.FamilyWeighted:
+		out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getWeights")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("getWeights: %w", err)
+		}
+		vals, err := poolABI.Unpack("getWeights", out)
+		if err != nil || len(vals) < 2 {
+			return nil, fmt.Errorf("unpack getWeights: %w", err)
+		}
+		st.weight0, _ = vals[0].(*big.Int)
+		st.weight1, _ = vals[1].(*big.Int)
+	}
+	return st, nil
+}
+
+func mustPack(a abi.ABI, name string, args ...interface{}) []byte {
+	data, err := a.Pack(name, args...)
+	if err != nil {
+		panic(fmt.Sprintf("pack %s: %v", name, err))
+	}
+	return data
+}
+
+// quoteFamily computes the output for one family over a token path.
+func (a *Aggregator) quoteFamily(ctx context.Context, d *chainDeployment, family amm.Family, path []common.Address, amountIn *big.Int) (*big.Int, error) {
+	current := new(big.Int).Set(amountIn)
+	fee := familyFees[family]
+
+	for i := 0; i < len(path)-1; i++ {
+		pool, err := d.resolvePool(ctx, path[i], path[i+1], family)
+		if err != nil {
+			return nil, err
+		}
+		st, err := d.loadState(ctx, pool, family)
+		if err != nil {
+			return nil, err
+		}
+
+		reserveIn, reserveOut := st.reserve0, st.reserve1
+		weightIn, weightOut := st.weight0, st.weight1
+		if st.token0 != path[i] {
+			reserveIn, reserveOut = st.reserve1, st.reserve0
+			weightIn, weightOut = st.weight1, st.weight0
+		}
+
+		switch family {
+		case amm.FamilyV2:
+			current, err = amm.AmountOutXY(current, reserveIn, reserveOut, fee)
+		case amm.FamilyStable:
+			current, err = amm.AmountOutStable(current, reserveIn, reserveOut, st.amp, fee)
+		case amm.FamilyWeighted:
+			current, err = amm.AmountOutWeighted(current, reserveIn, reserveOut, weightIn, weightOut, fee)
+		case amm.FamilyV3:
+			// V3 pools report their effective reserves; the concentrated math is
+			// applied on-chain by the quoter, so use the xyK approximation here.
+			current, err = amm.AmountOutXY(current, reserveIn, reserveOut, fee)
+		default:
+			return nil, fmt.Errorf("unsupported family %s", family)
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
+}
+
+// GetQuote returns the best quote across all TigerSwap families on a chain.
 func (a *Aggregator) GetQuote(ctx context.Context, req QuoteRequest) (*QuoteResponse, error) {
-	chainID := req.ChainID
-	dexes, ok := a.dexes[chainID]
-	if !ok {
-		return nil, fmt.Errorf("chain %d not supported", chainID)
+	if req.AmountIn == nil || req.AmountIn.Sign() <= 0 {
+		return nil, errors.New("amount_in must be positive")
+	}
+	if !common.IsHexAddress(req.FromToken) || !common.IsHexAddress(req.ToToken) {
+		return nil, errors.New("invalid token address")
 	}
 
-	var routes []Route
+	a.mu.RLock()
+	d, ok := a.chains[req.ChainID]
+	a.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("chain %d has no TigerSwap deployment configured", req.ChainID)
+	}
 
-	for _, dex := range dexes {
-		if !dex.Supported {
+	path := []common.Address{common.HexToAddress(req.FromToken), common.HexToAddress(req.ToToken)}
+
+	families := a.families
+	if req.Family != "" {
+		families = []amm.Family{amm.Family(req.Family)}
+	}
+
+	routes := make([]Route, 0, len(families))
+	var firstErr error
+	for _, family := range families {
+		out, err := a.quoteFamily(ctx, d, family, path, req.AmountIn)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
-
-		if req.DEX != "" && req.DEX != dex.Name {
-			continue
-		}
-
-		// Calculate output amount based on pool reserves and fees
-		amountOut := calculateOutput(req.AmountIn, dex.Fee)
-
-		route := Route{
-			DEX:         dex.Name,
+		routes = append(routes, Route{
+			Family:      string(family),
 			Path:        []string{req.FromToken, req.ToToken},
-			AmountIn:    req.AmountIn,
-			AmountOut:   amountOut,
-			GasEstimate: estimateGas(dex.Name),
-		}
-		routes = append(routes, route)
+			AmountIn:    new(big.Int).Set(req.AmountIn),
+			AmountOut:   out,
+			FeeBps:      familyFees[family],
+			GasEstimate: estimateGas(family),
+		})
 	}
 
 	if len(routes) == 0 {
-		return nil, fmt.Errorf("no routes found")
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, errors.New("no TigerSwap routes available")
 	}
 
-	// Sort by output amount (best first)
 	sort.Slice(routes, func(i, j int) bool {
 		return routes[i].AmountOut.Cmp(routes[j].AmountOut) > 0
 	})
-
-	bestRoute := routes[0]
-
-	// Calculate minimum output with slippage
-	amountOutMin := calculateMinOutput(bestRoute.AmountOut, req.Slippage)
-
-	// Calculate price impact
-	priceImpact := calculatePriceImpact(req.AmountIn, bestRoute.AmountOut)
+	best := routes[0]
 
 	return &QuoteResponse{
 		FromToken:    req.FromToken,
 		ToToken:      req.ToToken,
-		AmountIn:     req.AmountIn,
-		AmountOut:    bestRoute.AmountOut,
-		AmountOutMin: amountOutMin,
-		PriceImpact:  priceImpact,
-		GasEstimate:  bestRoute.GasEstimate,
+		AmountIn:     new(big.Int).Set(req.AmountIn),
+		AmountOut:    best.AmountOut,
+		AmountOutMin: amm.ApplySlippage(best.AmountOut, req.Slippage),
+		PriceImpact:  amm.PriceImpactPercent(req.AmountIn, best.AmountOut),
+		GasEstimate:  best.GasEstimate,
 		Routes:       routes,
-		BestRoute:    &bestRoute,
+		BestRoute:    &best,
 	}, nil
 }
 
-// GetMultiHopQuote returns a multi-hop quote
+// GetMultiHopQuote quotes a path of three or more tokens hop by hop.
 func (a *Aggregator) GetMultiHopQuote(ctx context.Context, chainID int64, path []string, amountIn *big.Int, slippage float64) (*QuoteResponse, error) {
 	if len(path) < 2 {
-		return nil, fmt.Errorf("path must have at least 2 tokens")
+		return nil, errors.New("path must have at least 2 tokens")
 	}
 
-	var totalOutput *big.Int
-	routes := make([]Route, 0)
+	hops := make([]Route, 0, len(path)-1)
+	current := new(big.Int).Set(amountIn)
 
-	currentAmount := amountIn
 	for i := 0; i < len(path)-1; i++ {
-		req := QuoteRequest{
+		quote, err := a.GetQuote(ctx, QuoteRequest{
 			ChainID:   chainID,
 			FromToken: path[i],
 			ToToken:   path[i+1],
-			AmountIn:  currentAmount,
+			AmountIn:  current,
 			Slippage:  slippage,
-		}
-
-		quote, err := a.GetQuote(ctx, req)
+		})
 		if err != nil {
-			return nil, fmt.Errorf("failed to get quote for hop %d: %w", i, err)
+			return nil, fmt.Errorf("hop %d (%s->%s): %w", i, path[i], path[i+1], err)
 		}
-
-		routes = append(routes, *quote.BestRoute)
-
-		if totalOutput == nil {
-			totalOutput = quote.AmountOut
-		} else {
-			totalOutput = new(big.Int).Mul(totalOutput, quote.AmountOut)
-			totalOutput = new(big.Int).Div(totalOutput, amountIn)
-		}
-
-		currentAmount = quote.AmountOut
+		hops = append(hops, *quote.BestRoute)
+		current = quote.AmountOut
 	}
-
-	amountOutMin := calculateMinOutput(totalOutput, slippage)
 
 	return &QuoteResponse{
 		FromToken:    path[0],
 		ToToken:      path[len(path)-1],
 		AmountIn:     amountIn,
-		AmountOut:    totalOutput,
-		AmountOutMin: amountOutMin,
-		Routes:       routes,
+		AmountOut:    current,
+		AmountOutMin: amm.ApplySlippage(current, slippage),
+		PriceImpact:  amm.PriceImpactPercent(amountIn, current),
+		Routes:       hops,
+		BestRoute:    &hops[len(hops)-1],
 	}, nil
 }
 
-// GetSplitQuote returns split route quotes
-func (a *Aggregator) GetSplitQuote(ctx context.Context, req QuoteRequest, splits []int) ([]*QuoteResponse, error) {
-	if len(splits) == 0 {
-		return nil, fmt.Errorf("no splits provided")
+// ExecuteSwap signs and broadcasts a swap on the given route.
+func (a *Aggregator) ExecuteSwap(ctx context.Context, chainID int64, route Route, to string, deadline time.Time) (string, error) {
+	a.mu.RLock()
+	d, ok := a.chains[chainID]
+	a.mu.RUnlock()
+	if !ok {
+		return "", fmt.Errorf("chain %d has no TigerSwap deployment configured", chainID)
+	}
+	if !common.IsHexAddress(to) {
+		return "", errors.New("invalid recipient address")
+	}
+	if len(route.Path) < 2 {
+		return "", errors.New("route path must have at least 2 tokens")
 	}
 
-	// Validate splits sum to 100
-	sum := 0
-	for _, s := range splits {
-		sum += s
-	}
-	if sum != 100 {
-		return nil, fmt.Errorf("splits must sum to 100")
-	}
-
-	quotes := make([]*QuoteResponse, 0, len(splits))
-
-	for i, split := range splits {
-		amountIn := new(big.Int).Div(
-			new(big.Int).Mul(req.AmountIn, big.NewInt(int64(split))),
-			big.NewInt(100),
-		)
-
-		splitReq := req
-		splitReq.AmountIn = amountIn
-
-		quote, err := a.GetQuote(ctx, splitReq)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get quote for split %d: %w", i, err)
-		}
-
-		quotes = append(quotes, quote)
-	}
-
-	return quotes, nil
-}
-
-// calculateOutput calculates output amount with fees
-func calculateOutput(amountIn *big.Int, fee uint32) *big.Int {
-	feeMultiplier := big.NewInt(10000 - int64(fee))
-	amountOut := new(big.Int).Mul(amountIn, feeMultiplier)
-	amountOut = amountOut.Div(amountOut, big.NewInt(10000))
-	return amountOut
-}
-
-// calculateMinOutput calculates minimum output with slippage
-func calculateMinOutput(amountOut *big.Int, slippage float64) *big.Int {
-	if slippage <= 0 {
-		slippage = 0.5 // Default 0.5%
-	}
-	multiplier := big.NewInt(int64(10000 - slippage*10))
-	minOut := new(big.Int).Mul(amountOut, multiplier)
-	minOut = minOut.Div(minOut, big.NewInt(10000))
-	return minOut
-}
-
-// calculatePriceImpact calculates price impact
-func calculatePriceImpact(amountIn, amountOut *big.Int) float64 {
-	// Simplified price impact calculation
-	// In production, use actual reserve ratios
-	ratio := new(big.Float).Quo(
-		new(big.Float).SetInt(amountOut),
-		new(big.Float).SetInt(amountIn),
+	family := amm.Family(route.Family)
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		common.HexToAddress(route.Path[0]),
+		common.HexToAddress(route.Path[len(route.Path)-1]),
+		familyCode(family),
+		route.AmountIn,
+		amm.ApplySlippage(route.AmountOut, 0.5),
+		common.HexToAddress(to),
+		big.NewInt(deadline.Unix()),
 	)
-	price, _ := ratio.Float64()
-	return (1 - price) * 100
-}
-
-// estimateGas estimates gas for a swap
-func estimateGas(dexName string) uint64 {
-	gasEstimates := map[string]uint64{
-		"uniswap_v3": 150000,
-		"sushiswap":  180000,
-		"pancakeswap": 200000,
-		"curve":       100000,
-		"balancer":    150000,
-		"quickswap":   180000,
-		"camelot":     150000,
-		"velodrome":   150000,
-		"traderjoe":   180000,
+	if err != nil {
+		return "", err
 	}
-	if gas, ok := gasEstimates[dexName]; ok {
-		return gas
+
+	from := crypto.PubkeyToAddress(d.signer.PublicKey)
+	nonce, err := d.client.PendingNonceAt(ctx, from)
+	if err != nil {
+		return "", fmt.Errorf("pending nonce: %w", err)
 	}
-	return 200000 // Default estimate
+	gasPrice, err := d.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("suggest gas price: %w", err)
+	}
+	gasLimit, err := d.client.EstimateGas(ctx, ethereum.CallMsg{
+		From: from, To: &d.router, Data: data, Value: big.NewInt(0),
+	})
+	if err != nil {
+		return "", fmt.Errorf("estimate gas: %w", err)
+	}
+
+	tx := types.NewTransaction(nonce, d.router, big.NewInt(0), gasLimit, gasPrice, data)
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(chainID)), d.signer)
+	if err != nil {
+		return "", fmt.Errorf("sign tx: %w", err)
+	}
+	if err := d.client.SendTransaction(ctx, signed); err != nil {
+		return "", fmt.Errorf("send tx: %w", err)
+	}
+	return signed.Hash().Hex(), nil
 }
 
-// ExecuteSwap executes a swap
-func (a *Aggregator) ExecuteSwap(ctx context.Context, route Route, to string, deadline time.Time) (string, error) {
-	// In production, this would:
-	// 1. Build the transaction
-	// 2. Sign with user's private key
-	// 3. Send to the network
-	// 4. Return transaction hash
-
-	txHash := fmt.Sprintf("0x%x", time.Now().UnixNano())
-	return txHash, nil
-}
-
-// GetSupportedDEXes returns supported DEXes for a chain
-func (a *Aggregator) GetSupportedDEXes(chainID int64) []*DEX {
+// GetSupportedFamilies returns the pool families for a chain.
+func (a *Aggregator) GetSupportedFamilies(chainID int64) []string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-
-	return a.dexes[chainID]
+	if _, ok := a.chains[chainID]; !ok {
+		return nil
+	}
+	out := make([]string, 0, len(a.families))
+	for _, f := range a.families {
+		out = append(out, string(f))
+	}
+	return out
 }
 
-// ============ HTTP Handlers ============
+// estimateGas returns the gas estimate for a family.
+func estimateGas(family amm.Family) uint64 {
+	switch family {
+	case amm.FamilyV2:
+		return 120000
+	case amm.FamilyV3:
+		return 180000
+	case amm.FamilyStable:
+		return 150000
+	case amm.FamilyWeighted:
+		return 200000
+	}
+	return 200000
+}
 
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+// Handler exposes the aggregator API.
 type Handler struct {
 	aggregator *Aggregator
 }
 
+// NewHandler builds an HTTP handler.
 func NewHandler(agg *Aggregator) *Handler {
 	return &Handler{aggregator: agg}
 }
 
+// GetQuote handles quote requests.
 func (h *Handler) GetQuote(c *gin.Context) {
 	var req QuoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-
-	req.AmountIn = new(big.Int)
-	req.AmountIn, _ = new(big.Int).SetString(c.PostForm("amount"), 10)
-
-	if req.AmountIn.Sign() <= 0 {
-		c.JSON(400, gin.H{"error": "invalid amount"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	quote, err := h.aggregator.GetQuote(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, quote)
+}
+
+// GetMultiHopQuote handles multi-hop quote requests.
+func (h *Handler) GetMultiHopQuote(c *gin.Context) {
+	var req struct {
+		ChainID  int64    `json:"chain_id" binding:"required"`
+		Path     []string `json:"path" binding:"required,min=2"`
+		AmountIn string   `json:"amount_in" binding:"required"`
+		Slippage float64  `json:"slippage"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	amountIn, ok := new(big.Int).SetString(req.AmountIn, 10)
+	if !ok || amountIn.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount_in"})
 		return
 	}
 
-	c.JSON(200, quote)
-}
-
-func (h *Handler) GetRoutes(c *gin.Context) {
-	chainID, _ := c.GetQuery("chainId")
-	fromToken := c.Query("from")
-	toToken := c.Query("to")
-
-	chainIDInt := int64(1)
-	fmt.Sscanf(chainID, "%d", &chainIDInt)
-
-	dexes := h.aggregator.GetSupportedDEXes(chainIDInt)
-
-	routes := make([]map[string]interface{}, 0)
-	for _, dex := range dexes {
-		routes = append(routes, map[string]interface{}{
-			"dex":    dex.Name,
-			"router": dex.Router.Hex(),
-			"factory": dex.Factory.Hex(),
-			"fee":    dex.Fee,
-		})
-	}
-
-	c.JSON(200, gin.H{
-		"from":       fromToken,
-		"to":         toToken,
-		"chainId":    chainIDInt,
-		"routes":     routes,
-	})
-}
-
-func (h *Handler) GetSupportedDEXes(c *gin.Context) {
-	chainID, _ := c.GetQuery("chainId")
-
-	if chainID == "" {
-		// Return all DEXes
-		c.JSON(200, gin.H{"dexes": h.aggregator.dexes})
+	quote, err := h.aggregator.GetMultiHopQuote(c.Request.Context(), req.ChainID, req.Path, amountIn, req.Slippage)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(http.StatusOK, quote)
+}
 
-	chainIDInt := int64(1)
-	fmt.Sscanf(chainID, "%d", &chainIDInt)
-
-	dexes := h.aggregator.GetSupportedDEXes(chainIDInt)
-	c.JSON(200, gin.H{"dexes": dexes})
+// GetFamilies returns the TigerSwap pool families for a chain.
+func (h *Handler) GetFamilies(c *gin.Context) {
+	chainID, err := strconv.ParseInt(c.Query("chainId"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid chainId"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"chainId": chainID, "families": h.aggregator.GetSupportedFamilies(chainID)})
 }
 
 func main() {
-	// Initialize aggregator
-	agg := NewAggregator()
+	agg, err := NewAggregator()
+	if err != nil {
+		log.Fatalf("failed to initialize TigerAggregator: %v", err)
+	}
+	defer agg.Close()
 
-	// Initialize handler
 	handler := NewHandler(agg)
 
-	// Set up Gin
 	r := gin.Default()
-
-	// API routes
 	r.POST("/api/v1/quote", handler.GetQuote)
-	r.GET("/api/v1/routes", handler.GetRoutes)
-	r.GET("/api/v1/dexes", handler.GetSupportedDEXes)
-
-	// Health check
+	r.POST("/api/v1/quote/multihop", handler.GetMultiHopQuote)
+	r.GET("/api/v1/families", handler.GetFamilies)
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": "dex-aggregator"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "tigeraggregator"})
 	})
 
-	// Start server
+	srv := &http.Server{Addr: ":8081", Handler: r}
 	go func() {
-		log.Println("Starting DEX Aggregator on :8081")
-		if err := r.Run(":8081"); err != nil {
-			log.Fatalf("Failed to start server: %v", err)
+		log.Println("Starting TigerAggregator on :8081")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
 		}
 	}()
 
-	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down DEX Aggregator...")
-}
-
-// ============ Utility Functions ============
-
-func init() {
-	// Initialize mock prices
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
-}
-
-func formatBigInt(v *big.Int) string {
-	if v == nil {
-		return "0"
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
 	}
-	return v.String()
-}
-
-func parseBigInt(s string) *big.Int {
-	v, ok := new(big.Int).SetString(s, 10)
-	if !ok {
-		return big.NewInt(0)
-	}
-	return v
-}
-
-func mustParseBigInt(s string) *big.Int {
-	v := parseBigInt(s)
-	if v.Sign() == 0 {
-		log.Panicf("failed to parse big int: %s", s)
-	}
-	return v
-}
-
-// MarshalJSON implements custom JSON marshaling
-func (r Route) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
-		"dex":          r.DEX,
-		"path":         r.Path,
-		"amount_out":   formatBigInt(r.AmountOut),
-		"amount_in":    formatBigInt(r.AmountIn),
-		"gas_estimate": r.GasEstimate,
-	})
-}
-
-// MarshalJSON implements custom JSON marshaling for QuoteResponse
-func (q QuoteResponse) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
-		"from_token":    q.FromToken,
-		"to_token":      q.ToToken,
-		"amount_in":     formatBigInt(q.AmountIn),
-		"amount_out":    formatBigInt(q.AmountOut),
-		"amount_out_min": formatBigInt(q.AmountOutMin),
-		"price_impact":  q.PriceImpact,
-		"gas_estimate":  q.GasEstimate,
-		"routes":        q.Routes,
-		"best_route":    q.BestRoute,
-	})
+	log.Println("Shutting down TigerAggregator...")
 }

@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,10 +10,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 	"tigerswap/backend/go/api_gateway/config"
 )
@@ -82,8 +86,8 @@ func Timeout(timeout time.Duration) gin.HandlerFunc {
 		<-ctx.Done()
 		if ctx.Err() == context.DeadlineExceeded {
 			c.AbortWithStatusJSON(http.StatusRequestTimeout, gin.H{
-				"error":       "Request timeout",
-				"request_id":  GetRequestID(c),
+				"error":      "Request timeout",
+				"request_id": GetRequestID(c),
 			})
 			return
 		}
@@ -93,18 +97,18 @@ func Timeout(timeout time.Duration) gin.HandlerFunc {
 
 // RateLimiter handles rate limiting
 type RateLimiter struct {
-	redis        *redis.Client
-	config       *config.RateLimitConfig
-	windowSize   time.Duration
+	redis           *redis.Client
+	config          *config.RateLimitConfig
+	windowSize      time.Duration
 	cleanupInterval time.Duration
 }
 
 // NewRateLimiter creates a new rate limiter
 func NewRateLimiter(redisClient *redis.Client, cfg config.RateLimitConfig) *RateLimiter {
 	return &RateLimiter{
-		redis:          redisClient,
-		config:         &cfg,
-		windowSize:     time.Second,
+		redis:           redisClient,
+		config:          &cfg,
+		windowSize:      time.Second,
 		cleanupInterval: 5 * time.Minute,
 	}
 }
@@ -148,10 +152,10 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 			c.Header("X-RateLimit-Limit", fmt.Sprintf("%d", rl.config.RequestsPerSecond))
 			c.Header("X-RateLimit-Remaining", "0")
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error":          "Rate limit exceeded",
-				"retry_after":    retryAfter,
-				"limit":          rl.config.RequestsPerSecond,
-				"request_id":     GetRequestID(c),
+				"error":       "Rate limit exceeded",
+				"retry_after": retryAfter,
+				"limit":       rl.config.RequestsPerSecond,
+				"request_id":  GetRequestID(c),
 			})
 			return
 		}
@@ -165,31 +169,61 @@ func (rl *RateLimiter) Middleware() gin.HandlerFunc {
 	}
 }
 
-// Auth returns authentication middleware
+// Auth validates the bearer JWT and injects the caller identity into context.
 func Auth(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Authorization header required",
-			})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
 			return
 		}
 
 		token := strings.TrimPrefix(authHeader, "Bearer ")
-		if token == authHeader {
+		if token == authHeader || token == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization format"})
+			return
+		}
+
+		claims, err := parseJWT(token, cfg.JWT.Secret)
+		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid authorization format",
+				"error":      "Invalid or expired token",
+				"request_id": GetRequestID(c),
 			})
 			return
 		}
 
-		// In production, validate JWT token
-		// For now, accept any token for development
-		c.Set("token", token)
-
+		c.Set("user_id", claims.Subject)
+		c.Set("role", claims.Role)
 		c.Next()
 	}
+}
+
+// jwtClaims is the subset of JWT claims the gateway trusts.
+type jwtClaims struct {
+	jwt.RegisteredClaims
+	Role string `json:"role"`
+}
+
+// parseJWT verifies the signature and expiry of an HS256 token.
+func parseJWT(token, secret string) (*jwtClaims, error) {
+	if secret == "" {
+		return nil, fmt.Errorf("jwt secret is not configured")
+	}
+	claims := &jwtClaims{}
+	parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (interface{}, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method %v", t.Header["alg"])
+		}
+		return []byte(secret), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !parsed.Valid {
+		return nil, fmt.Errorf("token is not valid")
+	}
+	return claims, nil
 }
 
 // Recovery returns a gin middleware for panic recovery
@@ -199,8 +233,8 @@ func Recovery() gin.HandlerFunc {
 			if err := recover(); err != nil {
 				log.Printf("Panic recovered: %v", err)
 				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-					"error":       "Internal server error",
-					"request_id":  GetRequestID(c),
+					"error":      "Internal server error",
+					"request_id": GetRequestID(c),
 				})
 			}
 		}()
@@ -238,21 +272,35 @@ func CORS(allowOrigins []string) gin.HandlerFunc {
 	}
 }
 
-// Compression returns a gin middleware for response compression
+// Compression gzips responses when the client advertises support.
 func Compression() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		acceptEncoding := c.GetHeader("Accept-Encoding")
-		
-		if strings.Contains(acceptEncoding, "gzip") {
-			c.Header("Content-Encoding", "gzip")
-			// In production, use gzip writer wrapper
+		if !strings.Contains(c.GetHeader("Accept-Encoding"), "gzip") {
+			c.Next()
+			return
 		}
 
+		gz := gzip.NewWriter(c.Writer)
+		defer gz.Close()
+
+		c.Writer = &gzipWriter{ResponseWriter: c.Writer, gz: gz}
+		c.Header("Content-Encoding", "gzip")
+		c.Header("Vary", "Accept-Encoding")
 		c.Next()
 	}
 }
 
-// Metrics returns a gin middleware for collecting metrics
+// gzipWriter wraps the gin ResponseWriter with a gzip stream.
+type gzipWriter struct {
+	gin.ResponseWriter
+	gz *gzip.Writer
+}
+
+func (g *gzipWriter) Write(b []byte) (int, error) { return g.gz.Write(b) }
+
+func (g *gzipWriter) WriteString(s string) (int, error) { return g.gz.Write([]byte(s)) }
+
+// Metrics returns a gin middleware that records request counters and latency.
 func Metrics() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		startTime := time.Now()
@@ -262,13 +310,57 @@ func Metrics() gin.HandlerFunc {
 		duration := time.Since(startTime)
 		statusCode := c.Writer.Status()
 
-		// In production, send to Prometheus
+		metrics.mu.Lock()
+		metrics.requestsTotal++
+		metrics.requestsByStatus[strconv.Itoa(statusCode)]++
+		metrics.requestDurationSum += duration.Seconds()
+		metrics.requestDurationCount++
+		if metrics.requestDurationMax < duration.Seconds() {
+			metrics.requestDurationMax = duration.Seconds()
+		}
+		metrics.mu.Unlock()
+
 		log.Printf("metrics: method=%s path=%s status=%d duration=%v",
-			c.Request.Method,
-			c.Request.URL.Path,
-			statusCode,
-			duration,
-		)
+			c.Request.Method, c.Request.URL.Path, statusCode, duration)
+	}
+}
+
+// metricsRegistry is an in-process Prometheus-compatible metrics registry.
+type metricsRegistry struct {
+	mu                   sync.Mutex
+	requestsTotal        uint64
+	requestsByStatus     map[string]uint64
+	requestDurationSum   float64
+	requestDurationCount uint64
+	requestDurationMax   float64
+}
+
+var metrics = &metricsRegistry{requestsByStatus: make(map[string]uint64)}
+
+// MetricsHandler exposes the registry in Prometheus text exposition format.
+func MetricsHandler() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		metrics.mu.Lock()
+		defer metrics.mu.Unlock()
+
+		var b strings.Builder
+		b.WriteString("# HELP tigerswap_gateway_requests_total Total HTTP requests handled.\n")
+		b.WriteString("# TYPE tigerswap_gateway_requests_total counter\n")
+		fmt.Fprintf(&b, "tigerswap_gateway_requests_total %d\n", metrics.requestsTotal)
+
+		b.WriteString("# HELP tigerswap_gateway_responses_total HTTP responses by status code.\n")
+		b.WriteString("# TYPE tigerswap_gateway_responses_total counter\n")
+		for status, count := range metrics.requestsByStatus {
+			fmt.Fprintf(&b, "tigerswap_gateway_responses_total{status=\"%s\"} %d\n", status, count)
+		}
+
+		b.WriteString("# HELP tigerswap_gateway_request_duration_seconds Request latency.\n")
+		b.WriteString("# TYPE tigerswap_gateway_request_duration_seconds summary\n")
+		fmt.Fprintf(&b, "tigerswap_gateway_request_duration_seconds_sum %f\n", metrics.requestDurationSum)
+		fmt.Fprintf(&b, "tigerswap_gateway_request_duration_seconds_count %d\n", metrics.requestDurationCount)
+		fmt.Fprintf(&b, "tigerswap_gateway_request_duration_seconds_max %f\n", metrics.requestDurationMax)
+
+		c.Data(http.StatusOK, "text/plain; version=0.0.4", []byte(b.String()))
 	}
 }
 
@@ -303,9 +395,9 @@ func BodyLimiter(maxSize int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.ContentLength > maxSize {
 			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
-				"error":       "Request body too large",
-				"max_size":    maxSize,
-				"request_id":  GetRequestID(c),
+				"error":      "Request body too large",
+				"max_size":   maxSize,
+				"request_id": GetRequestID(c),
 			})
 			return
 		}

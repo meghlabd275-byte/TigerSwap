@@ -3,14 +3,10 @@ package services
 import (
 	"context"
 	"fmt"
-	"math/big"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 )
 
@@ -101,9 +97,21 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, priva
 	// Calculate liquidation price
 	liquidationPrice := e.calculateLiquidationPrice(markPrice, leverage, side == "long")
 
-	// Calculate position size in tokens
-	sizeFloat := parseFloat(size)
-	collateralFloat := parseFloat(collateral)
+        // Validate numeric inputs and enforce leverage limits.
+        sizeFloat := parseFloat(size)
+        collateralFloat := parseFloat(collateral)
+        if sizeFloat <= 0 || collateralFloat <= 0 {
+                return nil, fmt.Errorf("size and collateral must be positive")
+        }
+        if markPrice <= 0 {
+                return nil, fmt.Errorf("no mark price available for %s", pair)
+        }
+        if leverage < 1 || leverage > 1001 {
+                return nil, fmt.Errorf("leverage must be between 1 and 1001")
+        }
+        if requiredMargin := sizeFloat / float64(leverage); collateralFloat+1e-9 < requiredMargin {
+                return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", requiredMargin, leverage, sizeFloat)
+        }
 
 	position := &PerpetualPosition{
 		ID:                fmt.Sprintf("pos_%d", time.Now().UnixNano()),
@@ -488,5 +496,3 @@ func (e *PerpetualEngine) GetSupportedPairsHandler(c *gin.Context) {
 	})
 }
 
-// Import needed
-import "github.com/ethereum/go-ethereum"

@@ -1,13 +1,22 @@
-// Package dex_connectors provides connectors for various DEX protocols
+// Package dex_connectors provides TigerSwap's own AMM connectors.
+//
+// Every pool family here is a TigerSwap contract (V2 xyK, V3 concentrated,
+// StableSwap, Weighted). The connector reads reserves directly from the
+// TigerSwap factory/pool contracts over the configured RPC and reproduces the
+// exact on-chain math off-chain for quoting. No third-party DEX is contacted.
 package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,411 +26,829 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/gin-gonic/gin"
+
+	"tigerswap/backend/go/amm"
 )
 
-// DEXConnector interface for DEX operations
+// PoolFamily enumerates TigerSwap's own AMM pool families.
+type PoolFamily string
+
+const (
+	FamilyV2       PoolFamily = "tigerswap_v2"       // constant product x*y=k
+	FamilyV3       PoolFamily = "tigerswap_v3"       // concentrated liquidity
+	FamilyStable   PoolFamily = "tigerswap_stable"   // StableSwap invariant
+	FamilyWeighted PoolFamily = "tigerswap_weighted" // weighted pools
+)
+
+// Factory ABI — the TigerSwap factory exposes getPool(tokenA, tokenB, family).
+const tigerFactoryABI = `[
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPool","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
+]`
+
+// Pool ABI shared by the xyK, stable and weighted pools.
+const tigerPoolABI = `[
+ {"inputs":[],"name":"getReserves","outputs":[{"internalType":"uint256","name":"reserve0","type":"uint256"},{"internalType":"uint256","name":"reserve1","type":"uint256"},{"internalType":"uint32","name":"blockTimestampLast","type":"uint32"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"amplification","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256","name":"weight0","type":"uint256"},{"internalType":"uint256","name":"weight1","type":"uint256"}],"stateMutability":"view","type":"function"}
+]`
+
+// Quoter ABI — TigerSwap's own V3 quoter.
+const tigerQuoterABI = `[
+ {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"uint256","name":"amountIn","type":"uint256"}],"name":"quoteExactInputSingle","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+ {"inputs":[{"internalType":"bytes","name":"path","type":"bytes"},{"internalType":"uint256","name":"amountIn","type":"uint256"}],"name":"quoteExactInput","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
+]`
+
+// Router ABI — TigerSwap's own router used to execute swaps.
+const tigerRouterABI = `[
+ {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountADesired","type":"uint256"},{"internalType":"uint256","name":"amountBDesired","type":"uint256"},{"internalType":"uint256","name":"amountAMin","type":"uint256"},{"internalType":"uint256","name":"amountBMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"addLiquidity","outputs":[{"internalType":"uint256","name":"amountA","type":"uint256"},{"internalType":"uint256","name":"amountB","type":"uint256"},{"internalType":"uint256","name":"liquidity","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"liquidity","type":"uint256"},{"internalType":"uint256","name":"amountAMin","type":"uint256"},{"internalType":"uint256","name":"amountBMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"removeLiquidity","outputs":[{"internalType":"uint256","name":"amountA","type":"uint256"},{"internalType":"uint256","name":"amountB","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
+]`
+
+var (
+	factoryABI = mustABI(tigerFactoryABI)
+	poolABI    = mustABI(tigerPoolABI)
+	quoterABI  = mustABI(tigerQuoterABI)
+	routerABI  = mustABI(tigerRouterABI)
+)
+
+func mustABI(s string) abi.ABI {
+	parsed, err := abi.JSON(strings.NewReader(s))
+	if err != nil {
+		panic(fmt.Sprintf("invalid embedded ABI: %v", err))
+	}
+	return parsed
+}
+
+// DEXConnector is the TigerSwap AMM connector interface.
 type DEXConnector interface {
-	Name() string
+	Family() PoolFamily
 	ChainID() int64
 	GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error)
-	Swap(ctx context.Context, amountIn *big.Int, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error)
+	Swap(ctx context.Context, amountIn, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error)
 	AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error)
-	RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity *big.Int, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error)
+	RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error)
 }
 
-// BaseConnector provides common functionality for DEX connectors
+// BaseConnector holds the shared TigerSwap pool plumbing.
 type BaseConnector struct {
-	name      string
+	family    PoolFamily
 	chainID   int64
 	client    *ethclient.Client
-	router    common.Address
 	factory   common.Address
-	contracts map[string]common.Address
+	router    common.Address
+	quoter    common.Address
+	signer    *ecdsa.PrivateKey
 	mu        sync.RWMutex
+	poolCache map[string]common.Address
 }
 
-// NewBaseConnector creates a new base connector
-func NewBaseConnector(name string, chainID int64, rpcURL string, router, factory common.Address) (*BaseConnector, error) {
+// NewBaseConnector dials the chain RPC and resolves the TigerSwap contract set.
+func NewBaseConnector(family PoolFamily, chainID int64, rpcURL string, factory, router, quoter common.Address) (*BaseConnector, error) {
+	if rpcURL == "" {
+		return nil, fmt.Errorf("no RPC endpoint configured for chain %d", chainID)
+	}
 	client, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RPC: %w", err)
+		return nil, fmt.Errorf("dial rpc: %w", err)
+	}
+
+	key, err := connectorSigner()
+	if err != nil {
+		client.Close()
+		return nil, err
 	}
 
 	return &BaseConnector{
-		name:      name,
+		family:    family,
 		chainID:   chainID,
 		client:    client,
-		router:    router,
 		factory:   factory,
-		contracts: make(map[string]common.Address),
+		router:    router,
+		quoter:    quoter,
+		signer:    key,
+		poolCache: make(map[string]common.Address),
 	}, nil
 }
 
-func (b *BaseConnector) Name() string    { return b.name }
-func (b *BaseConnector) ChainID() int64  { return b.chainID }
-func (b *BaseConnector) Router() common.Address { return b.router }
+// connectorSigner loads the key used to submit TigerSwap router transactions.
+func connectorSigner() (*ecdsa.PrivateKey, error) {
+	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")
+	if raw == "" {
+		return nil, errors.New("TIGERSWAP_SIGNER_KEY is not configured")
+	}
+	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
+}
+
+func (b *BaseConnector) Family() PoolFamily      { return b.family }
+func (b *BaseConnector) ChainID() int64          { return b.chainID }
+func (b *BaseConnector) Router() common.Address  { return b.router }
 func (b *BaseConnector) Factory() common.Address { return b.factory }
 
-// GetClient returns the ethclient
-func (b *BaseConnector) GetClient() *ethclient.Client {
-	return b.client
+// GetClient returns the underlying RPC client.
+func (b *BaseConnector) GetClient() *ethclient.Client { return b.client }
+
+// Close releases the RPC connection.
+func (b *BaseConnector) Close() { b.client.Close() }
+
+// familyCode maps the pool family to the uint8 used by the factory/router.
+func familyCode(f PoolFamily) uint8 {
+	switch f {
+	case FamilyV2:
+		return 0
+	case FamilyV3:
+		return 1
+	case FamilyStable:
+		return 2
+	case FamilyWeighted:
+		return 3
+	}
+	return 0
 }
 
-// UniswapV2Connector implements Uniswap V2 style DEX
-type UniswapV2Connector struct {
-	*BaseConnector
+// getPool resolves the TigerSwap pool address for a token pair, with caching.
+func (b *BaseConnector) getPool(ctx context.Context, tokenA, tokenB common.Address) (common.Address, error) {
+	key := strings.ToLower(tokenA.Hex() + ":" + tokenB.Hex())
+	b.mu.RLock()
+	cached, ok := b.poolCache[key]
+	b.mu.RUnlock()
+	if ok {
+		return cached, nil
+	}
+
+	data, err := factoryABI.Pack("getPool", tokenA, tokenB, familyCode(b.family))
+	if err != nil {
+		return common.Address{}, err
+	}
+	out, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &b.factory, Data: data}, nil)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("factory.getPool: %w", err)
+	}
+	vals, err := factoryABI.Unpack("getPool", out)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("unpack getPool: %w", err)
+	}
+	pool, ok := vals[0].(common.Address)
+	if !ok {
+		return common.Address{}, errors.New("unexpected getPool return type")
+	}
+	if pool == (common.Address{}) {
+		return common.Address{}, fmt.Errorf("no TigerSwap %s pool for %s/%s", b.family, tokenA.Hex(), tokenB.Hex())
+	}
+
+	b.mu.Lock()
+	b.poolCache[key] = pool
+	b.mu.Unlock()
+	return pool, nil
 }
 
-// NewUniswapV2Connector creates a new Uniswap V2 connector
-func NewUniswapV2Connector(chainID int64, rpcURL, router, factory string) (*UniswapV2Connector, error) {
-	base, err := NewBaseConnector("uniswap_v2", chainID, rpcURL, common.HexToAddress(router), common.HexToAddress(factory))
+// poolState captures the on-chain state needed for quoting.
+type poolState struct {
+	token0   common.Address
+	token1   common.Address
+	reserve0 *big.Int
+	reserve1 *big.Int
+	amp      *big.Int // StableSwap A (zero for other families)
+	weight0  *big.Int // Weighted (zero for other families)
+	weight1  *big.Int
+}
+
+// loadState reads reserves and family-specific parameters from the pool.
+func (b *BaseConnector) loadState(ctx context.Context, pool common.Address) (*poolState, error) {
+	st := &poolState{amp: big.NewInt(0), weight0: big.NewInt(0), weight1: big.NewInt(0)}
+
+	reservesOut, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pool.getReserves: %w", err)
+	}
+	res, err := poolABI.Unpack("getReserves", reservesOut)
+	if err != nil || len(res) < 2 {
+		return nil, fmt.Errorf("unpack getReserves: %w", err)
+	}
+	st.reserve0, _ = res[0].(*big.Int)
+	st.reserve1, _ = res[1].(*big.Int)
+
+	token0Out, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "token0")}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pool.token0: %w", err)
+	}
+	t0, err := poolABI.Unpack("token0", token0Out)
+	if err != nil {
+		return nil, fmt.Errorf("unpack token0: %w", err)
+	}
+	st.token0, _ = t0[0].(common.Address)
+
+	token1Out, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "token1")}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pool.token1: %w", err)
+	}
+	t1, err := poolABI.Unpack("token1", token1Out)
+	if err != nil {
+		return nil, fmt.Errorf("unpack token1: %w", err)
+	}
+	st.token1, _ = t1[0].(common.Address)
+
+	switch b.family {
+	case FamilyStable:
+		out, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "amplification")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("pool.amplification: %w", err)
+		}
+		vals, err := poolABI.Unpack("amplification", out)
+		if err != nil {
+			return nil, fmt.Errorf("unpack amplification: %w", err)
+		}
+		st.amp, _ = vals[0].(*big.Int)
+	case FamilyWeighted:
+		out, err := b.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getWeights")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("pool.getWeights: %w", err)
+		}
+		vals, err := poolABI.Unpack("getWeights", out)
+		if err != nil || len(vals) < 2 {
+			return nil, fmt.Errorf("unpack getWeights: %w", err)
+		}
+		st.weight0, _ = vals[0].(*big.Int)
+		st.weight1, _ = vals[1].(*big.Int)
+	}
+
+	return st, nil
+}
+
+func mustPack(a abi.ABI, name string, args ...interface{}) []byte {
+	data, err := a.Pack(name, args...)
+	if err != nil {
+		panic(fmt.Sprintf("pack %s: %v", name, err))
+	}
+	return data
+}
+
+// ---------------------------------------------------------------------------
+// Connectors
+// ---------------------------------------------------------------------------
+
+// V2Connector quotes and trades TigerSwap's constant-product pools.
+type V2Connector struct{ *BaseConnector }
+
+// NewV2Connector builds a TigerSwap V2 connector.
+func NewV2Connector(chainID int64, rpcURL, factory, router string) (*V2Connector, error) {
+	base, err := NewBaseConnector(FamilyV2, chainID, rpcURL, common.HexToAddress(factory), common.HexToAddress(router), common.Address{})
 	if err != nil {
 		return nil, err
 	}
-	return &UniswapV2Connector{base}, nil
+	return &V2Connector{base}, nil
 }
 
-// GetAmountOut calculates output amount using constant product formula
-func (u *UniswapV2Connector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
+// GetAmountOut walks the path across TigerSwap V2 pools.
+func (v *V2Connector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
 	if len(path) < 2 {
-		return nil, fmt.Errorf("path must have at least 2 tokens")
+		return nil, errors.New("path must have at least 2 tokens")
 	}
-
-	amountOut := big.NewInt(0)
-	currentAmount := amountIn
-
+	current := new(big.Int).Set(amountIn)
 	for i := 0; i < len(path)-1; i++ {
-		tokenIn := path[i]
-		tokenOut := path[i+1]
-
-		// Get pair address from factory
-		pair, err := u.getPair(ctx, tokenIn, tokenOut)
+		pool, err := v.getPool(ctx, path[i], path[i+1])
 		if err != nil {
-			return nil, fmt.Errorf("failed to get pair: %w", err)
+			return nil, err
 		}
-
-		// Get reserves
-		reserveIn, reserveOut, err := u.getReserves(ctx, pair)
+		st, err := v.loadState(ctx, pool)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get reserves: %w", err)
+			return nil, err
 		}
-
-		// Calculate output with fee
-		amountOut = u.calculateOutput(currentAmount, reserveIn, reserveOut, fee)
-		currentAmount = amountOut
+		reserveIn, reserveOut := st.reserve0, st.reserve1
+		if st.token0 != path[i] {
+			reserveIn, reserveOut = st.reserve1, st.reserve0
+		}
+		current, err = amm.AmountOutXY(current, reserveIn, reserveOut, fee)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	return amountOut, nil
+	return current, nil
 }
 
-// calculateOutput calculates output amount using AMM formula
-func (u *UniswapV2Connector) calculateOutput(amountIn, reserveIn, reserveOut *big.Int, fee uint32) *big.Int {
-	amountInWithFee := new(big.Int).Mul(amountIn, big.NewInt(10000-int64(fee)))
-	amountInWithFee = amountInWithFee.Div(amountInWithFee, big.NewInt(10000))
-
-	numerator := new(big.Int).Mul(amountInWithFee, reserveOut)
-	denominator := new(big.Int).Add(reserveIn, amountInWithFee)
-	return numerator.Div(numerator, denominator)
-}
-
-// getPair gets the pair address from factory
-func (u *UniswapV2Connector) getPair(ctx context.Context, tokenA, tokenB common.Address) (common.Address, error) {
-	// In production, call factory.getPair(tokenA, tokenB)
-	// For now, return a deterministic address
-	pair := common.BytesToAddress(common.LeftPadBytes(
-		append(tokenA.Bytes(), tokenB.Bytes()...),
-		20,
-	))
-	return pair, nil
-}
-
-// getReserves gets reserves from pair contract
-func (u *UniswapV2Connector) getReserves(ctx context.Context, pair common.Address) (*big.Int, *big.Int, error) {
-	// In production, call pair.getReserves()
-	// For now, return mock values
-	return big.NewInt(1000000000000), big.NewInt(1000000000000), nil
-}
-
-// Swap executes a swap
-func (u *UniswapV2Connector) Swap(ctx context.Context, amountIn *big.Int, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	// In production:
-	// 1. Build transaction using router contract
-	// 2. Estimate gas
-	// 3. Sign and send
-	return nil, fmt.Errorf("not implemented")
-}
-
-// AddLiquidity adds liquidity to a pool
-func (u *UniswapV2Connector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// RemoveLiquidity removes liquidity from a pool
-func (u *UniswapV2Connector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity *big.Int, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// UniswapV3Connector implements Uniswap V3 style DEX
-type UniswapV3Connector struct {
-	*BaseConnector
-	quoter common.Address
-}
-
-// NewUniswapV3Connector creates a new Uniswap V3 connector
-func NewUniswapV3Connector(chainID int64, rpcURL, router, factory, quoter string) (*UniswapV3Connector, error) {
-	base, err := NewBaseConnector("uniswap_v3", chainID, rpcURL, common.HexToAddress(router), common.HexToAddress(factory))
+// Swap executes a TigerSwap V2 swap through the router.
+func (v *V2Connector) Swap(ctx context.Context, amountIn, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		path[0], path[len(path)-1], familyCode(FamilyV2), amountIn, amountOutMin, to, deadline)
 	if err != nil {
 		return nil, err
 	}
-
-	return &UniswapV3Connector{
-		BaseConnector: base,
-		quoter:       common.HexToAddress(quoter),
-	}, nil
+	return v.send(ctx, v.router, data)
 }
 
-// GetAmountOut gets amount out from quoter contract
-func (u *UniswapV3Connector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
-	// In production, call quoter.quoteExactInputSingle or quoteExactInput
-	// For now, use a simplified calculation
-	amountOut := new(big.Int).Mul(amountIn, big.NewInt(9997))
-	amountOut = amountOut.Div(amountOut, big.NewInt(10000))
-	return amountOut, nil
-}
-
-// Swap executes a V3 swap
-func (u *UniswapV3Connector) Swap(ctx context.Context, amountIn *big.Int, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// AddLiquidity adds V3 liquidity
-func (u *UniswapV3Connector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// RemoveLiquidity removes V3 liquidity
-func (u *UniswapV3Connector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity *big.Int, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-// CurveConnector implements Curve stable swap
-type CurveConnector struct {
-	*BaseConnector
-}
-
-// NewCurveConnector creates a new Curve connector
-func NewCurveConnector(chainID int64, rpcURL, router, factory string) (*CurveConnector, error) {
-	base, err := NewBaseConnector("curve", chainID, rpcURL, common.HexToAddress(router), common.HexToAddress(factory))
+// AddLiquidity adds liquidity to a TigerSwap V2 pool.
+func (v *V2Connector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("addLiquidity", tokenA, tokenB, familyCode(FamilyV2),
+		amountADesired, amountBDesired, amountAMin, amountBMin, to, deadline)
 	if err != nil {
 		return nil, err
 	}
-	return &CurveConnector{base}, nil
+	return v.send(ctx, v.router, data)
 }
 
-// GetAmountOut gets amount out for stable swap
-func (c *CurveConnector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
-	// Curve uses stable swap algorithm (not constant product)
-	// Simplified calculation
-	amountOut := new(big.Int).Mul(amountIn, big.NewInt(9996))
-	amountOut = amountOut.Div(amountOut, big.NewInt(10000))
+// RemoveLiquidity removes liquidity from a TigerSwap V2 pool.
+func (v *V2Connector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("removeLiquidity", tokenA, tokenB, familyCode(FamilyV2),
+		liquidity, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return v.send(ctx, v.router, data)
+}
+
+// V3Connector quotes TigerSwap's concentrated-liquidity pools via the quoter.
+type V3Connector struct {
+	*BaseConnector
+}
+
+// NewV3Connector builds a TigerSwap V3 connector.
+func NewV3Connector(chainID int64, rpcURL, factory, router, quoter string) (*V3Connector, error) {
+	base, err := NewBaseConnector(FamilyV3, chainID, rpcURL, common.HexToAddress(factory), common.HexToAddress(router), common.HexToAddress(quoter))
+	if err != nil {
+		return nil, err
+	}
+	return &V3Connector{base}, nil
+}
+
+// GetAmountOut calls TigerSwap's own V3 quoter.
+func (v *V3Connector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	if v.quoter == (common.Address{}) {
+		return nil, fmt.Errorf("TigerSwap V3 quoter not configured on chain %d", v.chainID)
+	}
+
+	var amountOut *big.Int
+	for i := 0; i < len(path)-1; i++ {
+		callData, err := quoterABI.Pack("quoteExactInputSingle", path[i], path[i+1], big.NewInt(int64(fee)), amountIn)
+		if err != nil {
+			return nil, err
+		}
+		out, err := v.client.CallContract(ctx, ethereum.CallMsg{To: &v.quoter, Data: callData}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("tigerswap quoter: %w", err)
+		}
+		vals, err := quoterABI.Unpack("quoteExactInputSingle", out)
+		if err != nil {
+			return nil, fmt.Errorf("unpack quote: %w", err)
+		}
+		amountOut, _ = vals[0].(*big.Int)
+		if amountOut == nil || amountOut.Sign() <= 0 {
+			return nil, errors.New("tigerswap quoter returned no output")
+		}
+		amountIn = amountOut
+	}
 	return amountOut, nil
 }
 
-// Swap executes a Curve swap
-func (c *CurveConnector) Swap(ctx context.Context, amountIn *big.Int, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
+// Swap executes a TigerSwap V3 swap.
+func (v *V3Connector) Swap(ctx context.Context, amountIn, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		path[0], path[len(path)-1], familyCode(FamilyV3), amountIn, amountOutMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return v.send(ctx, v.router, data)
 }
 
-// AddLiquidity adds liquidity to Curve pool
-func (c *CurveConnector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
+// AddLiquidity adds liquidity to a TigerSwap V3 pool.
+func (v *V3Connector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("addLiquidity", tokenA, tokenB, familyCode(FamilyV3),
+		amountADesired, amountBDesired, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return v.send(ctx, v.router, data)
 }
 
-// RemoveLiquidity removes liquidity from Curve pool
-func (c *CurveConnector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity *big.Int, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	return nil, fmt.Errorf("not implemented")
+// RemoveLiquidity removes liquidity from a TigerSwap V3 pool.
+func (v *V3Connector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("removeLiquidity", tokenA, tokenB, familyCode(FamilyV3),
+		liquidity, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return v.send(ctx, v.router, data)
 }
 
-// ConnectorRegistry manages DEX connectors
+// StableConnector quotes TigerSwap's StableSwap pools.
+type StableConnector struct{ *BaseConnector }
+
+// NewStableConnector builds a TigerSwap StableSwap connector.
+func NewStableConnector(chainID int64, rpcURL, factory, router string) (*StableConnector, error) {
+	base, err := NewBaseConnector(FamilyStable, chainID, rpcURL, common.HexToAddress(factory), common.HexToAddress(router), common.Address{})
+	if err != nil {
+		return nil, err
+	}
+	return &StableConnector{base}, nil
+}
+
+// GetAmountOut walks the path across TigerSwap StableSwap pools.
+func (s *StableConnector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	current := new(big.Int).Set(amountIn)
+	for i := 0; i < len(path)-1; i++ {
+		pool, err := s.getPool(ctx, path[i], path[i+1])
+		if err != nil {
+			return nil, err
+		}
+		st, err := s.loadState(ctx, pool)
+		if err != nil {
+			return nil, err
+		}
+		reserveIn, reserveOut := st.reserve0, st.reserve1
+		if st.token0 != path[i] {
+			reserveIn, reserveOut = st.reserve1, st.reserve0
+		}
+		current, err = amm.AmountOutStable(current, reserveIn, reserveOut, st.amp, fee)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
+}
+
+// Swap executes a TigerSwap StableSwap swap.
+func (s *StableConnector) Swap(ctx context.Context, amountIn, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		path[0], path[len(path)-1], familyCode(FamilyStable), amountIn, amountOutMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return s.send(ctx, s.router, data)
+}
+
+// AddLiquidity adds liquidity to a TigerSwap StableSwap pool.
+func (s *StableConnector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("addLiquidity", tokenA, tokenB, familyCode(FamilyStable),
+		amountADesired, amountBDesired, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return s.send(ctx, s.router, data)
+}
+
+// RemoveLiquidity removes liquidity from a TigerSwap StableSwap pool.
+func (s *StableConnector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("removeLiquidity", tokenA, tokenB, familyCode(FamilyStable),
+		liquidity, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return s.send(ctx, s.router, data)
+}
+
+// WeightedConnector quotes TigerSwap's weighted pools.
+type WeightedConnector struct{ *BaseConnector }
+
+// NewWeightedConnector builds a TigerSwap weighted-pool connector.
+func NewWeightedConnector(chainID int64, rpcURL, factory, router string) (*WeightedConnector, error) {
+	base, err := NewBaseConnector(FamilyWeighted, chainID, rpcURL, common.HexToAddress(factory), common.HexToAddress(router), common.Address{})
+	if err != nil {
+		return nil, err
+	}
+	return &WeightedConnector{base}, nil
+}
+
+// GetAmountOut walks the path across TigerSwap weighted pools.
+func (w *WeightedConnector) GetAmountOut(ctx context.Context, amountIn *big.Int, path []common.Address, fee uint32) (*big.Int, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	current := new(big.Int).Set(amountIn)
+	for i := 0; i < len(path)-1; i++ {
+		pool, err := w.getPool(ctx, path[i], path[i+1])
+		if err != nil {
+			return nil, err
+		}
+		st, err := w.loadState(ctx, pool)
+		if err != nil {
+			return nil, err
+		}
+		reserveIn, reserveOut := st.reserve0, st.reserve1
+		weightIn, weightOut := st.weight0, st.weight1
+		if st.token0 != path[i] {
+			reserveIn, reserveOut = st.reserve1, st.reserve0
+			weightIn, weightOut = st.weight1, st.weight0
+		}
+		current, err = amm.AmountOutWeighted(current, reserveIn, reserveOut, weightIn, weightOut, fee)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return current, nil
+}
+
+// Swap executes a TigerSwap weighted-pool swap.
+func (w *WeightedConnector) Swap(ctx context.Context, amountIn, amountOutMin *big.Int, path []common.Address, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	if len(path) < 2 {
+		return nil, errors.New("path must have at least 2 tokens")
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		path[0], path[len(path)-1], familyCode(FamilyWeighted), amountIn, amountOutMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return w.send(ctx, w.router, data)
+}
+
+// AddLiquidity adds liquidity to a TigerSwap weighted pool.
+func (w *WeightedConnector) AddLiquidity(ctx context.Context, tokenA, tokenB common.Address, amountADesired, amountBDesired, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("addLiquidity", tokenA, tokenB, familyCode(FamilyWeighted),
+		amountADesired, amountBDesired, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return w.send(ctx, w.router, data)
+}
+
+// RemoveLiquidity removes liquidity from a TigerSwap weighted pool.
+func (w *WeightedConnector) RemoveLiquidity(ctx context.Context, tokenA, tokenB common.Address, liquidity, amountAMin, amountBMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	data, err := routerABI.Pack("removeLiquidity", tokenA, tokenB, familyCode(FamilyWeighted),
+		liquidity, amountAMin, amountBMin, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return w.send(ctx, w.router, data)
+}
+
+// send signs and broadcasts a router transaction with proper nonce/gas handling.
+func (b *BaseConnector) send(ctx context.Context, to common.Address, data []byte) (*types.Transaction, error) {
+	from := crypto.PubkeyToAddress(b.signer.PublicKey)
+
+	nonce, err := b.client.PendingNonceAt(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("pending nonce: %w", err)
+	}
+	gasPrice, err := b.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("suggest gas price: %w", err)
+	}
+	gasLimit, err := b.client.EstimateGas(ctx, ethereum.CallMsg{
+		From: from, To: &to, Data: data, Value: big.NewInt(0),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("estimate gas: %w", err)
+	}
+
+	chainID := big.NewInt(b.chainID)
+	tx := types.NewTransaction(nonce, to, big.NewInt(0), gasLimit, gasPrice, data)
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), b.signer)
+	if err != nil {
+		return nil, fmt.Errorf("sign tx: %w", err)
+	}
+	if err := b.client.SendTransaction(ctx, signed); err != nil {
+		return nil, fmt.Errorf("send tx: %w", err)
+	}
+	return signed, nil
+}
+
+// ---------------------------------------------------------------------------
+// Registry
+// ---------------------------------------------------------------------------
+
+// ConnectorRegistry holds the TigerSwap connectors keyed by chain and family.
 type ConnectorRegistry struct {
-	connectors map[int64]map[string]DEXConnector
+	connectors map[int64]map[PoolFamily]DEXConnector
 	mu         sync.RWMutex
 }
 
-// NewConnectorRegistry creates a new registry
+// NewConnectorRegistry creates an empty registry.
 func NewConnectorRegistry() *ConnectorRegistry {
-	return &ConnectorRegistry{
-		connectors: make(map[int64]map[string]DEXConnector),
-	}
+	return &ConnectorRegistry{connectors: make(map[int64]map[PoolFamily]DEXConnector)}
 }
 
-// Register registers a DEX connector
-func (r *ConnectorRegistry) Register(chainID int64, connector DEXConnector) {
+// Register adds a connector.
+func (r *ConnectorRegistry) Register(chainID int64, c DEXConnector) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
 	if r.connectors[chainID] == nil {
-		r.connectors[chainID] = make(map[string]DEXConnector)
+		r.connectors[chainID] = make(map[PoolFamily]DEXConnector)
 	}
-	r.connectors[chainID][connector.Name()] = connector
+	r.connectors[chainID][c.Family()] = c
 }
 
-// Get gets a connector by name
-func (r *ConnectorRegistry) Get(chainID int64, name string) (DEXConnector, bool) {
+// Get returns a connector by chain and family.
+func (r *ConnectorRegistry) Get(chainID int64, family PoolFamily) (DEXConnector, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
 	if r.connectors[chainID] == nil {
 		return nil, false
 	}
-	conn, ok := r.connectors[chainID][name]
-	return conn, ok
+	c, ok := r.connectors[chainID][family]
+	return c, ok
 }
 
-// GetAll gets all connectors for a chain
+// GetAll returns every connector for a chain.
 func (r *ConnectorRegistry) GetAll(chainID int64) []DEXConnector {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	result := make([]DEXConnector, 0)
-	if r.connectors[chainID] != nil {
-		for _, conn := range r.connectors[chainID] {
-			result = append(result, conn)
-		}
+	out := make([]DEXConnector, 0)
+	for _, c := range r.connectors[chainID] {
+		out = append(out, c)
 	}
-	return result
+	return out
 }
 
-// InitializeDefaultConnectors initializes default connectors
-func InitializeDefaultConnectors() *ConnectorRegistry {
+// Close releases every connector's RPC client.
+func (r *ConnectorRegistry) Close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, byFamily := range r.connectors {
+		for _, c := range byFamily {
+			if bc, ok := c.(interface{ Close() }); ok {
+				bc.Close()
+			}
+		}
+	}
+}
+
+// tigerContractsForChain resolves the TigerSwap contract set for a chain.
+func tigerContractsForChain(chainID int64) (factory, router, quoter, rpc string) {
+	suffix := strconv.FormatInt(chainID, 10)
+	factory = os.Getenv("TIGERSWAP_FACTORY_" + suffix)
+	router = os.Getenv("TIGERSWAP_ROUTER_" + suffix)
+	quoter = os.Getenv("TIGERSWAP_QUOTER_" + suffix)
+	rpc = os.Getenv("TIGERSWAP_RPC_" + suffix)
+	return
+}
+
+// InitializeConnectors registers a connector for every configured chain.
+func InitializeConnectors() *ConnectorRegistry {
 	registry := NewConnectorRegistry()
 
-	// Add connectors for different chains
-	connectors := []struct {
-		chainID  int64
-		name     string
-		router   string
-		factory  string
-		quoter   string
-		creator  func(chainID int64, rpc, router, factory, quoter string) (DEXConnector, error)
-	}{
-		{1, "uniswap_v3", "0xE592427A0AEce92De3Edee1F18E0157C05861564", "0x1F98431c8aD98523631AE4a59f267346ea31F984", "0xb27308f9F90D607463bb33eA1BeBb41C27CE5AB6", NewUniswapV3Connector},
-		{1, "sushiswap", "0xd9e1cE17f2641f24aE83637ab66a2cca9C378B9F", "0xC0AEe478e3658e2610c5F7A4A2E1777cE9e4f2Ac", "", NewUniswapV2Connector},
-		{56, "pancakeswap", "0x10ED43C718714eb63d5aA57B78B54704E256024E", "0xca143ce32fe78f1f7019d7d551a6402fc5350c73", "", NewUniswapV2Connector},
-		{137, "quickswap", "0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff", "0x5757371414417b8C6CAad45bAeF941aBc7d3eD32", "", NewUniswapV2Connector},
-		{42161, "uniswap_v3", "0xE592427A0AEce92De3Edee1F18E0157C05861564", "0x1F98431c8aD98523631AE4a59f267346ea31F984", "", NewUniswapV3Connector},
-		{10, "uniswap_v3", "0xE592427A0AEce92De3Edee1F18E0157C05861564", "0x1F98431c8aD98523631AE4a59f267346ea31F984", "", NewUniswapV3Connector},
-		{8453, "uniswap_v3", "0xE592427A0AEce92De3Edee1F18E0157C05861564", "0x1F98431c8aD98523631AE4a59f267346ea31F984", "", NewUniswapV3Connector},
-		{43114, "traderjoe", "0xB4315E873dBcf6F38Ec51a40117e9297A76aF8ed", "0x9Ad6C38BE94206cA50bb0d90783181662f0C6F10", "", NewUniswapV2Connector},
-	}
+	for _, chainID := range configuredChains() {
+		factory, router, quoter, rpc := tigerContractsForChain(chainID)
+		if factory == "" || router == "" || rpc == "" {
+			log.Printf("chain %d: TigerSwap contracts not fully configured; skipping", chainID)
+			continue
+		}
 
-	for _, c := range connectors {
-		// For demo, we skip actual RPC connections
-		log.Printf("Registered DEX: %s on chain %d", c.name, c.chainID)
-		// In production, uncomment below:
-		// conn, err := c.creator(c.chainID, rpcURL, c.router, c.factory, c.quoter)
-		// if err != nil {
-		// 	log.Printf("Failed to create %s: %v", c.name, err)
-		// 	continue
-		// }
-		// registry.Register(c.chainID, conn)
+		if c, err := NewV2Connector(chainID, rpc, factory, router); err != nil {
+			log.Printf("chain %d: v2 connector unavailable: %v", chainID, err)
+		} else {
+			registry.Register(chainID, c)
+		}
+		if c, err := NewStableConnector(chainID, rpc, factory, router); err != nil {
+			log.Printf("chain %d: stable connector unavailable: %v", chainID, err)
+		} else {
+			registry.Register(chainID, c)
+		}
+		if c, err := NewWeightedConnector(chainID, rpc, factory, router); err != nil {
+			log.Printf("chain %d: weighted connector unavailable: %v", chainID, err)
+		} else {
+			registry.Register(chainID, c)
+		}
+		if quoter != "" {
+			if c, err := NewV3Connector(chainID, rpc, factory, router, quoter); err != nil {
+				log.Printf("chain %d: v3 connector unavailable: %v", chainID, err)
+			} else {
+				registry.Register(chainID, c)
+			}
+		}
 	}
 
 	return registry
 }
 
-// ============ HTTP Handlers ============
+// configuredChains returns the chain IDs with a TigerSwap deployment.
+func configuredChains() []int64 {
+	raw := os.Getenv("TIGERSWAP_CHAINS")
+	if raw == "" {
+		return nil
+	}
+	var chains []int64
+	for _, part := range strings.Split(raw, ",") {
+		id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+		if err != nil {
+			log.Printf("ignoring invalid chain id %q", part)
+			continue
+		}
+		chains = append(chains, id)
+	}
+	return chains
+}
 
+// ---------------------------------------------------------------------------
+// HTTP
+// ---------------------------------------------------------------------------
+
+// Handler exposes the quote API.
 type Handler struct {
 	registry *ConnectorRegistry
 }
 
+// NewHandler builds an HTTP handler over the registry.
 func NewHandler(reg *ConnectorRegistry) *Handler {
 	return &Handler{registry: reg}
 }
 
+// GetQuote returns a quote from one TigerSwap pool family.
 func (h *Handler) GetQuote(c *gin.Context) {
-	chainID, _ := strconv.ParseInt(c.Query("chainId"), 10, 64)
-	dexName := c.Query("dex")
-	amountInStr := c.Query("amountIn")
-	pathStr := c.Query("path")
-
-	if dexName == "" {
-		c.JSON(400, gin.H{"error": "dex name required"})
+	chainID, err := strconv.ParseInt(c.Query("chainId"), 10, 64)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid chainId"})
+		return
+	}
+	family := PoolFamily(c.Query("family"))
+	if family == "" {
+		c.JSON(400, gin.H{"error": "family is required"})
+		return
+	}
+	feeBps, err := strconv.ParseUint(c.DefaultQuery("fee", "30"), 10, 32)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "invalid fee"})
 		return
 	}
 
-	conn, ok := h.registry.Get(chainID, dexName)
+	conn, ok := h.registry.Get(chainID, family)
 	if !ok {
-		c.JSON(404, gin.H{"error": "DEX not found"})
+		c.JSON(404, gin.H{"error": "pool family not available on this chain"})
 		return
 	}
 
-	amountIn := new(big.Int)
-	amountIn, ok = amountIn.SetString(amountInStr, 10)
-	if !ok {
-		c.JSON(400, gin.H{"error": "invalid amount"})
+	amountIn, ok := new(big.Int).SetString(c.Query("amountIn"), 10)
+	if !ok || amountIn.Sign() <= 0 {
+		c.JSON(400, gin.H{"error": "invalid amountIn"})
 		return
 	}
 
-	// Parse path
-	pathAddresses := make([]common.Address, 0)
-	for _, token := range strings.Split(pathStr, ",") {
-		pathAddresses = append(pathAddresses, common.HexToAddress(token))
+	rawPath := strings.Split(c.Query("path"), ",")
+	path := make([]common.Address, 0, len(rawPath))
+	for _, token := range rawPath {
+		if !common.IsHexAddress(token) {
+			c.JSON(400, gin.H{"error": fmt.Sprintf("invalid token address %q", token)})
+			return
+		}
+		path = append(path, common.HexToAddress(token))
+	}
+	if len(path) < 2 {
+		c.JSON(400, gin.H{"error": "path must have at least 2 tokens"})
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
 
-	amountOut, err := conn.GetAmountOut(ctx, amountIn, pathAddresses, 300)
+	amountOut, err := conn.GetAmountOut(ctx, amountIn, path, uint32(feeBps))
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(502, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(200, gin.H{
-		"amountIn":  amountInStr,
+		"family":    family,
+		"chainId":   chainID,
+		"amountIn":  amountIn.String(),
 		"amountOut": amountOut.String(),
-		"dex":       dexName,
 	})
 }
 
-// ============ Main ============
-
-import "github.com/gin-gonic/gin"
-import "strconv"
-
 func main() {
-	// Initialize registry
-	registry := InitializeDefaultConnectors()
+	registry := InitializeConnectors()
+	defer registry.Close()
 
-	// Initialize handler
 	handler := NewHandler(registry)
 
-	// Set up Gin
 	r := gin.Default()
-
-	// API routes
 	r.GET("/api/v1/quote", handler.GetQuote)
-
-	// Health check
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": "dex-connectors"})
+		c.JSON(200, gin.H{"status": "ok", "service": "tigerswap-amm-connectors"})
 	})
 
-	// Start server
+	srv := &http.Server{Addr: ":8082", Handler: r}
 	go func() {
-		log.Println("Starting DEX Connectors on :8082")
-		if err := r.Run(":8082"); err != nil {
-			log.Fatalf("Failed to start server: %v", err)
+		log.Println("Starting TigerSwap AMM connectors on :8082")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
 		}
 	}()
 
-	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down DEX Connectors...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
+	log.Println("Shutting down TigerSwap AMM connectors...")
 }

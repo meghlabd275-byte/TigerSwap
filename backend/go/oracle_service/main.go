@@ -8,13 +8,16 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
@@ -24,7 +27,7 @@ import (
 // OracleConfig holds oracle configuration
 type OracleConfig struct {
 	Name      string
-	Address  string
+	Address   string
 	ChainID   int64
 	Heartbeat time.Duration
 	Deviation float64
@@ -33,8 +36,8 @@ type OracleConfig struct {
 // PriceFeed represents a price feed
 type PriceFeed struct {
 	Token      string    `json:"token"`
-	Price      *big.Int `json:"price"`
-	Confidence *big.Int `json:"confidence"`
+	Price      *big.Int  `json:"price"`
+	Confidence *big.Int  `json:"confidence"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	Oracle     string    `json:"oracle"`
 }
@@ -44,7 +47,7 @@ type OracleService struct {
 	redis          *redis.Client
 	ethClients     map[int64]*ethclient.Client
 	oracles        map[string]*OracleConfig
-	priceFeeds    map[string]*PriceFeed
+	priceFeeds     map[string]*PriceFeed
 	mu             sync.RWMutex
 	chainlinkFeeds map[int64]map[string]common.Address
 	pythFeeds      map[int64]map[string][]byte
@@ -69,7 +72,7 @@ func NewOracleService(redisURL string) (*OracleService, error) {
 		redis:          redisClient,
 		ethClients:     make(map[int64]*ethclient.Client),
 		oracles:        make(map[string]*OracleConfig),
-		priceFeeds:    make(map[string]*PriceFeed),
+		priceFeeds:     make(map[string]*PriceFeed),
 		chainlinkFeeds: initChainlinkFeeds(),
 		pythFeeds:      initPythFeeds(),
 	}, nil
@@ -154,24 +157,17 @@ func (o *OracleService) fetchPrice(ctx context.Context, token string, chainID in
 	}
 
 	if len(prices) == 0 {
-		feed := &PriceFeed{
-			Token:      token,
-			Price:      o.getMockPrice(token),
-			Confidence: big.NewInt(0),
-			UpdatedAt:  time.Now(),
-			Oracle:     "mock",
-		}
-		return feed, nil
+		return nil, fmt.Errorf("no oracle price available for %s on chain %d", token, chainID)
 	}
 
 	aggregatedPrice := o.medianBigInt(prices)
 
 	feed := &PriceFeed{
 		Token:      token,
-		Price:     aggregatedPrice,
+		Price:      aggregatedPrice,
 		Confidence: big.NewInt(0),
 		UpdatedAt:  time.Now(),
-		Oracle:    "aggregated",
+		Oracle:     "aggregated",
 	}
 
 	o.mu.Lock()
@@ -181,25 +177,89 @@ func (o *OracleService) fetchPrice(ctx context.Context, token string, chainID in
 	return feed, nil
 }
 
-func (o *OracleService) fetchChainlinkPrice(ctx context.Context, chainID int64, addr common.Address) (*big.Int, *big.Int, error) {
-	return big.NewInt(300000000000), big.NewInt(1000000000), nil
+const aggregatorV3ABI = `[{"inputs":[],"name":"latestRoundData","outputs":[{"internalType":"uint80","name":"roundId","type":"uint80"},{"internalType":"int256","name":"answer","type":"int256"},{"internalType":"uint256","name":"startedAt","type":"uint256"},{"internalType":"uint256","name":"updatedAt","type":"uint256"},{"internalType":"uint80","name":"answeredInRound","type":"uint80"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"}]`
+
+var (
+	aggregatorABI     abi.ABI
+	aggregatorABIOnce sync.Once
+	aggregatorABIErr  error
+)
+
+func getAggregatorABI() (abi.ABI, error) {
+	aggregatorABIOnce.Do(func() {
+		aggregatorABI, aggregatorABIErr = abi.JSON(strings.NewReader(aggregatorV3ABI))
+	})
+	return aggregatorABI, aggregatorABIErr
 }
 
-func (o *OracleService) getMockPrice(token string) *big.Int {
-	mockPrices := map[string]*big.Int{
-		"ETH":  big.NewInt(300000000000),
-		"BTC":  big.NewInt(5000000000000),
-		"USDC": big.NewInt(100000000),
-		"USDT": big.NewInt(100000000),
-		"LINK": big.NewInt(1500000000),
-		"UNI":  big.NewInt(1000000000),
-		"AAVE": big.NewInt(80000000000),
+// fetchChainlinkPrice reads the latest answer from a Chainlink aggregator on-chain
+// and normalises it to 18 decimals. No price is fabricated locally.
+func (o *OracleService) fetchChainlinkPrice(ctx context.Context, chainID int64, addr common.Address) (*big.Int, *big.Int, error) {
+	client, ok := o.ethClients[chainID]
+	if !ok {
+		rpcURL := os.Getenv("TIGERSWAP_RPC_" + strconv.FormatInt(chainID, 10))
+		if rpcURL == "" {
+			return nil, nil, fmt.Errorf("no RPC endpoint configured for chain %d", chainID)
+		}
+		c, err := ethclient.DialContext(ctx, rpcURL)
+		if err != nil {
+			return nil, nil, fmt.Errorf("dial chain %d: %w", chainID, err)
+		}
+		o.mu.Lock()
+		o.ethClients[chainID] = c
+		o.mu.Unlock()
+		client = c
 	}
 
-	if price, ok := mockPrices[token]; ok {
-		return price
+	contractABI, err := getAggregatorABI()
+	if err != nil {
+		return nil, nil, err
 	}
-	return big.NewInt(100000000)
+
+	decimalsData, err := contractABI.Pack("decimals")
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &addr, Data: decimalsData}, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read decimals: %w", err)
+	}
+	var decimals uint8
+	if err := contractABI.UnpackIntoInterface(&decimals, "decimals", out); err != nil {
+		return nil, nil, fmt.Errorf("decode decimals: %w", err)
+	}
+
+	roundData, err := contractABI.Pack("latestRoundData")
+	if err != nil {
+		return nil, nil, err
+	}
+	out, err = client.CallContract(ctx, ethereum.CallMsg{To: &addr, Data: roundData}, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read latestRoundData: %w", err)
+	}
+	values, err := contractABI.Unpack("latestRoundData", out)
+	if err != nil || len(values) < 5 {
+		return nil, nil, fmt.Errorf("decode latestRoundData: %w", err)
+	}
+	answer, ok := values[1].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("unexpected answer type %T", values[1])
+	}
+	updatedAt, ok := values[3].(*big.Int)
+	if !ok {
+		return nil, nil, fmt.Errorf("unexpected updatedAt type %T", values[3])
+	}
+	if answer.Sign() <= 0 {
+		return nil, nil, fmt.Errorf("oracle returned non-positive price")
+	}
+
+	normalised := new(big.Int).Set(answer)
+	if decimals < 18 {
+		normalised.Mul(normalised, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(18-decimals)), nil))
+	} else if decimals > 18 {
+		normalised.Div(normalised, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals-18)), nil))
+	}
+	return normalised, updatedAt, nil
 }
 
 func (o *OracleService) medianBigInt(values []*big.Int) *big.Int {

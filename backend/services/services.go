@@ -4,11 +4,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+        "github.com/gorilla/websocket"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
@@ -98,7 +99,7 @@ func seedTokens(db *gorm.DB) {
 		{ChainID: 1, Address: "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599", Name: "Wrapped Bitcoin", Symbol: "WBTC", Decimals: 8, LogoURI: "https://assets.coingecko.com/coins/images/7598/small/wrapped_bitcoin_wbtc.png", IsActive: true, IsVerified: true},
 		{ChainID: 1, Address: "0x514910771AF9Ca656af840dff83E8264EcF986CA", Name: "Chainlink", Symbol: "LINK", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/877/small/chainlink-new-logo.png", IsActive: true, IsVerified: true},
 		{ChainID: 1, Address: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", Name: "Uniswap", Symbol: "UNI", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/12504/small/uniswap-uni.png", IsActive: true, IsVerified: true},
-		{ChainID: 137, Address: "0x0000000000000000000000000000000000000000", Name: "Polygon", Symbol: "MATIC", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/4713/small/polygon.png", ChainID: 137, IsActive: true, IsVerified: true},
+		{ChainID: 137, Address: "0x0000000000000000000000000000000000000000", Name: "Polygon", Symbol: "MATIC", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/4713/small/polygon.png", IsActive: true, IsVerified: true},
 		{ChainID: 56, Address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", Name: "Wrapped BNB", Symbol: "WBNB", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png", IsActive: true, IsVerified: true},
 	}
 	for _, token := range tokens {
@@ -404,8 +405,9 @@ func (s *SwapService) ApproveToken(c *gin.Context) {
 	var req struct {
 		ChainID    int64  `json:"chain_id"`
 		PrivateKey string `json:"private_key" binding:"required"`
-		TokenAddr  string `json:"token_address" binding:"required"`
-		Amount     string `json:"amount" binding:"required"`
+                TokenAddr  string `json:"token_address" binding:"required"`
+                Spender    string `json:"spender" binding:"required"`
+                Amount     string `json:"amount"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -423,9 +425,9 @@ func (s *SwapService) ApproveToken(c *gin.Context) {
 			c.Request.Context(),
 			chainID,
 			req.PrivateKey,
-			req.TokenAddr,
-			req.Amount,
-		)
+                        req.TokenAddr,
+                        req.Spender,
+                )
 		if err != nil {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
@@ -838,67 +840,131 @@ func (s *AdminService) DisableMaintenance(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "message": "Maintenance mode disabled"})
 }
 
-// WebSocketHub manages WebSocket connections
+// WebSocketHub fans out broadcast messages to every connected client.
 type WebSocketHub struct {
-	clients    map[*websocketConn]bool
-	broadcast  chan []byte
-	register   chan *websocketConn
-	unregister chan *websocketConn
-	mu         sync.RWMutex
+clients    map[*websocketConn]bool
+broadcast  chan []byte
+register   chan *websocketConn
+unregister chan *websocketConn
+mu         sync.RWMutex
 }
 
 type websocketConn struct {
-	send   chan []byte
-	client *gin.Context
+send   chan []byte
+client *gin.Context
+conn   *websocket.Conn
 }
 
 var wsHub = &WebSocketHub{
-	clients:    make(map[*websocketConn]bool),
-	broadcast:   make(chan []byte),
-	register:   make(chan *websocketConn),
-	unregister: make(chan *websocketConn),
+clients:    make(map[*websocketConn]bool),
+broadcast:  make(chan []byte, 256),
+register:   make(chan *websocketConn),
+unregister: make(chan *websocketConn),
 }
 
+// upgrader upgrades HTTP requests to WebSocket connections.
+var upgrader = websocket.Upgrader{
+ReadBufferSize:  4096,
+WriteBufferSize: 4096,
+// Same-origin policy: the browser sends Origin; reject cross-site upgrades.
+CheckOrigin: func(r *http.Request) bool {
+origin := r.Header.Get("Origin")
+if origin == "" {
+return true // non-browser client
+}
+host := r.Host
+u, err := url.Parse(origin)
+if err != nil {
+return false
+}
+return u.Host == host
+},
+}
+
+// Run drives the hub until ctx is cancelled.
+func (h *WebSocketHub) Run(ctx context.Context) {
+for {
+select {
+case <-ctx.Done():
+h.mu.Lock()
+for conn := range h.clients {
+close(conn.send)
+delete(h.clients, conn)
+}
+h.mu.Unlock()
+return
+case conn := <-h.register:
+h.mu.Lock()
+h.clients[conn] = true
+h.mu.Unlock()
+case conn := <-h.unregister:
+h.mu.Lock()
+if _, ok := h.clients[conn]; ok {
+delete(h.clients, conn)
+close(conn.send)
+}
+h.mu.Unlock()
+case message := <-h.broadcast:
+h.mu.RLock()
+for conn := range h.clients {
+select {
+case conn.send <- message:
+default:
+// Slow consumer: drop the connection instead of blocking the hub.
+close(conn.send)
+delete(h.clients, conn)
+}
+}
+h.mu.RUnlock()
+}
+}
+}
+
+// StartWebSocketHub launches the hub goroutine.
+func StartWebSocketHub(ctx context.Context) {
+go wsHub.Run(ctx)
+}
+
+// HandleWebSocket upgrades the request and streams messages to/from the client.
 func HandleWebSocket(c *gin.Context) {
-	// Upgrade to WebSocket
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
-		return
-	}
-
-	wsConn := &websocketConn{
-		send:   make(chan []byte, 256),
-		client: c,
-	}
-	wsHub.register <- wsConn
-
-	go func() {
-		defer func() {
-			wsHub.unregister <- wsConn
-			conn.Close()
-		}()
-
-		for {
-			_, message, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			wsHub.broadcast <- message
-		}
-	}()
-
-	go func() {
-		for {
-			message, ok := <-wsConn.send
-			if !ok {
-				conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-			conn.WriteMessage(websocket.TextMessage, message)
-		}
-	}()
+conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+if err != nil {
+log.Println("WebSocket upgrade error:", err)
+return
 }
+
+wsConn := &websocketConn{
+send:   make(chan []byte, 256),
+client: c,
+conn:   conn,
+}
+wsHub.register <- wsConn
+
+go func() {
+defer func() {
+wsHub.unregister <- wsConn
+conn.Close()
+}()
+
+for {
+_, message, err := conn.ReadMessage()
+if err != nil {
+break
+}
+wsHub.broadcast <- message
+}
+}()
+
+go func() {
+for message := range wsConn.send {
+if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+return
+}
+}
+conn.WriteMessage(websocket.CloseMessage, []byte{})
+}()
+}
+
 
 // BankDetailsHandler returns bank transfer details for fiat deposits
 type BankDetails struct {

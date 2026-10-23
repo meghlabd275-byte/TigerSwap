@@ -3,8 +3,6 @@ package services
 import (
 	"context"
 	"fmt"
-	"math/big"
-	"strings"
 	"sync"
 	"time"
 
@@ -454,8 +452,3 @@ func (s *LaunchpadService) GetTiersHandler(c *gin.Context) {
 }
 
 // Helper function
-func parseFloat(s string) float64 {
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
-}

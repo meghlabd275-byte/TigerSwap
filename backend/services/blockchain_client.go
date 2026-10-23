@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -205,8 +206,14 @@ func (b *BlockchainClient) GetERC20Balance(ctx context.Context, chainID int64, o
 		return nil, err
 	}
 	
-	var decimals uint8
-	decimalsABI.Unpack(&decimals, "decimals", decResult)
+	decimalsVals, err := decimalsABI.Unpack("decimals", decResult)
+	if err != nil || len(decimalsVals) != 1 {
+		return nil, fmt.Errorf("decode decimals: %w", err)
+	}
+	decimals, ok := decimalsVals[0].(uint8)
+	if !ok {
+		return nil, fmt.Errorf("unexpected decimals type %T", decimalsVals[0])
+	}
 	
 	// Get symbol
 	symData, _ := symbolABI.Pack("symbol")
@@ -218,8 +225,14 @@ func (b *BlockchainClient) GetERC20Balance(ctx context.Context, chainID int64, o
 		return nil, err
 	}
 	
-	var symbol string
-	symbolABI.Unpack(&symbol, "symbol", symResult)
+	symbolVals, err := symbolABI.Unpack("symbol", symResult)
+	if err != nil || len(symbolVals) != 1 {
+		return nil, fmt.Errorf("decode symbol: %w", err)
+	}
+	symbol, ok := symbolVals[0].(string)
+	if !ok {
+		return nil, fmt.Errorf("unexpected symbol type %T", symbolVals[0])
+	}
 	
 	return &TokenBalance{
 		Address:     ownerAddress,
@@ -341,11 +354,16 @@ func (b *BlockchainClient) GetTransactionReceipt(ctx context.Context, chainID in
 	}
 	
 	tx, _, err := client.TransactionByHash(ctx, hash)
+	signer := types.LatestSignerForChainID(tx.ChainId())
+	sender, err := types.Sender(signer, tx)
+	if err != nil {
+		return nil, fmt.Errorf("recover sender: %w", err)
+	}
 	if err != nil {
 		return nil, err
 	}
 	
-	block, err := client.BlockByNumber(ctx, big.NewInt(int64(receipt.BlockNumber)))
+	block, err := client.BlockByNumber(ctx, receipt.BlockNumber)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +375,7 @@ func (b *BlockchainClient) GetTransactionReceipt(ctx context.Context, chainID in
 	
 	return &TransactionData{
 		Hash:        txHash,
-		From:        tx.From().Hex(),
+		From:        sender.Hex(),
 		To:          tx.To().Hex(),
 		Value:       weiToDecimal(tx.Value(), 18),
 		ValueWei:    tx.Value(),
@@ -365,9 +383,9 @@ func (b *BlockchainClient) GetTransactionReceipt(ctx context.Context, chainID in
 		GasPrice:    tx.GasPrice(),
 		GasLimit:    tx.Gas(),
 		Nonce:       tx.Nonce(),
-		BlockNumber: receipt.BlockNumber,
+		BlockNumber: receipt.BlockNumber.Uint64(),
 		Status:      status,
-		Timestamp:   block.Time(),
+		Timestamp:   int64(block.Time()),
 	}, nil
 }
 
@@ -381,12 +399,27 @@ func (b *BlockchainClient) WaitForTransaction(ctx context.Context, chainID int64
 	hash := common.HexToHash(txHash)
 	
 	// Wait for receipt
-	receipt, err := client.WaitForProof(ctx, hash, uint64(timeoutSeconds))
-	if err != nil {
-		return nil, fmt.Errorf("transaction not confirmed within timeout: %v", err)
-	}
-	
-	return b.GetTransactionReceipt(ctx, chainID, txHash)
+		deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			receipt, err := client.TransactionReceipt(ctx, hash)
+			if err == nil && receipt != nil {
+				return b.GetTransactionReceipt(ctx, chainID, txHash)
+			}
+			if err != nil && err != ethereum.NotFound {
+				return nil, fmt.Errorf("poll receipt: %w", err)
+			}
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("transaction %s not confirmed within %ds", txHash, timeoutSeconds)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-ticker.C:
+			}
+		}
 }
 
 // GetBlock returns block information
@@ -408,7 +441,7 @@ func (b *BlockchainClient) GetBlock(ctx context.Context, chainID int64, blockNum
 	}
 	
 	return &BlockData{
-		Number:       block.Number(),
+		Number:       block.NumberU64(),
 		Hash:         block.Hash().Hex(),
 		ParentHash:   block.ParentHash().Hex(),
 		Timestamp:    block.Time(),
@@ -441,9 +474,10 @@ func (b *BlockchainClient) EstimateGas(ctx context.Context, chainID int64, from,
 		return 0, err
 	}
 	
+	toAddr := common.HexToAddress(to)
 	msg := ethereum.CallMsg{
 		From: common.HexToAddress(from),
-		To:   common.HexToAddress(to),
+		To:    &toAddr,
 		Value: value,
 		Data:  data,
 	}

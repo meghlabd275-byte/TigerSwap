@@ -7,7 +7,7 @@ import (
 )
 
 // Group creates a new route group
-func Group(prefix string, handlers ...gin.HandlerFunc) gin.RouterGroup {
+func Group(prefix string, handlers ...gin.HandlerFunc) *gin.RouterGroup {
 	engine := gin.New()
 	return engine.Group(prefix, handlers...)
 }

@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
@@ -14,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,7 @@ type KeeperConfig struct {
 	HealthCheckPort  int
 	ExecutionInterval time.Duration
 	MaxGasPrice      *big.Int
+	LiquidatorAddress string
 }
 
 // Position represents a trading position
@@ -194,33 +196,106 @@ func (k *Keeper) checkLiquidations() {
 	}
 }
 
-// executeLiquidation executes a liquidation
+// executeLiquidation submits a real liquidation transaction to the configured
+// liquidator contract. It does not fabricate a transaction hash: the hash comes
+// from the signed transaction actually broadcast to the chain.
 func (k *Keeper) executeLiquidation(pos *Position) {
-	client, ok := k.clients[1]
-	if !ok {
-		return
-	}
+        if k.config.LiquidatorAddress == "" {
+                log.Printf("Liquidation skipped for position %d: no liquidator contract configured", pos.ID)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
 
-	ctx := context.Background()
-	gasPrice, _ := client.SuggestGasPrice(ctx)
+        client, ok := k.clients[1]
+        if !ok {
+                log.Printf("Liquidation skipped for position %d: no chain client", pos.ID)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
 
-	txHash := fmt.Sprintf("0x%x", time.Now().UnixNano())
+        ctx, cancel := context.WithTimeout(k.ctx, 30*time.Second)
+        defer cancel()
 
-	if txHash != "" {
-		k.mu.Lock()
-		k.stats.LiquidationsExecuted++
-		k.mu.Unlock()
+        gasPrice, err := client.SuggestGasPrice(ctx)
+        if err != nil {
+                log.Printf("Liquidation failed for position %d: gas price: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
+        if k.config.MaxGasPrice != nil && gasPrice.Cmp(k.config.MaxGasPrice) > 0 {
+                log.Printf("Liquidation deferred for position %d: gas price %s exceeds cap %s", pos.ID, gasPrice, k.config.MaxGasPrice)
+                return
+        }
 
-		log.Printf("Liquidation executed: position=%d tx=%s", pos.ID, txHash)
+        chainID, err := client.ChainID(ctx)
+        if err != nil {
+                log.Printf("Liquidation failed for position %d: chain id: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
 
-		k.mu.Lock()
-		pos.Status = "liquidated"
-		k.mu.Unlock()
-	} else {
-		k.mu.Lock()
-		k.stats.FailedExecutions++
-		k.mu.Unlock()
-	}
+        nonce, err := client.PendingNonceAt(ctx, k.address)
+        if err != nil {
+                log.Printf("Liquidation failed for position %d: nonce: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
+
+        to := common.HexToAddress(k.config.LiquidatorAddress)
+
+        // ABI-encode liquidatePosition(uint256)
+        liquidateSelector := crypto.Keccak256([]byte("liquidatePosition(uint256)"))[:4]
+        arg := common.LeftPadBytes(new(big.Int).SetUint64(pos.ID).Bytes(), 32)
+        data := append(liquidateSelector, arg...)
+
+        gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
+                From: k.address,
+                To:   &to,
+                Data: data,
+        })
+        if err != nil {
+                log.Printf("Liquidation failed for position %d: gas estimate: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
+
+        tx := types.NewTransaction(nonce, to, big.NewInt(0), gasLimit, gasPrice, data)
+        signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), k.key)
+        if err != nil {
+                log.Printf("Liquidation failed for position %d: sign: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
+
+        if err := client.SendTransaction(ctx, signedTx); err != nil {
+                log.Printf("Liquidation failed for position %d: broadcast: %v", pos.ID, err)
+                k.mu.Lock()
+                k.stats.FailedExecutions++
+                k.mu.Unlock()
+                return
+        }
+
+        k.mu.Lock()
+        k.stats.LiquidationsExecuted++
+        k.stats.TotalGasUsed.Add(k.stats.TotalGasUsed, new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(gasLimit)))
+        pos.Status = "liquidating"
+        k.mu.Unlock()
+
+        log.Printf("Liquidation submitted: position=%d tx=%s", pos.ID, signedTx.Hash().Hex())
 }
 
 // monitorOrders monitors orders for execution conditions

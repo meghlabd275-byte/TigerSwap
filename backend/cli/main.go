@@ -7,7 +7,7 @@ import (
 "fmt"
 "os"
 
-"github.com/tigerswap/backend/go/sdk"
+"tigerswap/backend/go/sdk"
 )
 
 func main() {

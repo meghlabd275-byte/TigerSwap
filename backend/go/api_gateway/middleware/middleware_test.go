@@ -2,11 +2,14 @@ package middleware
 
 import (
 	"net/http"
+	"strings"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"tigerswap/backend/go/api_gateway/config"
 )
 
 // TestLogger tests the logger middleware
@@ -136,9 +139,7 @@ func TestBodyLimiter(t *testing.T) {
 		c.Status(http.StatusOK)
 	})
 
-	body := string(make([]byte, 101))
-	req, _ := http.NewRequest("POST", "/test", nil)
-	req.Body = nil // Simulate large body
+	req, _ := http.NewRequest("POST", "/test", strings.NewReader(strings.Repeat("a", 101)))
 	req.ContentLength = 101
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
@@ -206,7 +207,7 @@ func TestRateLimiterDisabled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	limiter := NewRateLimiter(nil, RateLimitConfig{Enabled: false})
+	limiter := NewRateLimiter(nil, config.RateLimitConfig{Enabled: false})
 	r.Use(limiter.Middleware())
 	r.GET("/test", func(c *gin.Context) {
 		c.Status(http.StatusOK)

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -220,9 +219,10 @@ func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKe
 		value = big.NewInt(0)
 	}
 	
+	routerAddr := common.HexToAddress(dexConfig.Router)
 	gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
 		From:  fromAddress,
-		To:    common.HexToAddress(dexConfig.Router),
+		To:    &routerAddr,
 		Value: value,
 		Data:  data,
 	})
@@ -247,7 +247,7 @@ func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKe
 	
 	startTime := time.Now()
 	
-	receipt, err := client.WaitForProof(ctx, signedTx.Hash(), 120)
+	receipt, err := waitForReceipt(ctx, client, signedTx.Hash(), 120*time.Second)
 	confirmationTime := time.Since(startTime)
 	
 	if err != nil {
@@ -275,7 +275,7 @@ func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKe
 		GasUsed:          receipt.GasUsed,
 		GasFee:           weiToDecimal(gasFee, 18),
 		DEX:              dexConfig.Name,
-		BlockNumber:      receipt.BlockNumber,
+		BlockNumber:      receipt.BlockNumber.Uint64(),
 		ConfirmationTime: confirmationTime,
 	}
 	
@@ -454,23 +454,4 @@ func (s *SwapExecutor) GetSupportedDEXHandler(c *gin.Context) {
 	})
 }
 
-func weiToDecimal(wei *big.Int, decimals int) string {
-	divisor := new(big.Int)
-	divisor.Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-	
-	whole := new(big.Int).Div(wei, divisor)
-	frac := new(big.Int).Mod(wei, divisor)
-	
-	fracStr := frac.String()
-	for len(fracStr) < decimals {
-		fracStr = "0" + fracStr
-	}
-	
-	return whole.String() + "." + fracStr
-}
 
-func parseInt64(s string) (int64, error) {
-	var n int64
-	_, err := fmt.Sscanf(s, "%d", &n)
-	return n, err
-}

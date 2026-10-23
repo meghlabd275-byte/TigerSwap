@@ -7,41 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AdminRequired returns middleware that requires admin role
-func AdminRequired() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Get user role from JWT claims
-		role, exists := c.Get("role")
-		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Unauthorized - no role found",
-			})
-			c.Abort()
-			return
-		}
-		
-		roleStr, ok := role.(string)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Unauthorized - invalid role",
-			})
-			c.Abort()
-			return
-		}
-		
-		// Check if admin or super_admin
-		if roleStr != "admin" && roleStr != "super_admin" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "Forbidden - admin access required",
-			})
-			c.Abort()
-			return
-		}
-		
-		c.Next()
-	}
-}
-
 // SuperAdminRequired returns middleware that requires super_admin role
 func SuperAdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -132,14 +97,3 @@ func CORS() gin.HandlerFunc {
 	}
 }
 
-// SecurityHeaders adds security headers
-func SecurityHeaders() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("X-Frame-Options", "DENY")
-		c.Header("X-XSS-Protection", "1; mode=block")
-		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
-		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' https: wss:")
-		c.Next()
-	}
-}

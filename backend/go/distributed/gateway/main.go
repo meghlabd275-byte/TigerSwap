@@ -71,12 +71,9 @@ r.GET("/health", healthHandler)
 
 // Start server
 go func() {
-fmt.Printf("Gateway starting on port 
-", cfg.Port)
-fmt.Printf("Max connections: 0
-", cfg.MaxConns)
-fmt.Printf("Rate limit: 0 req/s
-", cfg.RateLimit)
+fmt.Printf("Gateway starting on port %s\n", cfg.Port)
+fmt.Printf("Max connections: %d\n", cfg.MaxConns)
+fmt.Printf("Rate limit: %d req/s\n", cfg.RateLimit)
 s := &http.Server{
 Addr:         ":" + cfg.Port,
 Handler:      r,

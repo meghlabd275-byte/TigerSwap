@@ -5,12 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
-	"net"
 	"net/http"
 	"os"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -79,9 +77,9 @@ func (h *ConsistentHash) Get(key string) *Node {
 }
 
 func (h *ConsistentHash) hash(key string) uint32 {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return h.Sum32()
+	fn := fnv.New32a()
+	fn.Write([]byte(key))
+	return fn.Sum32()
 }
 
 // ============== DISTRIBUTED CACHE ==============
@@ -322,11 +320,11 @@ func main() {
 	})
 	
 	r.GET("/ws", func(c *gin.Context) {
-		conn, err := upgrader.Upgrade(c.Writer, c.Request)
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil { return }
 		defer conn.Close()
 		pool.register <- conn
-		defer pool.unregister <- conn
+		defer func() { pool.unregister <- conn }()
 		for {
 			_, _, err := conn.ReadMessage()
 			if err != nil { break }

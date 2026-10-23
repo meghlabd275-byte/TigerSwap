@@ -6,7 +6,10 @@ use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Nonce,
 };
-use argon2::{Argon2, password_hash::{PasswordHasher, SaltString}};
+use argon2::{
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 use rand::RngCore;
@@ -98,7 +101,7 @@ pub fn hash_password(password: &str) -> Result<String, EncryptionError> {
 
 /// Verify password against hash
 pub fn verify_password(password: &str, hash: &str) -> Result<bool, EncryptionError> {
-    let parsed_hash = argon2::PasswordHash::new(hash)
+    let parsed_hash = PasswordHash::new(hash)
         .map_err(|_| EncryptionError::InvalidData)?;
     
     let argon2 = Argon2::default();

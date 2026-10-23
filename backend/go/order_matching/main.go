@@ -697,7 +697,7 @@ func main() {
 	r.Use(gin.Logger())
 	
 	// Rate limiting
-	rateLimiter := NewRateLimit(cfg.RateLimit, time.Second)
+	rateLimiter := NewRateLimiter(cfg.RateLimit, time.Second)
 	r.Use(func(c *gin.Context) {
 		if !rateLimiter.Allow(c.ClientIP()) {
 			c.JSON(http.StatusTooManyRequests, gin.H{

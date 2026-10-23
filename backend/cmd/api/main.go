@@ -64,7 +64,7 @@ func main() {
 
 	// Global middleware
 	router.Use(middleware.RequestLogger())
-	router.Use(middleware.RateLimiter(redis))
+	router.Use(middleware.RedisRateLimiter(redis))
 	router.Use(middleware.SecurityHeaders())
 
 	// Health check

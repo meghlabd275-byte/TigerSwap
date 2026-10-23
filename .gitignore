@@ -32,3 +32,15 @@ coverage/
 # Misc
 *.tgz
 .cache/
+
+# Compiled Go binaries
+backend/admin_service
+backend/cache
+backend/dex_connectors
+backend/indexer
+backend/keeper
+backend/oracle_service
+backend/api_gateway
+backend/order_matching
+backend/api
+backend/cli

@@ -1,11 +1,18 @@
 package services
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"encoding/hex"
 	"fmt"
 	"math/big"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
 )
 
@@ -30,6 +37,9 @@ type FeeCollectorService struct {
 	
 	// Master wallet address for fee collection
 	masterWallet string
+
+	// Blockchain client for on-chain fee settlement
+	blockchain *BlockchainClient
 }
 
 // FeeConfig holds all fee configurations
@@ -136,11 +146,7 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	amountFloat, err := parseFloat(amount)
-	if err != nil {
-		return nil, fmt.Errorf("invalid amount: %v", err)
-	}
-	
+		amountFloat := parseFloat(amount)
 	// Calculate fee
 	feeAmount := s.calculateFee(amountFloat, s.config.SwapFeePercent, s.config.SwapFeeFixed)
 	
@@ -176,11 +182,7 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	amountFloat, err := parseFloat(amount)
-	if err != nil {
-		return nil, fmt.Errorf("invalid amount: %v", err)
-	}
-	
+		amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.BridgeFeePercent, s.config.BridgeFeeFixed)
 	feeUSD := feeAmount * price
 	
@@ -210,11 +212,7 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	amountFloat, err := parseFloat(amount)
-	if err != nil {
-		return nil, fmt.Errorf("invalid amount: %v", err)
-	}
-	
+		amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.WalletTxFeePercent, s.config.WalletTxFeeFixed)
 	feeUSD := feeAmount * price
 	
@@ -245,11 +243,7 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	amountFloat, err := parseFloat(amount)
-	if err != nil {
-		return nil, fmt.Errorf("invalid amount: %v", err)
-	}
-	
+		amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.WithdrawFeePercent, s.config.WithdrawFeeFixed)
 	feeUSD := feeAmount * price
 	
@@ -280,11 +274,7 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	
-	amountFloat, err := parseFloat(amount)
-	if err != nil {
-		return nil, fmt.Errorf("invalid amount: %v", err)
-	}
-	
+		amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.LaunchpadFeePercent, s.config.LaunchpadFeeFixed)
 	feeUSD := feeAmount * price
 	
@@ -407,20 +397,85 @@ func (s *FeeCollectorService) GetTotalRevenue() float64 {
 	return f
 }
 
-// DistributeFees distributes fees to master wallet
-func (s *FeeCollectorService) DistributeFees() (string, error) {
+// DistributeFees transfers collected fees on-chain from the fee treasury to the
+// configured master wallet. The caller supplies the chain, token and the exact
+// base-unit amount to move.
+func (s *FeeCollectorService) DistributeFees(ctx context.Context, chainID int64, token, amount string) (string, error) {
 	s.mu.RLock()
 	masterWallet := s.masterWallet
+	blockchain := s.blockchain
 	s.mu.RUnlock()
-	
+
 	if masterWallet == "" {
 		return "", fmt.Errorf("master wallet not configured")
 	}
-	
-	// In production, this would execute a real transaction
-	// to transfer all collected fees to master wallet
-	return fmt.Sprintf("0x%x", time.Now().UnixNano()), nil
+	if !common.IsHexAddress(masterWallet) {
+		return "", fmt.Errorf("master wallet address is invalid")
+	}
+	if blockchain == nil {
+		return "", fmt.Errorf("blockchain client not configured")
+	}
+
+	amountInt, ok := new(big.Int).SetString(amount, 10)
+	if !ok || amountInt.Sign() <= 0 {
+		return "", fmt.Errorf("invalid distribution amount %q", amount)
+	}
+
+	key, err := feeTreasuryKey()
+	if err != nil {
+		return "", err
+	}
+
+	txHash, err := blockchain.SendTransaction(
+		ctx, chainID, hex.EncodeToString(crypto.FromECDSA(key)),
+		masterWallet, amountInt, token, nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("fee distribution failed: %w", err)
+	}
+
+	s.mu.Lock()
+	for _, record := range s.allRecordsLocked() {
+		if record.Status == "collected" {
+			record.Status = "distributed"
+		}
+	}
+	s.mu.Unlock()
+
+	return txHash, nil
 }
+
+// allRecordsLocked returns every fee record; caller must hold s.mu.
+func (s *FeeCollectorService) allRecordsLocked() []*FeeRecord {
+	total := len(s.swapFees) + len(s.bridgeFees) + len(s.walletFees) +
+		len(s.launchpadFees) + len(s.depositFees) + len(s.withdrawFees)
+	records := make([]*FeeRecord, 0, total)
+	for _, m := range []map[string]*FeeRecord{
+		s.swapFees, s.bridgeFees, s.walletFees, s.launchpadFees, s.depositFees, s.withdrawFees,
+	} {
+		for _, r := range m {
+			records = append(records, r)
+		}
+	}
+	return records
+}
+
+// feeTreasuryKey loads the signing key for the fee treasury.
+func feeTreasuryKey() (*ecdsa.PrivateKey, error) {
+	raw := os.Getenv("FEE_TREASURY_KEY")
+	if raw == "" {
+		return nil, fmt.Errorf("FEE_TREASURY_KEY is not configured")
+	}
+	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
+}
+
+// SetBlockchain wires the blockchain client used for fee settlement.
+func (s *FeeCollectorService) SetBlockchain(blockchain *BlockchainClient) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.blockchain = blockchain
+}
+	
 
 // API Handlers
 
@@ -482,21 +537,25 @@ func (s *FeeCollectorService) SetMasterWalletHandler(c *gin.Context) {
 }
 
 func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
-	txHash, err := s.DistributeFees()
+	var req struct {
+		ChainID int64  `json:"chain_id" binding:"required"`
+		Token   string `json:"token" binding:"required"`
+		Amount  string `json:"amount" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	txHash, err := s.DistributeFees(c.Request.Context(), req.ChainID, req.Token, req.Amount)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	
+
 	c.JSON(200, gin.H{
-		"success":   true,
+		"success":  true,
 		"tx_hash":  txHash,
 		"message":  "Fees distributed to master wallet",
 	})
-}
-
-func parseFloat(s string) (float64, error) {
-	var f float64
-	_, err := fmt.Sscanf(s, "%f", &f)
-	return f, err
 }

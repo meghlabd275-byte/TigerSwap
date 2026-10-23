@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -585,11 +586,11 @@ func (s *DynamicIntegrationService) SearchChains(query string) []*DynamicChain {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	query = toLower(query)
+	query = strings.ToLower(query)
 	var result []*DynamicChain
 	
 	for _, chain := range s.chains {
-		if strings.Contains(toLower(chain.Name), query) || strings.Contains(toLower(chain.Symbol), query) {
+		if strings.Contains(strings.ToLower(chain.Name), query) || strings.Contains(strings.ToLower(chain.Symbol), query) {
 			result = append(result, chain)
 		}
 	}
@@ -602,11 +603,11 @@ func (s *DynamicIntegrationService) SearchTokens(query string) []*DynamicToken {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	
-	query = toLower(query)
+	query = strings.ToLower(query)
 	var result []*DynamicToken
 	
 	for _, token := range s.tokens {
-		if strings.Contains(toLower(token.Name), query) || strings.Contains(toLower(token.Symbol), query) {
+		if strings.Contains(strings.ToLower(token.Name), query) || strings.Contains(strings.ToLower(token.Symbol), query) {
 			result = append(result, token)
 		}
 	}
@@ -836,14 +837,5 @@ func (s *DynamicIntegrationService) SearchHandler(c *gin.Context) {
 }
 
 // Helper functions
-import "strings"
 
-func parseInt64(s string) (int64, error) {
-	var n int64
-	_, err := fmt.Sscanf(s, "%d", &n)
-	return n, err
-}
 
-func toLower(s string) string {
-	return strings.ToLower(s)
-}

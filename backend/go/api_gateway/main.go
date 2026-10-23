@@ -20,7 +20,6 @@ import (
 	"tigerswap/backend/go/api_gateway/config"
 	"tigerswap/backend/go/api_gateway/handlers"
 	"tigerswap/backend/go/api_gateway/middleware"
-	"tigerswap/backend/go/api_gateway/router"
 )
 
 // Server represents the API Gateway server

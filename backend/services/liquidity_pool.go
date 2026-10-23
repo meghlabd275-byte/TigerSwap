@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
@@ -90,8 +91,14 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token0: %v", err)
 	}
-	var token0 common.Address
-	parsedABI.Unpack(&token0, "token0", token0Result)
+		token0Vals, err := parsedABI.Unpack("token0", token0Result)
+		if err != nil || len(token0Vals) != 1 {
+			return nil, fmt.Errorf("decode token0: %w", err)
+		}
+		token0, ok := token0Vals[0].(common.Address)
+		if !ok {
+			return nil, fmt.Errorf("unexpected token0 type %T", token0Vals[0])
+		}
 
 	// Get token1
 	token1Data, err := parsedABI.Pack("token1")
@@ -105,8 +112,14 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	if err != nil {
 		return nil, err
 	}
-	var token1 common.Address
-	parsedABI.Unpack(&token1, "token1", token1Result)
+		token1Vals, err := parsedABI.Unpack("token1", token1Result)
+		if err != nil || len(token1Vals) != 1 {
+			return nil, fmt.Errorf("decode token1: %w", err)
+		}
+		token1, ok := token1Vals[0].(common.Address)
+		if !ok {
+			return nil, fmt.Errorf("unexpected token1 type %T", token1Vals[0])
+		}
 
 	// Get reserves
 	reserveData, err := parsedABI.Pack("getReserves")
@@ -126,8 +139,10 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 		Reserve1          *big.Int
 		BlockTimestampLast uint32
 	}
-	var res reserves
-	parsedABI.Unpack(&res, "getReserves", reserveResult)
+		var res reserves
+		if err := parsedABI.UnpackIntoInterface(&res, "getReserves", reserveResult); err != nil {
+			return nil, fmt.Errorf("decode getReserves: %w", err)
+		}
 
 	// Get token prices
 	token0Symbol := s.getSymbolFromAddress(token0.Hex())
@@ -316,5 +331,3 @@ func (s *LiquidityPoolService) AddLiquidityHandler(c *gin.Context) {
 	})
 }
 
-// Import required
-import "github.com/ethereum/go-ethereum"

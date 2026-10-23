@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
 	"tigerswap/backend/services"
 )
@@ -42,7 +41,8 @@ func SecurityHeaders() gin.HandlerFunc {
 	}
 }
 
-func RateLimiter(redisClient *redis.Client) gin.HandlerFunc {
+// RedisRateLimiter applies a distributed rate limit backed by Redis.
+func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Skip rate limiting for health check
 		if c.Request.URL.Path == "/health" {
