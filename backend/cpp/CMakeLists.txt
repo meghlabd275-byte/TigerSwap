@@ -1,54 +1,42 @@
-cmake_minimum_required(VERSION 3.15)
-project(TigerSwapTradingEngine VERSION 1.0.0 LANGUAGES CXX)
+cmake_minimum_required(VERSION 3.16)
+project(TigerSwapHftEngine VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Find required packages
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(OpenSSL REQUIRED)
-find_package(Boost 1.75 REQUIRED COMPONENTS system thread filesystem)
 
-# Include directories
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-# Source files
-set(SOURCES
-    src/main.cpp
-    src/trading_engine.cpp
-    src/order_book.cpp
-    src/matching_engine.cpp
-    src/risk_manager.cpp
-    src/price_feed.cpp
+add_library(tigerswap_engine_core STATIC
+    src/wal.cpp
+    src/crypto.cpp
     src/network.cpp
 )
+target_include_directories(tigerswap_engine_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_link_libraries(tigerswap_engine_core PUBLIC Threads::Threads OpenSSL::Crypto)
 
-# Create executable
-add_executable(tigerswap_engine ${SOURCES})
-
-# Link libraries
-target_link_libraries(tigerswap_engine
-    Threads::Threads
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    Boost::system
-    Boost::thread
-    Boost::filesystem
-)
-
-# Compiler optimizations for ultra-low latency
-target_compile_options(tigerswap_engine PRIVATE
+# Latency-sensitive translation units get aggressive optimisation; the tests
+# link the same code so what is tested is what ships.
+target_compile_options(tigerswap_engine_core PRIVATE
     -O3
-    -march=native
-    -mtune=native
-    -ffast-math
-    -funroll-loops
-    -flto
+    -Wall
+    -Wextra
+    -Wpedantic
 )
 
-# Installation
-install(TARGETS tigerswap_engine DESTINATION bin)
-install(FILES config/config.json DESTINATION etc/tigerswap)
+add_executable(tigerswap_engine src/main.cpp)
+target_link_libraries(tigerswap_engine PRIVATE tigerswap_engine_core)
 
-message(STATUS "TigerSwap Trading Engine configured for ultra-low latency")
+enable_testing()
+
+add_executable(tigerswap_tests tests/engine_tests.cpp)
+target_link_libraries(tigerswap_tests PRIVATE tigerswap_engine_core)
+add_test(NAME tigerswap_tests COMMAND tigerswap_tests)
+
+install(TARGETS tigerswap_engine RUNTIME DESTINATION bin)

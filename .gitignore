@@ -54,3 +54,7 @@ contracts/broadcast/
 # Rust build artifacts
 target/
 Cargo.lock
+
+# C++ build artifacts
+backend/cpp/build/
+compile_commands.json
