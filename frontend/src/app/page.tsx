@@ -27,6 +27,8 @@ import {
   Clock
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
+import { useWalletStore } from '@/store/walletStore';
 import { Header } from '@/components/Header';
 import { SwapInterface } from '@/components/SwapInterface';
 import { TokenList } from '@/components/TokenList';
@@ -45,9 +47,19 @@ export default function Home() {
     address, 
     connectWallet, 
     disconnectWallet,
-    selectedChain,
-    setSelectedChain 
   } = useStore();
+
+  const { data: marketStats, error: statsError } = useMarketStats();
+  const { data: chains } = useChains();
+  const { data: trades } = useRecentTrades(5);
+  const chainId = useWalletStore((state) => state.chainId);
+
+  const formatUSD = (value: number) => {
+    if (value >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(2)}B`;
+    if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+    if (value >= 1_000) return `$${(value / 1_000).toFixed(2)}K`;
+    return `$${value.toFixed(2)}`;
+  };
 
   const tabs = [
     { id: 'swap' as const, label: 'Swap', icon: ArrowRightLeft },
@@ -105,10 +117,7 @@ export default function Home() {
           {/* Left Panel - Trading Interface */}
           <div className="lg:col-span-2 space-y-6">
             {/* Chain Selector */}
-            <ChainSelector 
-              selectedChain={selectedChain} 
-              onSelectChain={setSelectedChain} 
-            />
+            <ChainSelector />
             
             {/* Active Trading Interface */}
             <AnimatePresence mode="wait">
@@ -129,28 +138,33 @@ export default function Home() {
 
           {/* Right Panel - Info & Stats */}
           <div className="space-y-6">
-            {/* Gas & Network Status */}
+            {/* Network Status */}
             <div className="glass-dark rounded-2xl p-4">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-semibold text-white">Network Status</h3>
-                <span className="flex items-center text-green-400 text-sm">
-                  <span className="w-2 h-2 bg-green-400 rounded-full mr-2 animate-pulse"></span>
-                  Connected
+                <span className={`flex items-center text-sm ${connected ? 'text-green-400' : 'text-gray-400'}`}>
+                  <span className={`w-2 h-2 rounded-full mr-2 ${connected ? 'bg-green-400 animate-pulse' : 'bg-gray-500'}`}></span>
+                  {connected ? 'Wallet connected' : 'Wallet not connected'}
                 </span>
               </div>
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">Gas Price</span>
-                  <span className="text-white font-medium">2.5 Gwei</span>
+                  <span className="text-gray-400 text-sm">Address</span>
+                  <span className="text-white font-medium font-mono">
+                    {address ? `${address.slice(0, 6)}…${address.slice(-4)}` : '—'}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">Block</span>
-                  <span className="text-white font-medium">#18,542,321</span>
+                  <span className="text-gray-400 text-sm">Network</span>
+                  <span className="text-white font-medium">
+                    {chains?.find((entry) => entry.id === chainId)?.name ?? '—'}
+                  </span>
                 </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-gray-400 text-sm">Avg. Confirm</span>
-                  <span className="text-white font-medium">12s</span>
-                </div>
+                {statsError && (
+                  <p role="alert" className="text-red-400 text-xs pt-2">
+                    Stats unavailable: {statsError.message}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -163,15 +177,21 @@ export default function Home() {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400 text-sm">TVL</span>
-                  <span className="text-white font-medium">$2.4B</span>
+                  <span className="text-white font-medium">
+                    {marketStats ? formatUSD(marketStats.totalTVL) : '…'}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400 text-sm">24h Volume</span>
-                  <span className="text-white font-medium">$892M</span>
+                  <span className="text-white font-medium">
+                    {marketStats ? formatUSD(marketStats.volume24h) : '…'}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-gray-400 text-sm">Pairs</span>
-                  <span className="text-white font-medium">12,450</span>
+                  <span className="text-white font-medium">
+                    {marketStats ? marketStats.totalPairs.toLocaleString() : '…'}
+                  </span>
                 </div>
               </div>
             </div>
@@ -204,24 +224,26 @@ export default function Home() {
                 <History className="w-4 h-4 text-tiger-orange" />
               </div>
               <div className="space-y-3">
-                {[
-                  { type: 'Swap', from: 'ETH', to: 'USDT', amount: '1.5 ETH', time: '2s ago' },
-                  { type: 'Bridge', from: 'ETH', to: 'ARB', amount: '1000 USDC', time: '15s ago' },
-                  { type: 'Swap', from: 'BNB', to: 'BUSD', amount: '5 BNB', time: '32s ago' },
-                ].map((tx, i) => (
-                  <div key={i} className="flex items-center justify-between text-sm">
+                {(trades ?? []).slice(0, 5).map((trade) => (
+                  <div key={trade.id} className="flex items-center justify-between text-sm">
                     <div className="flex items-center space-x-2">
-                      <span className="text-gray-400">{tx.type}</span>
-                      <span className="text-white">{tx.from}</span>
-                      <ArrowRightLeft className="w-3 h-3 text-gray-500" />
-                      <span className="text-white">{tx.to}</span>
+                      <span className={trade.side === 'buy' ? 'text-green-400' : 'text-red-400'}>
+                        {trade.side}
+                      </span>
+                      <span className="text-white">{trade.pair}</span>
                     </div>
                     <div className="text-right">
-                      <div className="text-white font-medium">{tx.amount}</div>
-                      <div className="text-gray-500 text-xs">{tx.time}</div>
+                      <div className="text-white font-medium">{trade.quantity}</div>
+                      <div className="text-gray-500 text-xs">
+                        {new Date(trade.timestamp).toLocaleTimeString()}
+                      </div>
                     </div>
                   </div>
                 ))}
+                {trades && trades.length === 0 && (
+                  <p className="text-gray-500 text-xs">No recent trades.</p>
+                )}
+                {!trades && <p className="text-gray-500 text-xs">Loading activity…</p>}
               </div>
             </div>
           </div>

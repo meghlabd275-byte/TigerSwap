@@ -1,145 +1,117 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  ArrowRight, 
-  Settings, 
-  Zap, 
-  Clock, 
-  AlertTriangle, 
+/**
+ * Swap panel.
+ *
+ * The quote comes from the API's routing engine; the swap itself is built by
+ * the API and signed and broadcast by the user's wallet. Balances are read
+ * from the chain. There is no local price arithmetic and no optimistic
+ * "success" state: the panel reports what actually happened.
+ */
+
+import { useEffect, useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  AlertTriangle,
   ArrowDown,
-  RefreshCw,
-  Copy,
   Check,
   ChevronDown,
+  Loader2,
   Search,
-  Sliders,
-  History
+  Settings,
+  Zap,
 } from 'lucide-react';
-import { useStore, Token, SUPPORTED_CHAINS } from '@/store/useStore';
 
-const POPULAR_TOKENS: Token[] = [
-  { address: '0x0000000000000000000000000000000000000000', symbol: 'ETH', name: 'Ethereum', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/279/small/ethereum.png', chainId: 1 },
-  { address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', symbol: 'USDC', name: 'USD Coin', decimals: 6, logoURI: 'https://assets.coingecko.com/coins/images/6319/small/usdc.png', chainId: 1 },
-  { address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', symbol: 'USDT', name: 'Tether USD', decimals: 6, logoURI: 'https://assets.coingecko.com/coins/images/325/small/Tether.png', chainId: 1 },
-  { address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', symbol: 'WBTC', name: 'Wrapped Bitcoin', decimals: 8, logoURI: 'https://assets.coingecko.com/coins/images/7598/small/wrapped_bitcoin_wbtc.png', chainId: 1 },
-  { address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', symbol: 'AAVE', name: 'Aave', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/12645/small/AAVE.png', chainId: 1 },
-  { address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', symbol: 'UNI', name: 'Uniswap', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/12504/small/uniswap-uni.png', chainId: 1 },
-  { address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', symbol: 'LINK', name: 'Chainlink', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/877/small/chainlink-new-logo.png', chainId: 1 },
-  { address: '0x7D1AfA7B718fb893dB30A3aBc0Cfc608AaCfeBB0', symbol: 'MATIC', name: 'Polygon', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/4713/small/polygon.png', chainId: 1 },
-  { address: '0x4d224452801ACEd8B2F0aEBE155379bb55946036', symbol: 'AAVE', name: 'Aave (Polygon)', decimals: 18, logoURI: 'https://assets.coingecko.com/coins/images/12645/small/AAVE.png', chainId: 137 },
-  { address: '0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6', symbol: 'WBTC', name: 'Wrapped Bitcoin (Polygon)', decimals: 8, logoURI: 'https://assets.coingecko.com/coins/images/7598/small/wrapped_bitcoin_wbtc.png', chainId: 137 },
-];
+import { useExecuteSwap, useSwapQuote, useTokens } from '@/hooks/useApi';
+import type { Token } from '@/lib/types';
+import { formatAddress, getErc20Balance, getInjectedProvider, getNativeBalance } from '@/lib/wallet';
+import { useWalletStore } from '@/store/walletStore';
+
+const NATIVE_SENTINEL = '0x0000000000000000000000000000000000000000';
+const SLIPPAGE_PRESETS = [0.1, 0.5, 1.0] as const;
 
 export function SwapInterface() {
-  const { selectedChain } = useStore();
+  const { account, chainId } = useWalletStore();
+  const { data: tokens, error: tokensError } = useTokens(chainId);
+
   const [tokenIn, setTokenIn] = useState<Token | null>(null);
   const [tokenOut, setTokenOut] = useState<Token | null>(null);
   const [amountIn, setAmountIn] = useState('');
-  const [amountOut, setAmountOut] = useState('');
   const [slippage, setSlippage] = useState(0.5);
-  const [deadline, setDeadline] = useState(20);
   const [showTokenSelector, setShowTokenSelector] = useState<'in' | 'out' | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [isSwapping, setIsSwapping] = useState(false);
-  const [swapSuccess, setSwapSuccess] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showExpertMode, setShowExpertMode] = useState(false);
+  const [balanceIn, setBalanceIn] = useState<string | null>(null);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
+  const [swapError, setSwapError] = useState<string | null>(null);
 
-  const filteredTokens = POPULAR_TOKENS.filter(
-    token => token.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
-             token.name.toLowerCase().includes(searchQuery.toLowerCase())
+  const quoteParams = useMemo(() => {
+    if (!tokenIn || !tokenOut || !amountIn || Number(amountIn) <= 0) {
+      return null;
+    }
+    return {
+      tokenIn: tokenIn.address,
+      tokenOut: tokenOut.address,
+      amountIn,
+      chainId,
+    };
+  }, [tokenIn, tokenOut, amountIn, chainId]);
+
+  const { data: quote, error: quoteError, isFetching: quoteFetching } = useSwapQuote(
+    quoteParams,
+    quoteParams !== null,
   );
 
-  // Real price fetching from API
+  const executeSwap = useExecuteSwap();
+
+  // Read the input-token balance from the chain whenever the selection changes.
   useEffect(() => {
-    const fetchPrice = async () => {
-      if (amountIn && tokenIn && tokenOut && parseFloat(amountIn) > 0) {
-        try {
-          // Call real API endpoint for price quote
-          const response = await fetch('/api/v1/swap/quote', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chain_id: tokenIn.chainId,
-              from_token: tokenIn.address,
-              to_token: tokenOut.address,
-              amount: amountIn
-            })
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data.amount_out) {
-              setAmountOut(data.amount_out);
-            }
-          } else {
-            // Fallback: fetch from price service
-            const priceRes = await fetch(`/api/v1/prices?symbols=${tokenIn.symbol},${tokenOut.symbol}`);
-            if (priceRes.ok) {
-              const prices = await priceRes.json();
-              const inPrice = prices[tokenIn.symbol]?.usd || 1;
-              const outPrice = prices[tokenOut.symbol]?.usd || 1;
-              const rate = inPrice / outPrice;
-              setAmountOut((parseFloat(amountIn) * rate * 0.995).toFixed(6)); // 0.5% fee
-            }
+    let cancelled = false;
+    setBalanceError(null);
+
+    const loadBalance = async () => {
+      if (!account || !tokenIn) {
+        setBalanceIn(null);
+        return;
+      }
+      const provider = getInjectedProvider();
+      if (!provider) {
+        setBalanceIn(null);
+        return;
+      }
+
+      try {
+        if (tokenIn.address.toLowerCase() === NATIVE_SENTINEL) {
+          const raw = await getNativeBalance(account.address, provider);
+          if (!cancelled) {
+            setBalanceIn(formatBalance(raw, tokenIn.decimals));
           }
-        } catch (error) {
-          console.error('Failed to fetch price:', error);
-          // Fallback: use stored price from token list
-          if (tokenIn.price && tokenOut.price) {
-            const rate = tokenIn.price / tokenOut.price;
-            setAmountOut((parseFloat(amountIn) * rate * 0.995).toFixed(6));
+        } else {
+          const raw = await getErc20Balance(tokenIn.address, account.address, provider);
+          if (!cancelled) {
+            setBalanceIn(formatBalance(raw, tokenIn.decimals));
           }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setBalanceIn(null);
+          setBalanceError(error instanceof Error ? error.message : 'Could not read balance');
         }
       }
     };
-    
-    const debounceTimer = setTimeout(fetchPrice, 300);
-    return () => clearTimeout(debounceTimer);
-  }, [amountIn, tokenIn, tokenOut]);
 
-  const handleSwap = async () => {
-    if (!tokenIn || !tokenOut || !amountIn) return;
-    
-    setIsSwapping(true);
-    
-    try {
-      // Call real swap execution API
-      const response = await fetch('/api/v1/swap/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chain_id: tokenIn.chainId,
-          from_token: tokenIn.address,
-          to_token: tokenOut.address,
-          amount: amountIn,
-          slippage: slippage.toString()
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (data.tx_hash) {
-          setSwapSuccess(true);
-          setTimeout(() => {
-            setSwapSuccess(false);
-            setAmountIn('');
-            setAmountOut('');
-          }, 3000);
-        }
-      } else {
-        throw new Error('Swap failed');
-      }
-    } catch (error) {
-      console.error('Swap execution failed:', error);
-      // Show error to user
-      alert('Swap failed. Please try again or use a different slippage.');
-    } finally {
-      setIsSwapping(false);
-    }
-  };
+    void loadBalance();
+    return () => {
+      cancelled = true;
+    };
+  }, [account, tokenIn]);
+
+  const filteredTokens = (tokens ?? []).filter(
+    (token) =>
+      token.symbol.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      token.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
 
   const handleSelectToken = (token: Token) => {
     if (showTokenSelector === 'in') {
@@ -152,98 +124,112 @@ export function SwapInterface() {
   };
 
   const handleSwitchTokens = () => {
-    const temp = tokenIn;
     setTokenIn(tokenOut);
-    setTokenOut(temp);
-    setAmountIn(amountOut);
-    setAmountOut(amountIn);
+    setTokenOut(tokenIn);
+    setAmountIn(quote?.amountOut ?? '');
+    setTxHash(null);
+    setSwapError(null);
   };
+
+  const handleSwap = async () => {
+    if (!account || !tokenIn || !tokenOut || !quote) {
+      return;
+    }
+
+    setSwapError(null);
+    setTxHash(null);
+
+    try {
+      const hash = await executeSwap.mutateAsync({
+        tokenIn: tokenIn.address,
+        tokenOut: tokenOut.address,
+        amountIn,
+        chainId,
+        recipient: account.address,
+        slippageBps: Math.round(slippage * 100),
+        send: async (transaction) => {
+          const { sendTransaction } = await import('@/lib/wallet');
+          return sendTransaction({
+            to: transaction.to,
+            data: transaction.data,
+            value: transaction.value,
+          });
+        },
+      });
+      setTxHash(hash);
+      setAmountIn('');
+    } catch (error) {
+      setSwapError(error instanceof Error ? error.message : 'Swap failed');
+    }
+  };
+
+  const displayQuoteError = quoteError instanceof Error ? quoteError.message : null;
 
   return (
     <div className="glass-dark rounded-2xl p-6">
-      {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-display font-bold text-white">Swap</h2>
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => setShowExpertMode(!showExpertMode)}
-            className={`p-2 rounded-lg transition-colors ${showExpertMode ? 'bg-tiger-orange/20 text-tiger-orange' : 'text-gray-400 hover:text-white'}`}
-          >
-            <Zap className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setShowSettings(!showSettings)}
-            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-          <button className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors">
-            <History className="w-4 h-4" />
-          </button>
-        </div>
+        <button
+          onClick={() => setShowSettings((value) => !value)}
+          className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-white/5 transition-colors"
+          title="Swap settings"
+        >
+          <Settings className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Settings Panel */}
       <AnimatePresence>
         {showSettings && (
           <motion.div
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
-            className="mb-6 p-4 bg-white/5 rounded-xl border border-white/10"
+            className="mb-6 p-4 bg-white/5 rounded-xl border border-white/10 overflow-hidden"
           >
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">Slippage Tolerance</label>
-                <div className="flex items-center space-x-2">
-                  {[0.1, 0.5, 1.0].map((value) => (
-                    <button
-                      key={value}
-                      onClick={() => setSlippage(value)}
-                      className={`px-3 py-1.5 rounded-lg text-sm ${
-                        slippage === value
-                          ? 'bg-tiger-orange/20 text-tiger-orange border border-tiger-orange/30'
-                          : 'bg-white/5 text-gray-400 border border-white/10 hover:bg-white/10'
-                      }`}
-                    >
-                      {value}%
-                    </button>
-                  ))}
-                  <input
-                    type="number"
-                    value={slippage}
-                    onChange={(e) => setSlippage(parseFloat(e.target.value))}
-                    className="w-16 px-2 py-1.5 bg-white/5 border border-white/10 rounded-lg text-white text-sm"
-                    step="0.1"
-                  />
-                </div>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-400 mb-2">Transaction Deadline</label>
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="number"
-                    value={deadline}
-                    onChange={(e) => setDeadline(parseInt(e.target.value))}
-                    className="w-20 px-2 py-1.5 bg-white/5 border border-white/10 rounded-lg text-white text-sm"
-                  />
-                  <span className="text-gray-400 text-sm">minutes</span>
-                </div>
-              </div>
+            <label className="block text-sm text-gray-400 mb-2">Slippage tolerance</label>
+            <div className="flex items-center space-x-2">
+              {SLIPPAGE_PRESETS.map((value) => (
+                <button
+                  key={value}
+                  onClick={() => setSlippage(value)}
+                  className={`px-3 py-1.5 rounded-lg text-sm border ${
+                    slippage === value
+                      ? 'bg-tiger-orange/20 text-tiger-orange border-tiger-orange/30'
+                      : 'bg-white/5 text-gray-400 border-white/10 hover:bg-white/10'
+                  }`}
+                >
+                  {value}%
+                </button>
+              ))}
+              <input
+                type="number"
+                value={slippage}
+                min={0}
+                max={50}
+                step={0.1}
+                onChange={(event) => {
+                  const value = Number(event.target.value);
+                  if (Number.isFinite(value) && value >= 0 && value <= 50) {
+                    setSlippage(value);
+                  }
+                }}
+                aria-label="Custom slippage tolerance"
+                className="w-20 px-2 py-1.5 bg-white/5 border border-white/10 rounded-lg text-white text-sm"
+              />
+              <span className="text-gray-400 text-sm">%</span>
             </div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* Token Input */}
       <div className="space-y-4">
-        {/* From Token */}
+        {/* From token */}
         <div className="relative bg-white/5 rounded-xl border border-white/10 p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-gray-400 text-sm">From</span>
-            <button className="flex items-center space-x-1 text-gray-400 hover:text-white text-sm transition-colors">
-              <span>Balance: 0.00</span>
-            </button>
+            <span className="text-gray-400 text-sm">
+              {balanceIn === null ? '' : `Balance: ${balanceIn}`}
+            </span>
           </div>
           <div className="flex items-center space-x-4">
             <button
@@ -252,41 +238,43 @@ export function SwapInterface() {
             >
               {tokenIn ? (
                 <>
-                  <img src={tokenIn.logoURI} alt={tokenIn.symbol} className="w-6 h-6 rounded-full" />
                   <span className="text-white font-medium">{tokenIn.symbol}</span>
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
                 </>
               ) : (
-                <span className="text-gray-400">Select token</span>
+                <>
+                  <span className="text-gray-400">Select token</span>
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                </>
               )}
-              <ChevronDown className="w-4 h-4 text-gray-400" />
             </button>
             <input
-              type="number"
+              type="text"
+              inputMode="decimal"
               value={amountIn}
-              onChange={(e) => setAmountIn(e.target.value)}
-              placeholder="0.00"
-              className="flex-1 bg-transparent text-2xl font-semibold text-white outline-none placeholder:text-gray-600"
+              onChange={(event) => setAmountIn(event.target.value)}
+              placeholder="0.0"
+              className="flex-1 bg-transparent text-right text-2xl text-white placeholder-gray-600 focus:outline-none"
             />
           </div>
+          {balanceError && <p className="text-red-400 text-xs mt-2">{balanceError}</p>}
         </div>
 
-        {/* Switch Button */}
-        <div className="flex justify-center -my-3 relative z-10">
+        <div className="flex justify-center -my-2 relative z-10">
           <button
             onClick={handleSwitchTokens}
-            className="p-2 bg-tiger-orange rounded-xl border-4 border-tiger-dark hover:bg-tiger-accent transition-colors"
+            className="p-2 bg-tiger-dark border border-white/10 rounded-lg hover:bg-white/5 transition-colors"
+            title="Switch tokens"
           >
-            <ArrowDown className="w-5 h-5 text-white" />
+            <ArrowDown className="w-4 h-4 text-gray-400" />
           </button>
         </div>
 
-        {/* To Token */}
-        <div className="relative bg-white/5 rounded-xl border border-white/10 p-4">
+        {/* To token */}
+        <div className="bg-white/5 rounded-xl border border-white/10 p-4">
           <div className="flex items-center justify-between mb-2">
             <span className="text-gray-400 text-sm">To</span>
-            <button className="flex items-center space-x-1 text-gray-400 hover:text-white text-sm transition-colors">
-              <span>Balance: 0.00</span>
-            </button>
+            {quoteFetching && <Loader2 className="w-4 h-4 text-gray-400 animate-spin" />}
           </div>
           <div className="flex items-center space-x-4">
             <button
@@ -295,123 +283,140 @@ export function SwapInterface() {
             >
               {tokenOut ? (
                 <>
-                  <img src={tokenOut.logoURI} alt={tokenOut.symbol} className="w-6 h-6 rounded-full" />
                   <span className="text-white font-medium">{tokenOut.symbol}</span>
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
                 </>
               ) : (
-                <span className="text-gray-400">Select token</span>
+                <>
+                  <span className="text-gray-400">Select token</span>
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                </>
               )}
-              <ChevronDown className="w-4 h-4 text-gray-400" />
             </button>
-            <input
-              type="number"
-              value={amountOut}
-              onChange={(e) => setAmountOut(e.target.value)}
-              placeholder="0.00"
-              className="flex-1 bg-transparent text-2xl font-semibold text-white outline-none placeholder:text-gray-600"
-              readOnly
-            />
+            <div className="flex-1 text-right text-2xl text-white">
+              {quote ? quote.amountOut : <span className="text-gray-600">0.0</span>}
+            </div>
           </div>
         </div>
 
-        {/* Exchange Rate & Price Impact */}
-        {amountIn && amountOut && (
-          <div className="flex items-center justify-between text-sm">
-            <div className="flex items-center space-x-2 text-gray-400">
-              <span>Rate</span>
-              <span className="text-white">1 {tokenIn?.symbol || ''} = {(parseFloat(amountOut) / parseFloat(amountIn)).toFixed(6)} {tokenOut?.symbol || ''}</span>
+        {/* Quote detail */}
+        {quote && (
+          <div className="p-4 bg-white/5 rounded-xl space-y-2 text-sm">
+            <div className="flex justify-between">
+              <span className="text-gray-400">Minimum received</span>
+              <span className="text-white">{quote.amountOutMin}</span>
             </div>
-            <div className="flex items-center space-x-2 text-gray-400">
-              <span>Impact</span>
-              <span className="text-green-400">0.15%</span>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Price impact</span>
+              <span className={quote.priceImpact > 5 ? 'text-yellow-400' : 'text-white'}>
+                {quote.priceImpact.toFixed(2)}%
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Route</span>
+              <span className="text-white">{quote.route.join(' → ')}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-gray-400">Estimated gas</span>
+              <span className="text-white">{quote.gasEstimate.toLocaleString()}</span>
             </div>
           </div>
         )}
 
-        {/* Swap Button */}
+        {displayQuoteError && (
+          <div role="alert" className="flex items-start space-x-2 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
+            <AlertTriangle className="w-4 h-4 text-yellow-400 shrink-0 mt-0.5" />
+            <p className="text-yellow-400 text-sm">{displayQuoteError}</p>
+          </div>
+        )}
+
+        {swapError && (
+          <div role="alert" className="p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+            {swapError}
+          </div>
+        )}
+
+        {txHash && (
+          <div className="p-3 bg-green-500/10 border border-green-500/20 rounded-xl">
+            <div className="flex items-center space-x-2 text-green-400 text-sm mb-1">
+              <Check className="w-4 h-4" />
+              <span>Swap submitted</span>
+            </div>
+            <p className="text-white font-mono text-xs break-all">{txHash}</p>
+          </div>
+        )}
+
+        {tokensError && (
+          <p role="alert" className="text-red-400 text-sm">
+            Token list unavailable: {tokensError.message}
+          </p>
+        )}
+
         <button
-          onClick={handleSwap}
-          disabled={!tokenIn || !tokenOut || !amountIn || isSwapping}
-          className={`w-full py-4 rounded-xl font-semibold text-lg transition-all ${
-            swapSuccess
-              ? 'bg-green-500 text-white'
-              : !tokenIn || !tokenOut || !amountIn
-              ? 'bg-gray-700 text-gray-500 cursor-not-allowed'
-              : 'bg-gradient-to-r from-tiger-orange to-tiger-accent text-white btn-glow hover:opacity-90'
-          }`}
+          onClick={() => void handleSwap()}
+          disabled={!account || !quote || executeSwap.isPending}
+          className="w-full py-4 rounded-xl font-bold transition-colors bg-tiger-orange hover:bg-tiger-accent disabled:bg-gray-700 disabled:text-gray-500 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
         >
-          {isSwapping ? (
-            <span className="flex items-center justify-center space-x-2">
-              <RefreshCw className="w-5 h-5 animate-spin" />
-              <span>Swapping...</span>
-            </span>
-          ) : swapSuccess ? (
-            <span className="flex items-center justify-center space-x-2">
-              <Check className="w-5 h-5" />
-              <span>Swap Complete!</span>
-            </span>
+          {executeSwap.isPending ? (
+            <>
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span>Confirm in your wallet…</span>
+            </>
+          ) : !account ? (
+            <span>Connect your wallet</span>
           ) : (
-            'Swap'
+            <span>Swap</span>
           )}
         </button>
-
-        {/* Warning */}
-        {slippage > 5 && (
-          <div className="flex items-center space-x-2 text-yellow-400 text-sm">
-            <AlertTriangle className="w-4 h-4" />
-            <span>High slippage setting. Your trade may fail.</span>
-          </div>
-        )}
       </div>
 
-      {/* Token Selector Modal */}
+      {/* Token selector */}
       <AnimatePresence>
         {showTokenSelector && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4"
             onClick={() => setShowTokenSelector(null)}
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="w-full max-w-md bg-tiger-dark border border-white/10 rounded-2xl overflow-hidden"
-              onClick={(e) => e.stopPropagation()}
+              className="bg-[#1a1a2e] border border-white/10 rounded-2xl p-6 w-full max-w-md"
+              onClick={(event) => event.stopPropagation()}
             >
-              <div className="p-4 border-b border-white/10">
-                <h3 className="text-lg font-semibold text-white mb-4">Select a token</h3>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search tokens..."
-                    className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-500 focus:outline-none focus:border-tiger-orange/50"
-                    autoFocus
-                  />
-                </div>
+              <div className="relative mb-4">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search by name or symbol"
+                  className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder:text-gray-500 focus:outline-none focus:border-tiger-orange/50"
+                />
               </div>
-              <div className="max-h-80 overflow-y-auto p-2">
+
+              <div className="space-y-1 max-h-80 overflow-y-auto">
                 {filteredTokens.map((token) => (
                   <button
                     key={`${token.chainId}-${token.address}`}
                     onClick={() => handleSelectToken(token)}
-                    className="w-full flex items-center space-x-3 p-3 rounded-xl hover:bg-white/5 transition-colors"
+                    className="w-full flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors"
                   >
-                    <img src={token.logoURI} alt={token.symbol} className="w-10 h-10 rounded-full" />
-                    <div className="flex-1 text-left">
+                    <div className="text-left">
                       <div className="text-white font-medium">{token.symbol}</div>
                       <div className="text-gray-500 text-sm">{token.name}</div>
                     </div>
-                    <div className="text-gray-400 text-sm">
-                      {SUPPORTED_CHAINS[Object.keys(SUPPORTED_CHAINS).find(key => SUPPORTED_CHAINS[key as keyof typeof SUPPORTED_CHAINS].id === token.chainId) || '']?.symbol || ''}
+                    <div className="text-right text-gray-400 text-xs font-mono">
+                      {formatAddress(token.address)}
                     </div>
                   </button>
                 ))}
+                {filteredTokens.length === 0 && (
+                  <p className="text-gray-500 text-sm text-center py-6">No tokens match your search.</p>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -419,4 +424,15 @@ export function SwapInterface() {
       </AnimatePresence>
     </div>
   );
+}
+
+/** Formats a raw base-unit balance using the token's decimals. */
+function formatBalance(raw: bigint, decimals: number): string {
+  if (decimals === 0) return raw.toString();
+  const divisor = 10n ** BigInt(decimals);
+  const whole = raw / divisor;
+  const fraction = raw % divisor;
+  if (fraction === 0n) return whole.toString();
+  const padded = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+  return `${whole}.${padded}`;
 }

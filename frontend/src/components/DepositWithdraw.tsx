@@ -1,27 +1,35 @@
 'use client';
 
-import { useState } from 'react';
+/**
+ * Deposit and withdraw panel.
+ *
+ * Deposits are shown as the user's own address with a real QR code rendered
+ * locally. Withdrawals are sent as a real on-chain transaction signed by the
+ * user's wallet, and the transaction hash is reported back.
+ *
+ * There is no fiat rail: this component does not invent bank details, and it
+ * does not simulate a withdrawal.
+ */
+
+import { useEffect, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Wallet, 
-  ArrowDownLeft, 
-  ArrowUpRight, 
-  Copy, 
+import {
+  Wallet,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Copy,
   Check,
   QrCode,
   ExternalLink,
-  Clock,
-  RefreshCw,
-  AlertCircle,
   Loader2,
-  CreditCard,
-  Building,
-  Globe,
-  Key,
-  Shield
+  AlertCircle,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 
-interface DepositWithdrawProps {
+import { ValidationError, address as addressValidator } from '@/lib/validation';
+import { formatAddress, parseUnits } from '@/lib/wallet';
+
+export interface DepositWithdrawProps {
   currentWallet: {
     address: string;
     chainId: number;
@@ -31,123 +39,146 @@ interface DepositWithdrawProps {
     symbol: string;
     name: string;
     address: string;
-    logoURI: string;
+    decimals: number;
+    logoURI: string | null;
   }>;
   chainId: number;
+  /** Explorer base URL for the active chain, used for transaction links. */
+  explorerURL?: string | null;
+  /** Sends a native-token transfer and resolves to the transaction hash. */
+  onWithdraw: (to: string, amount: string) => Promise<string>;
+  /** Optional: the user's available native balance, for validation. */
+  availableBalance?: string;
 }
 
-export function DepositWithdraw({ currentWallet, tokens, chainId }: DepositWithdrawProps) {
+export function DepositWithdraw({
+  currentWallet,
+  tokens,
+  chainId,
+  explorerURL,
+  onWithdraw,
+  availableBalance,
+}: DepositWithdrawProps) {
   const [activeTab, setActiveTab] = useState<'deposit' | 'withdraw'>('deposit');
-  const [selectedToken, setSelectedToken] = useState(tokens[0] || null);
-  const [depositAmount, setDepositAmount] = useState('');
+  const [selectedToken, setSelectedToken] = useState<DepositWithdrawProps['tokens'][number] | null>(
+    tokens[0] ?? null,
+  );
   const [withdrawAddress, setWithdrawAddress] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
   const [showQR, setShowQR] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<string | null>(null);
 
-  // Get deposit address from wallet
-  const getDepositAddress = () => {
-    if (!currentWallet) return '';
-    return currentWallet.address;
-  };
+  const qrContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Bank transfer details - fetched from API in production
-  // For now, showing placeholder that would come from backend
-  const [bankDetails, setBankDetails] = useState<{
-    bankName: string;
-    accountName: string;
-    accountNumber: string;
-    routingNumber: string;
-    iban: string;
-    swift: string;
-    reference: string;
-  } | null>(null);
+  const depositAddress = currentWallet?.address ?? '';
 
-  // Fetch bank details on mount
+  // Render the QR code into the DOM when the panel is open. The value is the
+  // user's own address, encoded locally, so nothing leaves the browser.
   useEffect(() => {
-    const fetchBankDetails = async () => {
-      try {
-        const res = await fetch('/api/v1/wallet/bank-details');
-        if (res.ok) {
-          const data = await res.json();
-          setBankDetails(data);
+    if (!showQR || !depositAddress || !qrContainerRef.current) {
+      return;
+    }
+
+    let cancelled = false;
+
+    QRCode.toCanvas(depositAddress, { width: 192, margin: 1 }, (qrError, canvas) => {
+      if (cancelled || qrError) {
+        if (qrError) {
+          setError('Could not render the QR code');
         }
-      } catch (e) {
-        console.error('Failed to fetch bank details');
+        return;
       }
+      const container = qrContainerRef.current;
+      if (container) {
+        container.replaceChildren(canvas);
+      }
+    });
+
+    return () => {
+      cancelled = true;
     };
-    fetchBankDetails();
-  }, []);
-
-  const copyAddress = () => {
-    if (currentWallet?.address) {
-      navigator.clipboard.writeText(currentWallet.address);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
-  };
-
-  const handleDeposit = async () => {
-    if (!depositAmount || parseFloat(depositAmount) <= 0) return;
-    setIsProcessing(true);
-    
-    try {
-      // Call real deposit API to generate deposit address
-      const response = await fetch('/api/v1/wallet/deposit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          user_id: currentWallet?.address,
-          chain_id: chainId,
-          token: selectedToken?.symbol,
-          amount: depositAmount
-        })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        // Display the deposit address to user
-        console.log('Deposit address:', data.deposit_address);
-      }
-    } catch (error) {
-      console.error('Deposit failed:', error);
-    }
-    
-    setIsProcessing(false);
-    setDepositAmount('');
-  };
-
-  const handleWithdraw = async () => {
-    if (!withdrawAddress || !withdrawAmount || parseFloat(withdrawAmount) <= 0) return;
-    setIsProcessing(true);
-    // Simulate withdrawal processing
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    setIsProcessing(false);
-    setWithdrawAddress('');
-    setWithdrawAmount('');
-  };
+  }, [showQR, depositAddress]);
 
   if (!currentWallet) {
     return (
       <div className="bg-white/5 rounded-xl p-8 text-center">
         <Wallet className="w-16 h-16 text-gray-400 mx-auto mb-4" />
-        <h3 className="text-white font-semibold mb-2">Connect Wallet</h3>
+        <h3 className="text-white font-semibold mb-2">Connect wallet</h3>
         <p className="text-gray-400">Connect your wallet to deposit or withdraw</p>
       </div>
     );
   }
 
+  const copyAddress = async () => {
+    try {
+      await navigator.clipboard.writeText(depositAddress);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setError('Could not copy to the clipboard');
+    }
+  };
+
+  const handleWithdraw = async () => {
+    setError(null);
+    setTxHash(null);
+
+    let recipient: string;
+    try {
+      recipient = addressValidator(withdrawAddress, 'recipient');
+    } catch (validationError) {
+      setError(
+        validationError instanceof ValidationError
+          ? validationError.message
+          : 'Enter a valid recipient address',
+      );
+      return;
+    }
+
+    const decimals = selectedToken?.decimals ?? 18;
+    let amount: bigint;
+    try {
+      amount = parseUnits(withdrawAmount, decimals);
+    } catch (validationError) {
+      setError(
+        validationError instanceof ValidationError ? validationError.message : 'Enter a valid amount',
+      );
+      return;
+    }
+
+    if (availableBalance !== undefined) {
+      const available = Number(availableBalance);
+      if (Number.isFinite(available) && Number(withdrawAmount) > available) {
+        setError('Amount exceeds your available balance');
+        return;
+      }
+    }
+
+    setIsProcessing(true);
+    try {
+      const hash = await onWithdraw(recipient, withdrawAmount);
+      setTxHash(hash);
+      setWithdrawAddress('');
+      setWithdrawAmount('');
+    } catch (withdrawError) {
+      setError(withdrawError instanceof Error ? withdrawError.message : 'Withdrawal failed');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const explorerTxURL = explorerURL && txHash ? `${explorerURL}/tx/${txHash}` : null;
+
   return (
     <div className="space-y-6">
-      {/* Tab Switcher */}
       <div className="flex items-center space-x-2 bg-white/5 rounded-xl p-1">
         <button
           onClick={() => setActiveTab('deposit')}
           className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-lg transition-colors ${
-            activeTab === 'deposit'
-              ? 'bg-tiger-orange text-white'
-              : 'text-gray-400 hover:text-white'
+            activeTab === 'deposit' ? 'bg-tiger-orange text-white' : 'text-gray-400 hover:text-white'
           }`}
         >
           <ArrowDownLeft className="w-5 h-5" />
@@ -156,9 +187,7 @@ export function DepositWithdraw({ currentWallet, tokens, chainId }: DepositWithd
         <button
           onClick={() => setActiveTab('withdraw')}
           className={`flex-1 flex items-center justify-center space-x-2 py-3 rounded-lg transition-colors ${
-            activeTab === 'withdraw'
-              ? 'bg-tiger-orange text-white'
-              : 'text-gray-400 hover:text-white'
+            activeTab === 'withdraw' ? 'bg-tiger-orange text-white' : 'text-gray-400 hover:text-white'
           }`}
         >
           <ArrowUpRight className="w-5 h-5" />
@@ -166,251 +195,186 @@ export function DepositWithdraw({ currentWallet, tokens, chainId }: DepositWithd
         </button>
       </div>
 
-      {/* Content */}
+      {error && (
+        <div role="alert" className="flex items-start space-x-2 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm">
+          <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+          <span>{error}</span>
+        </div>
+      )}
+
       {activeTab === 'deposit' && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-6"
-        >
-          {/* Crypto Deposit */}
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
           <div className="bg-white/5 rounded-xl p-6">
-            <h3 className="text-white font-semibold mb-4">Cryptocurrency Deposit</h3>
-            
-            {/* Token Selector */}
+            <h3 className="text-white font-semibold mb-4">Deposit on {currentWallet.chainName}</h3>
+
             <div className="mb-4">
-              <label className="text-gray-400 text-sm mb-2 block">Select Token</label>
+              <label htmlFor="deposit-token" className="text-gray-400 text-sm mb-2 block">
+                Token
+              </label>
               <select
-                value={selectedToken?.address || ''}
-                onChange={(e) => setSelectedToken(tokens.find(t => t.address === e.target.value) || tokens[0])}
+                id="deposit-token"
+                value={selectedToken?.address ?? ''}
+                onChange={(event) =>
+                  setSelectedToken(tokens.find((token) => token.address === event.target.value) ?? null)
+                }
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
               >
-                {tokens.map((token, i) => (
-                  <option key={i} value={token.address} className="bg-gray-900">
-                    {token.symbol} - {token.name}
+                {tokens.map((token) => (
+                  <option key={`${token.address}-${token.symbol}`} value={token.address} className="bg-gray-900">
+                    {token.symbol} — {token.name}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* Deposit Address */}
             <div className="mb-4">
-              <label className="text-gray-400 text-sm mb-2 block">Your Deposit Address</label>
+              <label htmlFor="deposit-address" className="text-gray-400 text-sm mb-2 block">
+                Your deposit address
+              </label>
               <div className="flex items-center space-x-2">
-                <div className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white font-mono text-sm truncate">
-                  {getDepositAddress()}
-                </div>
+                <input
+                  id="deposit-address"
+                  readOnly
+                  value={depositAddress}
+                  className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white font-mono text-sm"
+                />
                 <button
-                  onClick={copyAddress}
+                  onClick={() => void copyAddress()}
                   className="p-3 bg-white/10 border border-white/20 rounded-xl text-gray-400 hover:text-white transition-colors"
+                  title="Copy address"
                 >
                   {copied ? <Check className="w-5 h-5 text-green-400" /> : <Copy className="w-5 h-5" />}
                 </button>
                 <button
-                  onClick={() => setShowQR(!showQR)}
+                  onClick={() => setShowQR((value) => !value)}
                   className="p-3 bg-white/10 border border-white/20 rounded-xl text-gray-400 hover:text-white transition-colors"
+                  title="Show QR code"
                 >
                   <QrCode className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
-            {/* QR Code */}
             {showQR && (
               <div className="mb-4 p-4 bg-white rounded-xl flex justify-center">
-                <div className="w-48 h-48 bg-gray-200 flex items-center justify-center text-gray-500">
-                  QR Code
-                </div>
+                <div ref={qrContainerRef} aria-label="Deposit address QR code" />
               </div>
             )}
 
-            {/* Warning */}
             <div className="flex items-start space-x-3 p-4 bg-yellow-500/10 border border-yellow-500/20 rounded-xl">
-              <AlertCircle className="w-5 h-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+              <AlertCircle className="w-5 h-5 text-yellow-400 shrink-0 mt-0.5" />
               <div className="text-sm text-yellow-400">
-                <p className="font-medium mb-1">Important</p>
-                <p>Only send {selectedToken?.symbol || 'tokens'} to this address. Sending other tokens may result in permanent loss.</p>
+                <p className="font-medium mb-1">Send only on {currentWallet.chainName}</p>
+                <p>
+                  Assets sent on another network, or tokens other than the one selected, may be
+                  permanently lost.
+                </p>
               </div>
             </div>
-          </div>
-
-          {/* Bank Transfer */}
-          <div className="bg-white/5 rounded-xl p-6">
-            <div className="flex items-center space-x-2 mb-4">
-              <Building className="w-5 h-5 text-tiger-orange" />
-              <h3 className="text-white font-semibold">Bank Transfer (Fiat)</h3>
-            </div>
-            
-            <div className="space-y-3 text-sm">
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">Bank Name</span>
-                <span className="text-white">{bankDetails.bankName}</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">Account Name</span>
-                <span className="text-white">{bankDetails.accountName}</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">Account Number</span>
-                <span className="text-white font-mono">{bankDetails.accountNumber}</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">Routing Number</span>
-                <span className="text-white font-mono">{bankDetails.routingNumber}</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">IBAN</span>
-                <span className="text-white font-mono">{bankDetails.iban}</span>
-              </div>
-              <div className="flex justify-between py-2 border-b border-white/10">
-                <span className="text-gray-400">SWIFT</span>
-                <span className="text-white font-mono">{bankDetails.swift}</span>
-              </div>
-              <div className="flex justify-between py-2">
-                <span className="text-gray-400">Reference</span>
-                <span className="text-tiger-orange font-mono">{bankDetails.reference}</span>
-              </div>
-            </div>
-
-            <p className="text-gray-400 text-xs mt-4">
-              Please include your reference number in the payment description. Deposits are processed within 1-3 business days.
-            </p>
           </div>
         </motion.div>
       )}
 
       {activeTab === 'withdraw' && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="space-y-6"
-        >
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-6">
           <div className="bg-white/5 rounded-xl p-6">
-            <h3 className="text-white font-semibold mb-4">Withdraw Cryptocurrency</h3>
-            
-            {/* Token Selector */}
+            <h3 className="text-white font-semibold mb-4">Withdraw from {currentWallet.chainName}</h3>
+
             <div className="mb-4">
-              <label className="text-gray-400 text-sm mb-2 block">Select Token</label>
+              <label htmlFor="withdraw-token" className="text-gray-400 text-sm mb-2 block">
+                Token
+              </label>
               <select
-                value={selectedToken?.address || ''}
-                onChange={(e) => setSelectedToken(tokens.find(t => t.address === e.target.value) || tokens[0])}
+                id="withdraw-token"
+                value={selectedToken?.address ?? ''}
+                onChange={(event) =>
+                  setSelectedToken(tokens.find((token) => token.address === event.target.value) ?? null)
+                }
                 className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
               >
-                {tokens.map((token, i) => (
-                  <option key={i} value={token.address} className="bg-gray-900">
-                    {token.symbol} - {token.name}
+                {tokens.map((token) => (
+                  <option key={`${token.address}-${token.symbol}`} value={token.address} className="bg-gray-900">
+                    {token.symbol} — {token.name}
                   </option>
                 ))}
               </select>
             </div>
 
-            {/* Recipient Address */}
             <div className="mb-4">
-              <label className="text-gray-400 text-sm mb-2 block">Recipient Address</label>
+              <label htmlFor="withdraw-address" className="text-gray-400 text-sm mb-2 block">
+                Recipient address
+              </label>
               <input
+                id="withdraw-address"
                 type="text"
                 value={withdrawAddress}
-                onChange={(e) => setWithdrawAddress(e.target.value)}
-                placeholder="0x..."
-                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-tiger-orange font-mono"
+                onChange={(event) => setWithdrawAddress(event.target.value)}
+                placeholder="0x…"
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white font-mono focus:outline-none focus:border-tiger-orange"
               />
             </div>
 
-            {/* Amount */}
             <div className="mb-4">
-              <label className="text-gray-400 text-sm mb-2 block">Amount</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={withdrawAmount}
-                  onChange={(e) => setWithdrawAmount(e.target.value)}
-                  placeholder="0.00"
-                  className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-tiger-orange"
-                />
-                <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-400">
-                  {selectedToken?.symbol || 'TOKEN'}
-                </span>
-              </div>
+              <label htmlFor="withdraw-amount" className="text-gray-400 text-sm mb-2 block">
+                Amount
+              </label>
+              <input
+                id="withdraw-amount"
+                type="text"
+                inputMode="decimal"
+                value={withdrawAmount}
+                onChange={(event) => setWithdrawAmount(event.target.value)}
+                placeholder="0.00"
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
+              />
+              {availableBalance !== undefined && (
+                <p className="text-gray-500 text-xs mt-2">Available: {availableBalance}</p>
+              )}
             </div>
 
-            {/* Fee Info */}
-            <div className="bg-white/5 rounded-xl p-4 mb-4">
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-gray-400">Network Fee</span>
-                <span className="text-white">~0.001 {selectedToken?.symbol || ''}</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-400">Withdrawal Fee</span>
-                <span className="text-tiger-orange">0.1%</span>
-              </div>
-            </div>
+            <p className="text-gray-500 text-xs mb-4">
+              Network: {currentWallet.chainName} (chain ID {chainId}). Your wallet will ask you to
+              confirm and will pay the network fee.
+            </p>
 
-            {/* Submit */}
+            {txHash && (
+              <div className="mb-4 bg-green-500/10 border border-green-500/20 rounded-xl p-4">
+                <p className="text-green-400 text-sm mb-1">Withdrawal submitted</p>
+                <p className="text-white font-mono text-xs break-all">{txHash}</p>
+                {explorerTxURL && (
+                  <a
+                    href={explorerTxURL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-tiger-orange text-sm flex items-center space-x-1 mt-2"
+                  >
+                    <span>View on explorer</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                )}
+              </div>
+            )}
+
             <button
-              onClick={handleWithdraw}
+              onClick={() => void handleWithdraw()}
               disabled={isProcessing || !withdrawAddress || !withdrawAmount}
               className="w-full bg-tiger-orange hover:bg-tiger-accent disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold transition-colors flex items-center justify-center space-x-2"
             >
               {isProcessing ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Processing...</span>
+                  <span>Confirm in your wallet…</span>
                 </>
               ) : (
                 <>
                   <ArrowUpRight className="w-5 h-5" />
-                  <span>Withdraw {selectedToken?.symbol || ''}</span>
+                  <span>Withdraw</span>
                 </>
               )}
             </button>
           </div>
-
-          {/* Fiat Withdrawal */}
-          <div className="bg-white/5 rounded-xl p-6">
-            <div className="flex items-center space-x-2 mb-4">
-              <CreditCard className="w-5 h-5 text-tiger-orange" />
-              <h3 className="text-white font-semibold">Fiat Withdrawal</h3>
-            </div>
-            <p className="text-gray-400 text-sm mb-4">
-              Request a bank transfer to your registered bank account. Fiat withdrawals are processed within 1-5 business days.
-            </p>
-            <button className="w-full bg-white/10 hover:bg-white/20 text-white py-3 rounded-xl font-medium transition-colors border border-white/20">
-              Request Fiat Withdrawal
-            </button>
-          </div>
         </motion.div>
       )}
-
-      {/* Recent Transactions */}
-      <div className="bg-white/5 rounded-xl p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-white font-semibold">Recent Transactions</h3>
-          <button className="text-tiger-orange text-sm hover:underline">View All</button>
-        </div>
-        <div className="space-y-3">
-          {[
-            { type: 'deposit', token: 'USDC', amount: '1,000.00', time: '2 hours ago', status: 'confirmed' },
-            { type: 'withdraw', token: 'ETH', amount: '0.5', time: '5 hours ago', status: 'confirmed' },
-            { type: 'deposit', token: 'BTC', amount: '0.1', time: '1 day ago', status: 'confirmed' },
-          ].map((tx, i) => (
-            <div key={i} className="flex items-center justify-between p-3 bg-white/5 rounded-lg">
-              <div className="flex items-center space-x-3">
-                <div className={`p-2 rounded-lg ${tx.type === 'deposit' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                  {tx.type === 'deposit' ? <ArrowDownLeft className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
-                </div>
-                <div>
-                  <p className="text-white font-medium capitalize">{tx.type}</p>
-                  <p className="text-gray-400 text-xs">{tx.time}</p>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="text-white font-medium">{tx.amount} {tx.token}</p>
-                <span className="text-green-400 text-xs">{tx.status}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }

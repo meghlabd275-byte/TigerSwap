@@ -1,95 +1,108 @@
 'use client';
 
+/**
+ * Portfolio panel.
+ *
+ * Every figure comes from the API (`/user/portfolio` and `/user/transactions`)
+ * or from the connected wallet. Nothing is hardcoded, and a failed request
+ * renders an explicit error rather than plausible-looking numbers.
+ */
+
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Wallet, 
-  TrendingUp, 
-  TrendingDown, 
-  ArrowUpRight, 
+import {
+  TrendingUp,
+  TrendingDown,
+  ArrowUpRight,
   ArrowDownRight,
   RefreshCw,
-  Download,
   Eye,
   EyeOff,
-  Copy,
-  ExternalLink
+  ExternalLink,
 } from 'lucide-react';
 
-const PORTFOLIO_DATA = {
-  totalValue: 24580.50,
-  change24h: 1250.30,
-  changePercent: 5.35,
-  assets: [
-    { symbol: 'ETH', name: 'Ethereum', balance: 5.2, value: 17940, change: 3.2, icon: '🦄' },
-    { symbol: 'USDC', name: 'USD Coin', balance: 3000, value: 3000, change: 0, icon: '💵' },
-    { symbol: 'WBTC', name: 'Wrapped Bitcoin', balance: 0.08, value: 5400, change: 4.1, icon: '₿' },
-    { symbol: 'UNI', name: 'Uniswap', balance: 45, value: 576, change: -2.3, icon: '🦄' },
-    { symbol: 'LINK', name: 'Chainlink', balance: 36, value: 666, change: 1.8, icon: '🔗' },
-  ],
-  transactions: [
-    { type: 'swap', from: 'ETH', to: 'USDC', amount: '1.5 ETH', value: '$5,175', time: '2 hours ago', status: 'completed' },
-    { type: 'receive', from: 'External', to: 'ETH', amount: '2.0 ETH', value: '$6,900', time: '5 hours ago', status: 'completed' },
-    { type: 'swap', from: 'USDC', to: 'WBTC', amount: '$3,000', value: '$3,000', time: '1 day ago', status: 'completed' },
-    { type: 'send', from: 'ETH', to: 'External', amount: '0.5 ETH', value: '$1,725', time: '2 days ago', status: 'completed' },
-  ]
-};
+import { usePortfolio, useTransactions } from '@/hooks/useApi';
+import { formatAddress } from '@/lib/wallet';
 
-export function Portfolio() {
+interface PortfolioProps {
+  /** Explorer base URL for the active chain, used to link transactions. */
+  explorerURL?: string | null;
+}
+
+export function Portfolio({ explorerURL }: PortfolioProps) {
   const [showBalances, setShowBalances] = useState(true);
   const [activeTab, setActiveTab] = useState<'assets' | 'transactions'>('assets');
 
-  const formatValue = (value: number) => {
-    if (!showBalances) return '******';
+  const {
+    data: portfolio,
+    error: portfolioError,
+    isPending: portfolioPending,
+    refetch: refetchPortfolio,
+  } = usePortfolio();
+
+  const {
+    data: transactions,
+    error: transactionsError,
+    isPending: transactionsPending,
+  } = useTransactions();
+
+  const formatValue = (value: number | null) => {
+    if (!showBalances) return '••••••';
+    if (value === null) return '—';
     return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
-  const formatBalance = (balance: number, symbol: string) => {
-    if (!showBalances) return '******';
-    return `${balance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })} ${symbol}`;
-  };
+  if (portfolioError || transactionsError) {
+    const message = (portfolioError ?? transactionsError)?.message ?? 'unknown error';
+    return (
+      <div className="glass-dark rounded-2xl p-6">
+        <h2 className="text-xl font-display font-bold text-white mb-4">Portfolio</h2>
+        <p role="alert" className="text-red-400 text-sm">
+          Portfolio data is unavailable: {message}
+        </p>
+      </div>
+    );
+  }
+
+  const total = portfolio?.totalValueUSD ?? null;
 
   return (
     <div className="space-y-6">
-      {/* Portfolio Summary */}
       <div className="glass-dark rounded-2xl p-6">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xl font-display font-bold text-white">Portfolio</h2>
           <div className="flex items-center space-x-2">
-            <button 
-              onClick={() => setShowBalances(!showBalances)}
+            <button
+              onClick={() => setShowBalances((value) => !value)}
               className="p-2 text-gray-400 hover:text-white transition-colors"
+              title={showBalances ? 'Hide balances' : 'Show balances'}
             >
               {showBalances ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
             </button>
-            <button className="p-2 text-gray-400 hover:text-white transition-colors">
+            <button
+              onClick={() => void refetchPortfolio()}
+              className="p-2 text-gray-400 hover:text-white transition-colors"
+              title="Refresh"
+            >
               <RefreshCw className="w-4 h-4" />
             </button>
-            <button className="p-2 text-gray-400 hover:text-white transition-colors">
-              <Download className="w-4 h-4" />
-            </button>
           </div>
         </div>
 
-        {/* Total Value */}
         <div className="mb-6">
-          <div className="text-gray-400 text-sm mb-1">Total Balance</div>
+          <div className="text-gray-400 text-sm mb-1">Total balance</div>
           <div className="flex items-baseline space-x-3">
             <span className="text-4xl font-display font-bold text-white">
-              {formatValue(PORTFOLIO_DATA.totalValue)}
+              {portfolioPending ? '…' : formatValue(total)}
             </span>
-            <div className={`flex items-center ${PORTFOLIO_DATA.changePercent >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-              {PORTFOLIO_DATA.changePercent >= 0 ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-              <span className="font-medium">+{PORTFOLIO_DATA.changePercent}%</span>
-              <span className="text-gray-500 ml-1">24h</span>
+          </div>
+          {portfolio?.updatedAt && (
+            <div className="text-gray-500 text-xs mt-2">
+              Updated {new Date(portfolio.updatedAt).toLocaleString()}
             </div>
-          </div>
-          <div className="text-gray-400 text-sm mt-1">
-            {PORTFOLIO_DATA.change24h >= 0 ? '+' : ''}{formatValue(PORTFOLIO_DATA.change24h)}
-          </div>
+          )}
         </div>
 
-        {/* Tabs */}
         <div className="flex space-x-2 mb-4">
           <button
             onClick={() => setActiveTab('assets')}
@@ -113,98 +126,96 @@ export function Portfolio() {
           </button>
         </div>
 
-        {/* Content */}
         {activeTab === 'assets' ? (
-          <div className="space-y-3">
-            {PORTFOLIO_DATA.assets.map((asset, i) => (
-              <motion.div
-                key={asset.symbol}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="flex items-center justify-between p-3 bg-white/5 rounded-xl hover:bg-white/10 transition-colors"
-              >
-                <div className="flex items-center space-x-3">
-                  <div className="w-10 h-10 rounded-full bg-white/10 flex items-center justify-center text-xl">
-                    {asset.icon}
-                  </div>
+          portfolioPending ? (
+            <p className="text-gray-400 text-sm">Loading assets…</p>
+          ) : portfolio && portfolio.assets.length > 0 ? (
+            <div className="space-y-3">
+              {portfolio.assets.map((asset, index) => (
+                <motion.div
+                  key={`${asset.chainId}-${asset.tokenAddress}`}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: Math.min(index, 10) * 0.05 }}
+                  className="flex items-center justify-between p-3 bg-white/5 rounded-xl hover:bg-white/10 transition-colors"
+                >
                   <div>
                     <div className="text-white font-medium">{asset.symbol}</div>
-                    <div className="text-gray-500 text-xs">{asset.name}</div>
+                    <div className="text-gray-500 text-xs font-mono">
+                      {formatAddress(asset.tokenAddress)}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-white font-medium">
+                      {showBalances ? asset.balance : '••••••'} {asset.symbol}
+                    </div>
+                    <div className="text-gray-500 text-xs">{formatValue(asset.valueUSD)}</div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-gray-400 text-sm">No assets found for this account.</p>
+          )
+        ) : transactionsPending ? (
+          <p className="text-gray-400 text-sm">Loading transactions…</p>
+        ) : transactions && transactions.length > 0 ? (
+          <div className="space-y-3">
+            {transactions.map((transaction, index) => (
+              <motion.div
+                key={transaction.hash}
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: Math.min(index, 10) * 0.05 }}
+                className="flex items-center justify-between p-3 bg-white/5 rounded-xl"
+              >
+                <div className="flex items-center space-x-3">
+                  <div
+                    className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                      transaction.type === 'swap'
+                        ? 'bg-blue-500/20 text-blue-400'
+                        : transaction.type === 'receive'
+                          ? 'bg-green-500/20 text-green-400'
+                          : 'bg-red-500/20 text-red-400'
+                    }`}
+                  >
+                    {transaction.type === 'swap' ? (
+                      <RefreshCw className="w-4 h-4" />
+                    ) : transaction.type === 'receive' ? (
+                      <ArrowDownRight className="w-4 h-4" />
+                    ) : (
+                      <ArrowUpRight className="w-4 h-4" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-white font-medium capitalize">{transaction.type}</div>
+                    <div className="text-gray-500 text-xs">
+                      {new Date(transaction.createdAt).toLocaleString()} · {transaction.status}
+                    </div>
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-white font-medium">{formatBalance(asset.balance, asset.symbol)}</div>
-                  <div className={`text-xs ${asset.change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {asset.change >= 0 ? '+' : ''}{asset.change}%
+                  <div className="text-white text-sm">
+                    {transaction.amount} {transaction.tokenSymbol}
                   </div>
-                </div>
-                <div className="text-right ml-4">
-                  <div className="text-white font-medium">{formatValue(asset.value)}</div>
-                  <div className="text-gray-500 text-xs">{(asset.value / PORTFOLIO_DATA.totalValue * 100).toFixed(1)}%</div>
+                  {explorerURL && (
+                    <a
+                      href={`${explorerURL}/tx/${transaction.hash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-tiger-orange text-xs flex items-center justify-end space-x-1"
+                    >
+                      <span>Explorer</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  )}
                 </div>
               </motion.div>
             ))}
           </div>
         ) : (
-          <div className="space-y-3">
-            {PORTFOLIO_DATA.transactions.map((tx, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="flex items-center justify-between p-3 bg-white/5 rounded-xl"
-              >
-                <div className="flex items-center space-x-3">
-                  <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                    tx.type === 'swap' ? 'bg-blue-500/20 text-blue-400' :
-                    tx.type === 'receive' ? 'bg-green-500/20 text-green-400' :
-                    'bg-red-500/20 text-red-400'
-                  }`}>
-                    {tx.type === 'swap' ? <RefreshCw className="w-4 h-4" /> :
-                     tx.type === 'receive' ? <ArrowDownRight className="w-4 h-4" /> :
-                     <ArrowUpRight className="w-4 h-4" />}
-                  </div>
-                  <div>
-                    <div className="text-white font-medium capitalize">{tx.type}</div>
-                    <div className="text-gray-500 text-xs">{tx.time}</div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-white text-sm">
-                    {tx.type === 'swap' ? `${tx.from} → ${tx.to}` :
-                     tx.type === 'receive' ? `From ${tx.from}` :
-                     `To ${tx.to}`}
-                  </div>
-                  <div className="text-gray-500 text-xs">{tx.value}</div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
+          <p className="text-gray-400 text-sm">No transactions yet.</p>
         )}
-      </div>
-
-      {/* Quick Actions */}
-      <div className="grid grid-cols-3 gap-4">
-        <button className="flex flex-col items-center justify-center p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-colors">
-          <div className="w-10 h-10 rounded-full bg-tiger-orange/20 flex items-center justify-center mb-2">
-            <ArrowUpRight className="w-5 h-5 text-tiger-orange" />
-          </div>
-          <span className="text-white text-sm">Send</span>
-        </button>
-        <button className="flex flex-col items-center justify-center p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-colors">
-          <div className="w-10 h-10 rounded-full bg-green-500/20 flex items-center justify-center mb-2">
-            <ArrowDownRight className="w-5 h-5 text-green-400" />
-          </div>
-          <span className="text-white text-sm">Receive</span>
-        </button>
-        <button className="flex flex-col items-center justify-center p-4 bg-white/5 rounded-xl hover:bg-white/10 transition-colors">
-          <div className="w-10 h-10 rounded-full bg-blue-500/20 flex items-center justify-center mb-2">
-            <RefreshCw className="w-5 h-5 text-blue-400" />
-          </div>
-          <span className="text-white text-sm">Swap</span>
-        </button>
       </div>
     </div>
   );

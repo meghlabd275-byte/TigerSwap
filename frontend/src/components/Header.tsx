@@ -66,7 +66,7 @@ export function Header() {
             {/* Gas Optimizer */}
             <button className="hidden lg:flex items-center space-x-2 px-3 py-1.5 bg-green-500/10 border border-green-500/20 rounded-lg">
               <Zap className="w-4 h-4 text-green-400" />
-              <span className="text-green-400 text-sm font-medium">Gas: 2.5 Gwei</span>
+              <span className="text-gray-400 text-sm font-medium">Live gas available on the swap page</span>
             </button>
 
             {/* Settings */}

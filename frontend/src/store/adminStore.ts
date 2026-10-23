@@ -89,10 +89,11 @@ export interface SystemSettings {
 }
 
 interface AdminState {
-  // Master admin credentials
-  adminSeedPhrase: string | null;
-  adminAddress: string | null;
+  // Admin session. Authentication is handled by the API layer (see
+  // @/lib/auth); no credential is held in this store.
   isAdminAuthenticated: boolean;
+  /** Identifier of the signed-in operator, used to stamp audit entries. */
+  operatorId: string | null;
   
   // Blockchains
   blockchains: Blockchain[];
@@ -115,19 +116,19 @@ interface AdminState {
     action: string;
     details: string;
     timestamp: Date;
-    ipAddress: string;
+    source: string;
   }>;
   
-  // Stats
-  stats: {
-    totalUsers: number;
-    totalTransactions: number;
-    totalVolume: string;
-    totalRevenue: string;
-  };
   
   // Actions
-  authenticateAdmin: (seedPhrase: string) => boolean;
+  /**
+   * Marks the local admin session as active.
+   *
+   * The actual authentication (password plus server-issued session) is
+   * performed by @/lib/auth. This only mirrors the result so the admin UI can
+   * render, and it never receives or stores a credential.
+   */
+  setAdminAuthenticated: (authenticated: boolean, operatorId?: string | null) => void;
   logoutAdmin: () => void;
   
   // Blockchain management
@@ -923,9 +924,8 @@ export const useAdminStore = create<AdminState>()(
   persist(
     (set, get) => ({
       // Initial state
-      adminSeedPhrase: null,
-      adminAddress: null,
       isAdminAuthenticated: false,
+      operatorId: null,
       blockchains: DEFAULT_BLOCKCHAINS,
       tokens: DEFAULT_TOKENS,
       launchpadProjects: [],
@@ -945,41 +945,13 @@ export const useAdminStore = create<AdminState>()(
         newUserRegistrationEnabled: true,
       },
       activityLogs: [],
-      stats: {
-        totalUsers: 1250,
-        totalTransactions: 45890,
-        totalVolume: '125000000',
-        totalRevenue: '375000',
-      },
 
-      // Authenticate admin via API
-      authenticateAdmin: async (seedPhrase: string) => {
-        try {
-          // Call real admin authentication API
-          const response = await fetch('/api/v1/admin/authenticate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ seed_phrase: seedPhrase })
-          });
-          
-          if (response.ok) {
-            const data = await response.json();
-            set({ 
-              adminSeedPhrase: seedPhrase, 
-              adminAddress: data.address, 
-              isAdminAuthenticated: true 
-            });
-            get().logActivity('Admin Login', 'Admin authenticated successfully');
-            return true;
-          }
-        } catch (error) {
-          console.error('Admin authentication failed:', error);
-        }
-        return false;
+      setAdminAuthenticated: (authenticated: boolean, operatorId: string | null = null) => {
+        set({ isAdminAuthenticated: authenticated, operatorId: authenticated ? operatorId : null });
       },
 
       logoutAdmin: () => {
-        set({ adminSeedPhrase: null, adminAddress: null, isAdminAuthenticated: false });
+        set({ isAdminAuthenticated: false, operatorId: null });
       },
 
       // Blockchain management
@@ -1022,7 +994,7 @@ export const useAdminStore = create<AdminState>()(
           ...token,
           id: `${token.symbol.toLowerCase()}-${token.chainId}-${Date.now()}`,
           addedAt: new Date(),
-          addedBy: get().adminAddress || 'system',
+          addedBy: get().operatorId || 'system',
         };
         set(state => ({ tokens: [...state.tokens, newToken] }));
         get().logActivity('Add Token', `Added ${token.symbol} on chain ${token.chainId}`);
@@ -1065,7 +1037,7 @@ export const useAdminStore = create<AdminState>()(
           ...project,
           id: `launchpad-${Date.now()}`,
           createdAt: new Date(),
-          createdBy: get().adminAddress || 'system',
+          createdBy: get().operatorId || 'system',
           raisedAmount: '0',
           participants: 0,
         };
@@ -1117,20 +1089,32 @@ export const useAdminStore = create<AdminState>()(
         get().logActivity('Maintenance Mode', `Maintenance mode ${isOn ? 'enabled' : 'disabled'}`);
       },
 
-      // Activity logging
+      /**
+       * Records an action taken in this session.
+       *
+       * This is a local breadcrumb for the operator, not an audit log: the
+       * authoritative record, including the real source address, is written by
+       * the server when the corresponding API call is made.
+       */
       logActivity: (action, details) => {
         const log = {
           id: `log-${Date.now()}`,
           action,
           details,
           timestamp: new Date(),
-          ipAddress: '0.0.0.0', // In production would capture real IP
+          source: 'client',
         };
         set(state => ({ activityLogs: [log, ...state.activityLogs].slice(0, 1000) }));
       },
     }),
     {
-      name: 'tiger-admin-storage',
+      name: 'tiger-admin-preferences',
+      // Nothing security-sensitive is persisted: the session lives in memory,
+      // and the token and audit trail live on the server.
+      partialize: (state) => ({
+        feeSettings: state.feeSettings,
+        systemSettings: state.systemSettings,
+      }),
     }
   )
 );

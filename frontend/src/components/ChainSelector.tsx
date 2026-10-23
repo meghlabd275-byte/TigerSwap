@@ -1,49 +1,81 @@
 'use client';
 
-import { useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Search, Check, Globe } from 'lucide-react';
-import { SUPPORTED_CHAINS, Chain } from '@/store/useStore';
+/**
+ * Chain selector.
+ *
+ * The network list comes from the API. Selecting a network switches the user's
+ * wallet to it, so the choice is real rather than a label that only changes
+ * locally.
+ */
 
-interface ChainSelectorProps {
-  selectedChain: string;
-  onSelectChain: (chain: string) => void;
+import { useMemo, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Check, ChevronDown, Search } from 'lucide-react';
+
+import { useChains } from '@/hooks/useApi';
+import type { Chain } from '@/lib/types';
+import { useWalletStore } from '@/store/walletStore';
+
+/** Groups chains by their family, in the order the UI shows them. */
+const GROUP_ORDER = ['evm', 'solana', 'cosmos', 'other'] as const;
+type Group = (typeof GROUP_ORDER)[number];
+
+function groupOf(chain: Chain): Group {
+  const type = chain.chainType.toLowerCase();
+  if (type === 'evm') return 'evm';
+  if (type === 'solana') return 'solana';
+  if (type === 'cosmos') return 'cosmos';
+  return 'other';
 }
 
-export function ChainSelector({ selectedChain, onSelectChain }: ChainSelectorProps) {
+const GROUP_LABELS: Record<Group, string> = {
+  evm: 'EVM chains',
+  solana: 'Solana',
+  cosmos: 'Cosmos',
+  other: 'Other',
+};
+
+export function ChainSelector() {
+  const { data: chains, error, isPending } = useChains();
+  const { chainId, setChain } = useWalletStore();
+
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
 
-  const chainKeys = Object.keys(SUPPORTED_CHAINS);
-  const filteredChains = chainKeys.filter(key => 
-    SUPPORTED_CHAINS[key].name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    SUPPORTED_CHAINS[key].symbol.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const currentChain = chains?.find((chain) => chain.id === chainId) ?? null;
 
-  const currentChain = SUPPORTED_CHAINS[selectedChain];
+  const grouped = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    const visible = (chains ?? []).filter(
+      (chain) =>
+        chain.name.toLowerCase().includes(query) ||
+        chain.nativeSymbol.toLowerCase().includes(query),
+    );
 
-  // Group chains by type
-  const evmChains = filteredChains.filter(key => SUPPORTED_CHAINS[key].type === 'evm');
-  const solanaChains = filteredChains.filter(key => SUPPORTED_CHAINS[key].type === 'solana');
-  const cosmosChains = filteredChains.filter(key => SUPPORTED_CHAINS[key].type === 'cosmos');
-  const otherChains = filteredChains.filter(key => 
-    SUPPORTED_CHAINS[key].type !== 'evm' && 
-    SUPPORTED_CHAINS[key].type !== 'solana' && 
-    SUPPORTED_CHAINS[key].type !== 'cosmos'
-  );
+    const result: Record<Group, Chain[]> = { evm: [], solana: [], cosmos: [], other: [] };
+    for (const chain of visible) {
+      result[groupOf(chain)].push(chain);
+    }
+    return result;
+  }, [chains, searchQuery]);
 
   return (
     <div className="relative">
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => setIsOpen((value) => !value)}
         className="flex items-center space-x-3 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors"
       >
-        <div className="text-2xl">{currentChain?.icon || '🌐'}</div>
         <div className="text-left">
-          <div className="text-white font-medium">{currentChain?.name || 'Select Chain'}</div>
-          <div className="text-gray-500 text-xs">{currentChain?.type.toUpperCase()}</div>
+          <div className="text-white font-medium">
+            {isPending ? 'Loading networks…' : (currentChain?.name ?? 'Select network')}
+          </div>
+          <div className="text-gray-500 text-xs">
+            {currentChain ? currentChain.chainType.toUpperCase() : '—'}
+          </div>
         </div>
-        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+        <ChevronDown
+          className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+        />
       </button>
 
       <AnimatePresence>
@@ -60,94 +92,52 @@ export function ChainSelector({ selectedChain, onSelectChain }: ChainSelectorPro
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search chains..."
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search networks…"
                   className="w-full pl-9 pr-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white text-sm placeholder:text-gray-500 focus:outline-none focus:border-tiger-orange/50"
                 />
               </div>
             </div>
-            
+
             <div className="overflow-y-auto max-h-72">
-              {/* EVM Chains */}
-              {evmChains.length > 0 && (
-                <div className="p-2">
-                  <div className="text-xs text-gray-500 px-2 py-1 uppercase tracking-wider">EVM Chains</div>
-                  {evmChains.map(key => (
-                    <ChainItem
-                      key={key}
-                      chain={SUPPORTED_CHAINS[key]}
-                      isSelected={selectedChain === key}
-                      onSelect={() => {
-                        onSelectChain(key);
-                        setIsOpen(false);
-                        setSearchQuery('');
-                      }}
-                    />
-                  ))}
-                </div>
+              {error && (
+                <p role="alert" className="p-4 text-red-400 text-sm">
+                  Network list unavailable: {error.message}
+                </p>
               )}
 
-              {/* Solana */}
-              {solanaChains.length > 0 && (
-                <div className="p-2">
-                  <div className="text-xs text-gray-500 px-2 py-1 uppercase tracking-wider">Solana</div>
-                  {solanaChains.map(key => (
-                    <ChainItem
-                      key={key}
-                      chain={SUPPORTED_CHAINS[key]}
-                      isSelected={selectedChain === key}
-                      onSelect={() => {
-                        onSelectChain(key);
-                        setIsOpen(false);
-                        setSearchQuery('');
-                      }}
-                    />
-                  ))}
-                </div>
+              {GROUP_ORDER.map((group) =>
+                grouped[group].length > 0 ? (
+                  <div key={group} className="p-2">
+                    <div className="text-xs text-gray-500 px-2 py-1 uppercase tracking-wider">
+                      {GROUP_LABELS[group]}
+                    </div>
+                    {grouped[group].map((chain) => (
+                      <ChainItem
+                        key={chain.id}
+                        chain={chain}
+                        isSelected={chain.id === chainId}
+                        onSelect={() => {
+                          void setChain(chain.id);
+                          setIsOpen(false);
+                          setSearchQuery('');
+                        }}
+                      />
+                    ))}
+                  </div>
+                ) : null,
               )}
 
-              {/* Cosmos */}
-              {cosmosChains.length > 0 && (
-                <div className="p-2">
-                  <div className="text-xs text-gray-500 px-2 py-1 uppercase tracking-wider">Cosmos</div>
-                  {cosmosChains.map(key => (
-                    <ChainItem
-                      key={key}
-                      chain={SUPPORTED_CHAINS[key]}
-                      isSelected={selectedChain === key}
-                      onSelect={() => {
-                        onSelectChain(key);
-                        setIsOpen(false);
-                        setSearchQuery('');
-                      }}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {/* Other */}
-              {otherChains.length > 0 && (
-                <div className="p-2">
-                  <div className="text-xs text-gray-500 px-2 py-1 uppercase tracking-wider">Other</div>
-                  {otherChains.map(key => (
-                    <ChainItem
-                      key={key}
-                      chain={SUPPORTED_CHAINS[key]}
-                      isSelected={selectedChain === key}
-                      onSelect={() => {
-                        onSelectChain(key);
-                        setIsOpen(false);
-                        setSearchQuery('');
-                      }}
-                    />
-                  ))}
-                </div>
+              {!isPending && !error && (chains?.length ?? 0) === 0 && (
+                <p className="p-4 text-gray-500 text-sm">No networks available.</p>
               )}
             </div>
 
-            <div className="p-3 border-t border-white/10 text-center">
-              <span className="text-gray-500 text-xs">100+ chains supported</span>
-            </div>
+            {chains && (
+              <div className="p-3 border-t border-white/10 text-center">
+                <span className="text-gray-500 text-xs">{chains.length} networks available</span>
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -155,30 +145,29 @@ export function ChainSelector({ selectedChain, onSelectChain }: ChainSelectorPro
   );
 }
 
-function ChainItem({ 
-  chain, 
-  isSelected, 
-  onSelect 
-}: { 
-  chain: Chain; 
-  isSelected: boolean; 
+function ChainItem({
+  chain,
+  isSelected,
+  onSelect,
+}: {
+  chain: Chain;
+  isSelected: boolean;
   onSelect: () => void;
 }) {
   return (
     <button
       onClick={onSelect}
       className={`w-full flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${
-        isSelected 
-          ? 'bg-tiger-orange/20 border border-tiger-orange/30' 
+        isSelected
+          ? 'bg-tiger-orange/20 border border-tiger-orange/30'
           : 'hover:bg-white/5 border border-transparent'
       }`}
     >
-      <span className="text-xl">{chain.icon}</span>
       <div className="flex-1 text-left">
         <div className={`font-medium ${isSelected ? 'text-tiger-orange' : 'text-white'}`}>
           {chain.name}
         </div>
-        <div className="text-gray-500 text-xs">{chain.symbol}</div>
+        <div className="text-gray-500 text-xs">{chain.nativeSymbol}</div>
       </div>
       {isSelected && <Check className="w-4 h-4 text-tiger-orange" />}
     </button>

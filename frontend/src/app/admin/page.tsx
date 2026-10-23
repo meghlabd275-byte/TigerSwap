@@ -30,6 +30,8 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { useAdminStore, Blockchain, Token, LaunchpadProject } from '@/store/adminStore';
+import { login, logout } from '@/lib/auth';
+import { useAdminDashboard } from '@/hooks/useApi';
 
 type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'launchpad' | 'fees' | 'settings' | 'activity';
 
@@ -42,8 +44,7 @@ export default function AdminPage() {
     feeSettings,
     systemSettings,
     activityLogs,
-    stats,
-    authenticateAdmin,
+    setAdminAuthenticated,
     logoutAdmin,
     addBlockchain,
     updateBlockchain,
@@ -64,7 +65,12 @@ export default function AdminPage() {
   } = useAdminStore();
 
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [adminSeed, setAdminSeed] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
+  const [adminPassword, setAdminPassword] = useState('');
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const { data: dashboard, error: dashboardQueryError } = useAdminDashboard();
+  const dashboardError = dashboardQueryError instanceof Error ? dashboardQueryError.message : null;
   const [showAddBlockchain, setShowAddBlockchain] = useState(false);
   const [showAddToken, setShowAddToken] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
@@ -121,9 +127,28 @@ export default function AdminPage() {
     socialLinks: { twitter: '', telegram: '', discord: '' }
   });
 
-  const handleLogin = () => {
-    if (authenticateAdmin(adminSeed)) {
-      setAdminSeed('');
+  /**
+   * Signs the operator in with email and password.
+   *
+   * Authentication is performed by the API; the resulting session token is
+   * held in memory by the auth layer. A mnemonic is never requested or sent.
+   */
+  const handleLogin = async () => {
+    setLoginError(null);
+    setIsLoggingIn(true);
+    try {
+      const user = await login(adminEmail, adminPassword);
+      if (user.role !== 'admin' && user.role !== 'superadmin') {
+        await logout();
+        setLoginError('This account does not have admin access');
+        return;
+      }
+      setAdminAuthenticated(true, user.id);
+      setAdminPassword('');
+    } catch (error) {
+      setLoginError(error instanceof Error ? error.message : 'Sign-in failed');
+    } finally {
+      setIsLoggingIn(false);
     }
   };
 
@@ -175,22 +200,44 @@ export default function AdminPage() {
               <Shield className="w-10 h-10 text-white" />
             </div>
             <h1 className="text-3xl font-bold text-white mb-2">Admin Login</h1>
-            <p className="text-gray-400">Enter your master wallet seed phrase</p>
+            <p className="text-gray-400">Sign in with your operator account</p>
           </div>
-          <textarea
-            value={adminSeed}
-            onChange={(e) => setAdminSeed(e.target.value)}
-            placeholder="Enter 24-word seed phrase..."
-            rows={4}
-            className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-tiger-orange mb-4 font-mono"
-          />
-          <button
-            onClick={handleLogin}
-            disabled={adminSeed.split(' ').length !== 24}
-            className="w-full bg-tiger-orange hover:bg-tiger-accent disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold transition-colors"
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleLogin();
+            }}
+            className="space-y-4"
           >
-            Login
-          </button>
+            <input
+              type="email"
+              value={adminEmail}
+              onChange={(e) => setAdminEmail(e.target.value)}
+              placeholder="operator@example.com"
+              autoComplete="username"
+              required
+              className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-tiger-orange"
+            />
+            <input
+              type="password"
+              value={adminPassword}
+              onChange={(e) => setAdminPassword(e.target.value)}
+              placeholder="Password"
+              autoComplete="current-password"
+              required
+              className="w-full bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-tiger-orange"
+            />
+            {loginError && (
+              <p role="alert" className="text-red-400 text-sm">{loginError}</p>
+            )}
+            <button
+              type="submit"
+              disabled={isLoggingIn || !adminEmail || !adminPassword}
+              className="w-full bg-tiger-orange hover:bg-tiger-accent disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold transition-colors"
+            >
+              {isLoggingIn ? 'Signing in...' : 'Login'}
+            </button>
+          </form>
         </div>
       </div>
     );
@@ -279,35 +326,45 @@ export default function AdminPage() {
                 <div className="bg-white/5 rounded-2xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <Users className="w-8 h-8 text-tiger-orange" />
-                    <span className="text-green-400 text-sm">+12%</span>
                   </div>
-                  <p className="text-3xl font-bold text-white">{stats.totalUsers.toLocaleString()}</p>
+                  <p className="text-3xl font-bold text-white">
+                    {dashboard ? dashboard.totalUsers.toLocaleString() : '—'}
+                  </p>
                   <p className="text-gray-400 text-sm">Total Users</p>
                 </div>
                 <div className="bg-white/5 rounded-2xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <Activity className="w-8 h-8 text-tiger-orange" />
-                    <span className="text-green-400 text-sm">+8%</span>
                   </div>
-                  <p className="text-3xl font-bold text-white">{stats.totalTransactions.toLocaleString()}</p>
+                  <p className="text-3xl font-bold text-white">
+                    {dashboard ? dashboard.totalTransactions.toLocaleString() : '—'}
+                  </p>
                   <p className="text-gray-400 text-sm">Total Transactions</p>
                 </div>
                 <div className="bg-white/5 rounded-2xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <DollarSign className="w-8 h-8 text-tiger-orange" />
-                    <span className="text-green-400 text-sm">+15%</span>
                   </div>
-                  <p className="text-3xl font-bold text-white">${parseFloat(stats.totalVolume).toLocaleString()}</p>
+                  <p className="text-3xl font-bold text-white">
+                    {dashboard ? `$${dashboard.totalVolume.toLocaleString()}` : '—'}
+                  </p>
                   <p className="text-gray-400 text-sm">Total Volume</p>
                 </div>
                 <div className="bg-white/5 rounded-2xl p-6">
                   <div className="flex items-center justify-between mb-4">
                     <Wallet className="w-8 h-8 text-tiger-orange" />
                   </div>
-                  <p className="text-3xl font-bold text-white">${parseFloat(stats.totalRevenue).toLocaleString()}</p>
+                  <p className="text-3xl font-bold text-white">
+                    {dashboard ? `$${dashboard.totalRevenue.toLocaleString()}` : '—'}
+                  </p>
                   <p className="text-gray-400 text-sm">Total Revenue</p>
                 </div>
               </div>
+              {dashboardError && (
+                <p role="alert" className="text-red-400 text-sm mb-6">
+                  Dashboard data is unavailable: {dashboardError}
+                </p>
+              )}
 
               <div className="grid md:grid-cols-3 gap-6">
                 <div className="bg-white/5 rounded-2xl p-6">
@@ -751,7 +808,7 @@ export default function AdminPage() {
                           <td className="px-6 py-4 text-white">{log.action}</td>
                           <td className="px-6 py-4 text-gray-400">{log.details}</td>
                           <td className="px-6 py-4 text-gray-400 text-sm">{new Date(log.timestamp).toLocaleString()}</td>
-                          <td className="px-6 py-4 text-gray-400 font-mono text-sm">{log.ipAddress}</td>
+                          <td className="px-6 py-4 text-gray-400 font-mono text-sm">{log.source}</td>
                         </tr>
                       ))}
                     </tbody>
