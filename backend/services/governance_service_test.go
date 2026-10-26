@@ -16,6 +16,8 @@ import (
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 
+	"github.com/google/uuid"
+
 	"tigerswap/backend/models"
 )
 
@@ -854,5 +856,63 @@ func TestCurrentEpochIsWeekly(t *testing.T) {
 	}
 	if CurrentEpoch(base.Add(time.Duration(weekSeconds)*time.Second)) != 11 {
 		t.Fatal("epoch should advance after one week")
+	}
+}
+
+// TestGetBribesPublicRoute exercises the authenticated read route the
+// frontend's gauge panel uses: GET /governance/bribes?gauge_id=...
+func TestGetBribesPublicRoute(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := NewGovernanceService(db)
+	userID := uuid.NewString()
+
+	gauge := models.Gauge{Name: "RUSD/TGR", GaugeType: "liquidity", Active: true}
+	if err := db.Create(&gauge).Error; err != nil {
+		t.Fatalf("create gauge: %v", err)
+	}
+
+	for _, amount := range []string{"1000000000000000000000", "2500000000000000000000"} {
+		rec := callAs(t, userID, svc.AddBribe, http.MethodPost, "/governance/bribes", map[string]string{
+			"gauge_id": gauge.ID.String(), "token": "RUSD", "amount": amount,
+		}, nil)
+		if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+			t.Fatalf("add bribe: status %d body %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	rec := callAs(t, userID, svc.GetBribes, http.MethodGet,
+		"/governance/bribes?gauge_id="+gauge.ID.String(), nil, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get bribes: status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Success bool           `json:"success"`
+		Bribes  []models.Bribe `json:"bribes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode bribes: %v", err)
+	}
+	if !payload.Success {
+		t.Fatalf("expected success envelope, got %s", rec.Body.String())
+	}
+	if len(payload.Bribes) != 2 {
+		t.Fatalf("expected 2 bribes, got %d", len(payload.Bribes))
+	}
+	// Newest epoch first.
+	if payload.Bribes[0].Amount != "2500000000000000000000" {
+		t.Fatalf("expected newest bribe first, got %s", payload.Bribes[0].Amount)
+	}
+}
+
+// TestGetBribesRejectsMissingGaugeID checks the handler rejects a request with
+// no gauge filter rather than returning every bribe in the database.
+func TestGetBribesRejectsMissingGaugeID(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := NewGovernanceService(db)
+
+	rec := callAs(t, "user-x", svc.GetBribes, http.MethodGet, "/governance/bribes", nil, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing gauge id, got %d", rec.Code)
 	}
 }

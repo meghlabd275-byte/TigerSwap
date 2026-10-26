@@ -276,6 +276,7 @@ func main() {
 			protected.GET("/governance/gauges", governanceService.GetGauges)
 			protected.POST("/governance/vote", governanceService.Vote)
 			protected.POST("/governance/bribes", governanceService.AddBribe)
+			protected.GET("/governance/bribes", governanceService.GetBribes)
 			protected.POST("/governance/bribes/:id/claim", governanceService.ClaimBribe)
 			protected.GET("/governance/boost", governanceService.GetBoost)
 		}

@@ -493,8 +493,10 @@ func (s *GovernanceService) GetBribes(c *gin.Context) {
 		return
 	}
 
+	// Order by epoch then creation time so the listing is deterministic when
+	// several bribes land in the same epoch.
 	var bribes []models.Bribe
-	if err := s.db.Where("gauge_id = ?", gaugeID).Order("epoch DESC").Find(&bribes).Error; err != nil {
+	if err := s.db.Where("gauge_id = ?", gaugeID).Order("epoch DESC, created_at DESC").Find(&bribes).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load bribes"})
 		return
 	}
