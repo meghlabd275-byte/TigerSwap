@@ -8,12 +8,17 @@
  */
 
 import { api, apiRequest } from "./apiClient";
+import { integer, object, string } from "./validation";
 import {
   AccountBalance,
   AdminDashboard,
+  Bribe,
+  BribeClaimResult,
   Chain,
   FuturesMarket,
   FuturesMarketInput,
+  Gauge,
+  GovernanceBoost,
   MarginListing,
   MarginListingInput,
   MarketStats,
@@ -28,11 +33,18 @@ import {
   Trade,
   UserProfile,
   UserTransaction,
+  VeLock,
   accountBalanceListValidator,
   adminDashboardValidator,
   chainListValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
+  bribeClaimResultValidator,
+  bribeListValidator,
+  bribeValidator,
+  gaugeListValidator,
+  gaugeValidator,
+  governanceBoostValidator,
   marginListingListValidator,
   marginListingValidator,
   marketStatsValidator,
@@ -47,6 +59,8 @@ import {
   tradeListValidator,
   userProfileValidator,
   userTransactionListValidator,
+  veLockListValidator,
+  veLockValidator,
 } from "./types";
 
 export const endpoints = {
@@ -232,5 +246,72 @@ export const endpoints = {
 
   async deleteMarginListing(id: string): Promise<void> {
     await apiRequest(`/admin/margin/markets/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Governance: veTGR locks, gauge voting and the bribe market. */
+
+  async getLocks(): Promise<VeLock[]> {
+    const body = await api.get("/governance/locks");
+    return veLockListValidator(body);
+  },
+
+  async createLock(payload: { amount: string; duration_seconds: number }): Promise<VeLock> {
+    const body = await api.post("/governance/locks", payload);
+    return veLockValidator(body);
+  },
+
+  async withdrawLock(id: string): Promise<void> {
+    await api.post(`/governance/locks/${encodeURIComponent(id)}/withdraw`, {});
+  },
+
+  async getGauges(activeOnly = false): Promise<Gauge[]> {
+    const body = await api.get("/governance/gauges", { query: activeOnly ? { active: "true" } : undefined });
+    return gaugeListValidator(body);
+  },
+
+  async vote(gaugeId: string, weight: string): Promise<{ gauge_id: string; weight: string; epoch: number }> {
+    const body = await api.post("/governance/vote", { gauge_id: gaugeId, weight });
+    return object<{ gauge_id: string; weight: string; epoch: number }>({
+      gauge_id: string,
+      weight: string,
+      epoch: integer,
+    })(body);
+  },
+
+  async getBribes(gaugeId: string): Promise<Bribe[]> {
+    const body = await api.get("/governance/bribes", { query: { gauge_id: gaugeId } });
+    return bribeListValidator(body);
+  },
+
+  async addBribe(payload: { gauge_id: string; token: string; amount: string }): Promise<Bribe> {
+    const body = await api.post("/governance/bribes", payload);
+    return bribeValidator(body);
+  },
+
+  async claimBribe(id: string): Promise<BribeClaimResult> {
+    const body = await api.post(`/governance/bribes/${encodeURIComponent(id)}/claim`, {});
+    return bribeClaimResultValidator(body);
+  },
+
+  async getBoost(stakedAmount: string): Promise<GovernanceBoost> {
+    const body = await api.get("/governance/boost", { query: { staked_amount: stakedAmount } });
+    return governanceBoostValidator(body);
+  },
+
+  /** Admin: gauge creation and emission weights. */
+
+  async getAdminGauges(): Promise<Gauge[]> {
+    const body = await api.get("/admin/gauges");
+    return gaugeListValidator(body);
+  },
+
+  async createGauge(payload: { name: string; gauge_type: string; reference?: string }): Promise<Gauge> {
+    const body = await api.post("/admin/gauges", payload);
+    const envelope = object<{ gauge: Gauge }>({ gauge: gaugeValidator })(body);
+    return envelope.gauge;
+  },
+
+  async setGaugeWeight(id: string, payload: { weight: string; active?: boolean }): Promise<void> {
+    await api.put(`/admin/gauges/${encodeURIComponent(id)}/weight`, payload);
   },
 };

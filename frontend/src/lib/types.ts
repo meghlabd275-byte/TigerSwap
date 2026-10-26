@@ -10,6 +10,7 @@ import {
   array,
   arrayLenient,
   boolean,
+  displayText,
   hex,
   integer,
   nonNegative,
@@ -496,7 +497,15 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
     }
     if (value && typeof value === "object") {
       const record = value as Record<string, unknown>;
-      const items = record.markets ?? record.listings ?? record.balances ?? record.items;
+      const items =
+        record.markets ??
+        record.listings ??
+        record.balances ??
+        record.items ??
+        record.locks ??
+        record.gauges ??
+        record.bribes ??
+        record.proposals;
       if (items !== undefined) {
         return arrayLenient(element)(items, `${path}.items`);
       }
@@ -610,3 +619,128 @@ export function pageValidator<T>(item: (value: unknown, path?: string) => T): (v
     pageSize: integer,
   });
 }
+
+/**
+ * Governance: veTGR locks, gauge voting and the bribe market.
+ *
+ * Token amounts are base-10 strings end to end so no precision is lost
+ * between the contract, the API and the UI.
+ */
+
+/** A veTGR lock with its live, decaying voting power. */
+export interface VeLock {
+  id: string;
+  user_id: string;
+  amount: string;
+  start_time: string;
+  unlock_time: string;
+  withdrawn: boolean;
+  voting_power: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const veLockValidator = object<VeLock>(
+  {
+    id: string,
+    user_id: withDefault(string, ""),
+    amount: string,
+    start_time: withDefault(timestamp, new Date(0).toISOString()),
+    unlock_time: timestamp,
+    withdrawn: withDefault(boolean, false),
+    voting_power: withDefault(string, "0"),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["user_id", "start_time", "withdrawn", "voting_power", "created_at", "updated_at"] },
+);
+
+export const veLockListValidator = listingArray(veLockValidator);
+
+/** A gauge: an emission target that veTGR holders vote on. */
+export interface Gauge {
+  id: string;
+  name: string;
+  gauge_type: string;
+  reference: string;
+  weight: string;
+  total_voted: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const gaugeValidator = object<Gauge>(
+  {
+    id: string,
+    name: displayText,
+    gauge_type: string,
+    reference: withDefault(string, ""),
+    weight: withDefault(string, "0"),
+    total_voted: withDefault(string, "0"),
+    active: withDefault(boolean, true),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["reference", "weight", "total_voted", "active", "created_at", "updated_at"] },
+);
+
+export const gaugeListValidator = listingArray(gaugeValidator);
+
+/** A bribe funding a gauge's voters for one epoch. */
+export interface Bribe {
+  id: string;
+  gauge_id: string;
+  epoch: number;
+  token: string;
+  amount: string;
+  total_weight: string;
+  funder_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const bribeValidator = object<Bribe>(
+  {
+    id: string,
+    gauge_id: string,
+    epoch: integer,
+    token: symbol,
+    amount: string,
+    total_weight: withDefault(string, "0"),
+    funder_id: withDefault(string, ""),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["total_weight", "funder_id", "created_at", "updated_at"] },
+);
+
+export const bribeListValidator = listingArray(bribeValidator);
+
+/** The result of a bribe claim. */
+export interface BribeClaimResult {
+  success: boolean;
+  token: string;
+  amount: string;
+}
+
+export const bribeClaimResultValidator = object<BribeClaimResult>({
+  success: boolean,
+  token: symbol,
+  amount: string,
+});
+
+/** A user's farm boost derived from their veTGR balance. */
+export interface GovernanceBoost {
+  voting_power: string;
+  staked_amount: string;
+  boost_bps: string;
+  boost_multiplier: string;
+}
+
+export const governanceBoostValidator = object<GovernanceBoost>({
+  voting_power: withDefault(string, "0"),
+  staked_amount: withDefault(string, "0"),
+  boost_bps: withDefault(string, "10000"),
+  boost_multiplier: withDefault(string, "1"),
+});

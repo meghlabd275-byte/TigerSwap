@@ -24,7 +24,8 @@ import {
   ChevronRight,
   Gauge,
   LineChart,
-  Clock
+  Clock,
+  Vote
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -36,8 +37,9 @@ import { ChainSelector } from '@/components/ChainSelector';
 import { Portfolio } from '@/components/Portfolio';
 import { PerpetualTrading } from '@/components/PerpetualTrading';
 import { CrossChain } from '@/components/CrossChain';
+import { Governance } from '@/components/Governance';
 
-type Tab = 'swap' | 'perpetuals' | 'cross-chain' | 'portfolio';
+type Tab = 'swap' | 'perpetuals' | 'cross-chain' | 'portfolio' | 'governance';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -66,6 +68,7 @@ export default function Home() {
     { id: 'perpetuals' as const, label: 'Perpetuals', icon: TrendingUp },
     { id: 'cross-chain' as const, label: 'Cross-Chain', icon: Globe },
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
+    { id: 'governance' as const, label: 'Governance', icon: Vote },
   ];
 
   return (
@@ -132,6 +135,7 @@ export default function Home() {
                 {activeTab === 'perpetuals' && <PerpetualTrading />}
                 {activeTab === 'cross-chain' && <CrossChain />}
                 {activeTab === 'portfolio' && <Portfolio />}
+                {activeTab === 'governance' && <Governance />}
               </motion.div>
             </AnimatePresence>
           </div>
