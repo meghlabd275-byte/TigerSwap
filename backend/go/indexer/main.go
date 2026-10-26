@@ -25,11 +25,11 @@ import (
 
 // IndexerConfig holds indexer configuration
 type IndexerConfig struct {
-	RPCURLs          []string
-	StartBlock       uint64
-	Contracts        []ContractConfig
-	RedisURL         string
-	HealthCheckPort  int
+	RPCURLs           []string
+	StartBlock        uint64
+	Contracts         []ContractConfig
+	RedisURL          string
+	HealthCheckPort   int
 	ConfirmationDepth uint64
 }
 
@@ -43,69 +43,69 @@ type ContractConfig struct {
 
 // IndexedEvent represents an indexed event
 type IndexedEvent struct {
-	ID          uint64          `json:"id"`
-	Contract    string          `json:"contract"`
-	Event      string          `json:"event"`
-	TransactionHash string     `json:"transaction_hash"`
-	BlockNumber uint64        `json:"block_number"`
-	BlockHash   string        `json:"block_hash"`
-	Timestamp   time.Time      `json:"timestamp"`
-	LogIndex    uint           `json:"log_index"`
-	Data        map[string]interface{} `json:"data"`
+	ID              uint64                 `json:"id"`
+	Contract        string                 `json:"contract"`
+	Event           string                 `json:"event"`
+	TransactionHash string                 `json:"transaction_hash"`
+	BlockNumber     uint64                 `json:"block_number"`
+	BlockHash       string                 `json:"block_hash"`
+	Timestamp       time.Time              `json:"timestamp"`
+	LogIndex        uint                   `json:"log_index"`
+	Data            map[string]interface{} `json:"data"`
 }
 
 // Swap represents a swap event data
 type Swap struct {
 	ID              uint64    `json:"id"`
-	TransactionHash string   `json:"transaction_hash"`
-	BlockNumber    uint64    `json:"block_number"`
-	Timestamp      time.Time `json:"timestamp"`
+	TransactionHash string    `json:"transaction_hash"`
+	BlockNumber     uint64    `json:"block_number"`
+	Timestamp       time.Time `json:"timestamp"`
 	Sender          string    `json:"sender"`
-	FromToken      string    `json:"from_token"`
-	ToToken        string    `json:"to_token"`
-	FromAmount     string    `json:"from_amount"`
-	ToAmount       string    `json:"to_amount"`
-	FromAddress    string    `json:"from_address"`
-	ToAddress      string    `json:"to_address"`
-	GasUsed        uint64    `json:"gas_used"`
-	GasPrice       string    `json:"gas_price"`
+	FromToken       string    `json:"from_token"`
+	ToToken         string    `json:"to_token"`
+	FromAmount      string    `json:"from_amount"`
+	ToAmount        string    `json:"to_amount"`
+	FromAddress     string    `json:"from_address"`
+	ToAddress       string    `json:"to_address"`
+	GasUsed         uint64    `json:"gas_used"`
+	GasPrice        string    `json:"gas_price"`
 }
 
 // LiquidityChange represents liquidity events
 type LiquidityChange struct {
 	ID              uint64    `json:"id"`
-	TransactionHash string   `json:"transaction_hash"`
-	BlockNumber    uint64    `json:"block_number"`
-	Timestamp      time.Time `json:"timestamp"`
-	Pair           string    `json:"pair"`
-	LPToken        string    `json:"lp_token"`
-	Provider       string    `json:"provider"`
-	Amount0        string    `json:"amount_0"`
-	Amount1        string    `json:"amount_1"`
-	Liquidity      string    `json:"liquidity"`
-	Action         string    `json:"action"` // add or remove
+	TransactionHash string    `json:"transaction_hash"`
+	BlockNumber     uint64    `json:"block_number"`
+	Timestamp       time.Time `json:"timestamp"`
+	Pair            string    `json:"pair"`
+	LPToken         string    `json:"lp_token"`
+	Provider        string    `json:"provider"`
+	Amount0         string    `json:"amount_0"`
+	Amount1         string    `json:"amount_1"`
+	Liquidity       string    `json:"liquidity"`
+	Action          string    `json:"action"` // add or remove
 }
 
 // IndexerStats holds indexer statistics
 type IndexerStats struct {
-	EventsProcessed   uint64
-	SwapsIndexed     uint64
-	LiquidityIndexed uint64
+	EventsProcessed    uint64
+	SwapsIndexed       uint64
+	LiquidityIndexed   uint64
 	LastBlockProcessed uint64
-	LastUpdate       time.Time
+	LastUpdate         time.Time
 }
 
 // Indexer represents the blockchain indexer
 type Indexer struct {
-	config   *IndexerConfig
-	client   *ethclient.Client
-	redis    *redis.Client
-	abis    map[string]abi.ABI
-	stats    IndexerStats
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	config    *IndexerConfig
+	client    *ethclient.Client
+	redis     *redis.Client
+	abis      map[string]abi.ABI
+	stats     IndexerStats
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 	isRunning bool
 	contracts map[string]common.Address
 }
@@ -149,13 +149,13 @@ func NewIndexer(config *IndexerConfig) (*Indexer, error) {
 
 	return &Indexer{
 		config:    config,
-		client:   client,
-		redis:   redisClient,
-		abis:    abis,
+		client:    client,
+		redis:     redisClient,
+		abis:      abis,
 		contracts: contracts,
-		ctx:     ctx,
-		cancel:  cancel,
-		stats:   IndexerStats{},
+		ctx:       ctx,
+		cancel:    cancel,
+		stats:     IndexerStats{},
 	}, nil
 }
 
@@ -389,8 +389,8 @@ func (i *Indexer) processSwap(logEntry *types.Log, event *IndexedEvent, block *t
 	swap := Swap{
 		ID:              uint64(time.Now().UnixNano()),
 		TransactionHash: event.TransactionHash,
-		BlockNumber:    event.BlockNumber,
-		Timestamp:      event.Timestamp,
+		BlockNumber:     event.BlockNumber,
+		Timestamp:       event.Timestamp,
 	}
 
 	// Extract data
@@ -415,9 +415,9 @@ func (i *Indexer) processLiquidity(logEntry *types.Log, event *IndexedEvent, blo
 	liquidity := LiquidityChange{
 		ID:              uint64(time.Now().UnixNano()),
 		TransactionHash: event.TransactionHash,
-		BlockNumber:    event.BlockNumber,
-		Timestamp:      event.Timestamp,
-		Action:         action,
+		BlockNumber:     event.BlockNumber,
+		Timestamp:       event.Timestamp,
+		Action:          action,
 	}
 
 	i.mu.Lock()
@@ -536,8 +536,8 @@ func (i *Indexer) GetSwaps(ctx context.Context, startBlock, endBlock uint64) ([]
 				swap := Swap{
 					ID:              event.ID,
 					TransactionHash: event.TransactionHash,
-					BlockNumber:    event.BlockNumber,
-					Timestamp:      event.Timestamp,
+					BlockNumber:     event.BlockNumber,
+					Timestamp:       event.Timestamp,
 				}
 				swaps = append(swaps, swap)
 			}
@@ -567,10 +567,10 @@ func getEnvUint64(key string, defaultValue uint64) uint64 {
 
 func main() {
 	config := &IndexerConfig{
-		RPCURLs:          []string{getEnv("RPC_URL", "https://eth.llamarpc.com")},
-		StartBlock:       getEnvUint64("START_BLOCK", 18000000),
-		RedisURL:         getEnv("REDIS_URL", "redis://localhost:6379"),
-		HealthCheckPort:  8096,
+		RPCURLs:           []string{getEnv("RPC_URL", "https://eth.llamarpc.com")},
+		StartBlock:        getEnvUint64("START_BLOCK", 18000000),
+		RedisURL:          getEnv("REDIS_URL", "redis://localhost:6379"),
+		HealthCheckPort:   8096,
 		ConfirmationDepth: 12,
 		Contracts: []ContractConfig{
 			{

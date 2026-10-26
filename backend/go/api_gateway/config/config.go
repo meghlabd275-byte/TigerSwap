@@ -44,8 +44,8 @@ type Config struct {
 // RateLimitConfig represents rate limiting configuration
 type RateLimitConfig struct {
 	RequestsPerSecond int
-	Burst            int
-	Enabled          bool
+	Burst             int
+	Enabled           bool
 }
 
 // RedisConfig represents Redis configuration
@@ -79,8 +79,8 @@ type TLSConfig struct {
 type UpstreamConfig struct {
 	DEXAggregator string
 	Blockchain    string
-	PriceOracle  string
-	Wallet       string
+	PriceOracle   string
+	Wallet        string
 }
 
 // JWTConfig represents JWT configuration
@@ -138,8 +138,8 @@ func Load() (*Config, error) {
 	cfg.Upstream = UpstreamConfig{
 		DEXAggregator: getEnv("UPSTREAM_DEX_AGGREGATOR", "http://localhost:8081"),
 		Blockchain:    getEnv("UPSTREAM_BLOCKCHAIN", "http://localhost:8082"),
-		PriceOracle:  getEnv("UPSTREAM_PRICE_ORACLE", "http://localhost:8083"),
-		Wallet:       getEnv("UPSTREAM_WALLET", "http://localhost:8084"),
+		PriceOracle:   getEnv("UPSTREAM_PRICE_ORACLE", "http://localhost:8083"),
+		Wallet:        getEnv("UPSTREAM_WALLET", "http://localhost:8084"),
 	}
 
 	// Request timeout

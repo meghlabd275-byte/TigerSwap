@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -569,8 +570,8 @@ func (b *BlockchainClient) GetBalanceHandler(c *gin.Context) {
 		return
 	}
 
-	if address == "" {
-		c.JSON(400, gin.H{"error": "address required"})
+	if !common.IsHexAddress(address) {
+		c.JSON(400, gin.H{"error": "invalid address"})
 		return
 	}
 
@@ -594,8 +595,8 @@ func (b *BlockchainClient) GetTokenBalanceHandler(c *gin.Context) {
 		return
 	}
 
-	if address == "" || token == "" {
-		c.JSON(400, gin.H{"error": "address and token required"})
+	if !common.IsHexAddress(address) || !common.IsHexAddress(token) {
+		c.JSON(400, gin.H{"error": "invalid address or token"})
 		return
 	}
 
@@ -608,32 +609,37 @@ func (b *BlockchainClient) GetTokenBalanceHandler(c *gin.Context) {
 	c.JSON(200, balance)
 }
 
+// SendTransactionHandler broadcasts a client-signed transaction. No private key
+// is accepted over HTTP: the client signs locally and posts the signed payload.
 func (b *BlockchainClient) SendTransactionHandler(c *gin.Context) {
 	var req struct {
-		ChainID      int64  `json:"chain_id" binding:"required"`
-		PrivateKey   string `json:"private_key" binding:"required"`
-		ToAddress    string `json:"to_address" binding:"required"`
-		Amount       string `json:"amount" binding:"required"`
-		TokenAddress string `json:"token_address"`
+		ChainID   int64  `json:"chain_id" binding:"required"`
+		SignedTx  string `json:"signed_tx" binding:"required"`
+		ToAddress string `json:"to_address"`
+		Amount    string `json:"amount"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	amount := new(big.Int)
-	amount.SetString(req.Amount, 10)
-
-	txHash, err := b.SendTransaction(c.Request.Context(), req.ChainID, req.PrivateKey, req.ToAddress, amount, req.TokenAddress, nil)
+	client, err := b.GetClient(req.ChainID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, gin.H{
+	txHash, err := broadcastSignedTransaction(c.Request.Context(), client, req.SignedTx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"tx_hash": txHash,
+		"status":  "submitted",
 	})
 }
 

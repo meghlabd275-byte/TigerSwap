@@ -11,62 +11,62 @@ import (
 
 // LaunchpadService handles IEO/IDO/Launchpad functionality
 type LaunchpadService struct {
-	blockchain   *BlockchainClient
-	priceAgg     *PriceAggregator
-	mu           sync.RWMutex
-	projects     map[string]*LaunchpadProject // projectID -> project
-	allocations  map[string][]*Allocation    // projectID -> allocations
-	tiers        map[string]*TierConfig
+	blockchain  *BlockchainClient
+	priceAgg    *PriceAggregator
+	mu          sync.RWMutex
+	projects    map[string]*LaunchpadProject // projectID -> project
+	allocations map[string][]*Allocation     // projectID -> allocations
+	tiers       map[string]*TierConfig
 }
 
 // LaunchpadProject represents a launchpad project
 type LaunchpadProject struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description"`
-	TokenAddress    string    `json:"token_address"`
-	TokenSymbol     string    `json:"token_symbol"`
-	TokenName       string    `json:"token_name"`
-	TokenDecimals   int       `json:"token_decimals"`
-	TotalSupply     string    `json:"total_supply"`
-	TokenPrice      string    `json:"token_price"` // Price in payment token
-	PaymentToken    string    `json:"payment_token"` // USDT, USDC, etc.
-	MinPurchase     string    `json:"min_purchase"`
-	MaxPurchase     string    `json:"max_purchase"`
-	SoftCap         string    `json:"soft_cap"`
-	HardCap         string    `json:"hard_cap"`
-	StartTime       time.Time `json:"start_time"`
-	EndTime         time.Time `json:"end_time"`
-	Status          string    `json:"status"` // upcoming, active, completed, cancelled
-	RaisedAmount    string    `json:"raised_amount"`
-	Participants    int       `json:"participants"`
-	WebsiteURL      string    `json:"website_url"`
-	WhitepaperURL   string    `json:"whitepaper_url"`
-	LogoURL         string    `json:"logo_url"`
-	TwitterURL      string    `json:"twitter_url"`
-	TelegramURL     string    `json:"telegram_url"`
-	DiscordURL      string    `json:"discord_url"`
-	CreatedBy       string    `json:"created_by"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	TokenAddress  string    `json:"token_address"`
+	TokenSymbol   string    `json:"token_symbol"`
+	TokenName     string    `json:"token_name"`
+	TokenDecimals int       `json:"token_decimals"`
+	TotalSupply   string    `json:"total_supply"`
+	TokenPrice    string    `json:"token_price"`   // Price in payment token
+	PaymentToken  string    `json:"payment_token"` // USDT, USDC, etc.
+	MinPurchase   string    `json:"min_purchase"`
+	MaxPurchase   string    `json:"max_purchase"`
+	SoftCap       string    `json:"soft_cap"`
+	HardCap       string    `json:"hard_cap"`
+	StartTime     time.Time `json:"start_time"`
+	EndTime       time.Time `json:"end_time"`
+	Status        string    `json:"status"` // upcoming, active, completed, cancelled
+	RaisedAmount  string    `json:"raised_amount"`
+	Participants  int       `json:"participants"`
+	WebsiteURL    string    `json:"website_url"`
+	WhitepaperURL string    `json:"whitepaper_url"`
+	LogoURL       string    `json:"logo_url"`
+	TwitterURL    string    `json:"twitter_url"`
+	TelegramURL   string    `json:"telegram_url"`
+	DiscordURL    string    `json:"discord_url"`
+	CreatedBy     string    `json:"created_by"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // Allocation represents user allocation
 type Allocation struct {
-	UserAddress    string    `json:"user_address"`
-	ProjectID     string    `json:"project_id"`
-	AllocatedAmount string   `json:"allocated_amount"`
-	ClaimedAmount  string    `json:"claimed_amount"`
-	ClaimedAt      *time.Time `json:"claimed_at"`
-	Tier           string    `json:"tier"`
-	Status         string    `json:"status"` // pending, claimable, claimed
+	UserAddress     string     `json:"user_address"`
+	ProjectID       string     `json:"project_id"`
+	AllocatedAmount string     `json:"allocated_amount"`
+	ClaimedAmount   string     `json:"claimed_amount"`
+	ClaimedAt       *time.Time `json:"claimed_at"`
+	Tier            string     `json:"tier"`
+	Status          string     `json:"status"` // pending, claimable, claimed
 }
 
 // TierConfig represents tier configuration
 type TierConfig struct {
-	Name           string  `json:"name"`
-	MinStake       string  `json:"min_stake"`
-	Allocation    string  `json:"allocation"`
-	MaxAllocation  string  `json:"max_allocation"`
+	Name          string `json:"name"`
+	MinStake      string `json:"min_stake"`
+	Allocation    string `json:"allocation"`
+	MaxAllocation string `json:"max_allocation"`
 }
 
 // VestingSchedule represents token vesting
@@ -91,31 +91,31 @@ func NewLaunchpadService(blockchain *BlockchainClient, priceAgg *PriceAggregator
 			"diamond": {
 				Name:          "Diamond",
 				MinStake:      "100000",
-				Allocation:   "5000",
+				Allocation:    "5000",
 				MaxAllocation: "50000",
 			},
 			"platinum": {
 				Name:          "Platinum",
 				MinStake:      "50000",
-				Allocation:   "2500",
+				Allocation:    "2500",
 				MaxAllocation: "25000",
 			},
 			"gold": {
 				Name:          "Gold",
 				MinStake:      "10000",
-				Allocation:   "1000",
+				Allocation:    "1000",
 				MaxAllocation: "10000",
 			},
 			"silver": {
 				Name:          "Silver",
 				MinStake:      "1000",
-				Allocation:   "500",
+				Allocation:    "500",
 				MaxAllocation: "5000",
 			},
 			"bronze": {
 				Name:          "Bronze",
 				MinStake:      "0",
-				Allocation:   "100",
+				Allocation:    "100",
 				MaxAllocation: "1000",
 			},
 		},
@@ -130,30 +130,30 @@ func (s *LaunchpadService) CreateProject(ctx context.Context, creator, name, des
 	}
 
 	project := &LaunchpadProject{
-		ID:             fmt.Sprintf("proj_%d", time.Now().UnixNano()),
-		Name:           name,
-		Description:    description,
-		TokenAddress:   tokenAddress,
+		ID:            fmt.Sprintf("proj_%d", time.Now().UnixNano()),
+		Name:          name,
+		Description:   description,
+		TokenAddress:  tokenAddress,
 		TokenSymbol:   tokenSymbol,
-		TokenName:      tokenName,
+		TokenName:     tokenName,
 		TokenDecimals: 18,
-		TotalSupply:    totalSupply,
-		TokenPrice:     tokenPrice,
-		PaymentToken:   paymentToken,
-		MinPurchase:    minPurchase,
-		MaxPurchase:    maxPurchase,
-		SoftCap:        softCap,
-		HardCap:        hardCap,
-		StartTime:      startTime,
-		EndTime:        endTime,
-		Status:         "upcoming",
-		RaisedAmount:   "0",
-		Participants:   0,
-		WebsiteURL:     websiteURL,
-		WhitepaperURL:  whitepaperURL,
-		LogoURL:        logoURL,
-		CreatedBy:      creator,
-		CreatedAt:      time.Now(),
+		TotalSupply:   totalSupply,
+		TokenPrice:    tokenPrice,
+		PaymentToken:  paymentToken,
+		MinPurchase:   minPurchase,
+		MaxPurchase:   maxPurchase,
+		SoftCap:       softCap,
+		HardCap:       hardCap,
+		StartTime:     startTime,
+		EndTime:       endTime,
+		Status:        "upcoming",
+		RaisedAmount:  "0",
+		Participants:  0,
+		WebsiteURL:    websiteURL,
+		WhitepaperURL: whitepaperURL,
+		LogoURL:       logoURL,
+		CreatedBy:     creator,
+		CreatedAt:     time.Now(),
 	}
 
 	s.mu.Lock()
@@ -218,12 +218,12 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 	tier := s.determineTier(userAddress)
 
 	allocation := &Allocation{
-		UserAddress:    userAddress,
-		ProjectID:     projectID,
+		UserAddress:     userAddress,
+		ProjectID:       projectID,
 		AllocatedAmount: amount,
-		ClaimedAmount:  "0",
-		Tier:          tier,
-		Status:        "pending",
+		ClaimedAmount:   "0",
+		Tier:            tier,
+		Status:          "pending",
 	}
 
 	s.allocations[projectID] = append(s.allocations[projectID], allocation)
@@ -343,24 +343,24 @@ func (s *LaunchpadService) GetTiers() map[string]*TierConfig {
 
 func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 	var req struct {
-		Creator       string  `json:"creator" binding:"required"`
-		Name          string  `json:"name" binding:"required"`
-		Description   string  `json:"description"`
-		TokenAddress  string  `json:"token_address" binding:"required"`
-		TokenSymbol   string  `json:"token_symbol" binding:"required"`
-		TokenName     string  `json:"token_name" binding:"required"`
-		TotalSupply   string  `json:"total_supply" binding:"required"`
-		TokenPrice    string  `json:"token_price" binding:"required"`
-		PaymentToken  string  `json:"payment_token" binding:"required"`
-		MinPurchase   string  `json:"min_purchase"`
-		MaxPurchase   string  `json:"max_purchase"`
-		SoftCap       string  `json:"soft_cap"`
-		HardCap       string  `json:"hard_cap"`
-		StartTime     string  `json:"start_time" binding:"required"`
-		EndTime       string  `json:"end_time" binding:"required"`
-		WebsiteURL     string  `json:"website_url"`
-		WhitepaperURL string  `json:"whitepaper_url"`
-		LogoURL       string  `json:"logo_url"`
+		Creator       string `json:"creator" binding:"required"`
+		Name          string `json:"name" binding:"required"`
+		Description   string `json:"description"`
+		TokenAddress  string `json:"token_address" binding:"required"`
+		TokenSymbol   string `json:"token_symbol" binding:"required"`
+		TokenName     string `json:"token_name" binding:"required"`
+		TotalSupply   string `json:"total_supply" binding:"required"`
+		TokenPrice    string `json:"token_price" binding:"required"`
+		PaymentToken  string `json:"payment_token" binding:"required"`
+		MinPurchase   string `json:"min_purchase"`
+		MaxPurchase   string `json:"max_purchase"`
+		SoftCap       string `json:"soft_cap"`
+		HardCap       string `json:"hard_cap"`
+		StartTime     string `json:"start_time" binding:"required"`
+		EndTime       string `json:"end_time" binding:"required"`
+		WebsiteURL    string `json:"website_url"`
+		WhitepaperURL string `json:"whitepaper_url"`
+		LogoURL       string `json:"logo_url"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -386,7 +386,7 @@ func (s *LaunchpadService) GetProjectsHandler(c *gin.Context) {
 	projects := s.GetProjects(status)
 	c.JSON(200, gin.H{
 		"projects": projects,
-		"count":   len(projects),
+		"count":    len(projects),
 	})
 }
 
@@ -441,9 +441,9 @@ func (s *LaunchpadService) ClaimTokensHandler(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"success":      true,
-		"claimed":      amount,
-		"message":      "Tokens claimed successfully",
+		"success": true,
+		"claimed": amount,
+		"message": "Tokens claimed successfully",
 	})
 }
 

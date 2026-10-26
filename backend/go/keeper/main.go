@@ -23,35 +23,35 @@ import (
 
 // KeeperConfig holds keeper configuration
 type KeeperConfig struct {
-	PrivateKey       string
-	RPCURLs          []string
-	HealthCheckPort  int
+	PrivateKey        string
+	RPCURLs           []string
+	HealthCheckPort   int
 	ExecutionInterval time.Duration
-	MaxGasPrice      *big.Int
+	MaxGasPrice       *big.Int
 	LiquidatorAddress string
 }
 
 // Position represents a trading position
 type Position struct {
-	ID          uint64    `json:"id"`
-	Owner       string    `json:"owner"`
-	Pair        string    `json:"pair"`
-	Side        string    `json:"side"`
-	Size        *big.Int `json:"size"`
-	Collateral  *big.Int `json:"collateral"`
-	EntryPrice  *big.Int `json:"entry_price"`
-	MarkPrice   *big.Int `json:"mark_price"`
-	Leverage    *big.Int `json:"leverage"`
-	LiqPrice    *big.Int `json:"liq_price"`
-	Status      string    `json:"status"`
+	ID         uint64   `json:"id"`
+	Owner      string   `json:"owner"`
+	Pair       string   `json:"pair"`
+	Side       string   `json:"side"`
+	Size       *big.Int `json:"size"`
+	Collateral *big.Int `json:"collateral"`
+	EntryPrice *big.Int `json:"entry_price"`
+	MarkPrice  *big.Int `json:"mark_price"`
+	Leverage   *big.Int `json:"leverage"`
+	LiqPrice   *big.Int `json:"liq_price"`
+	Status     string   `json:"status"`
 }
 
 // Order represents an order
 type Order struct {
-	ID           uint64    `json:"id"`
-	Owner        string    `json:"owner"`
-	OrderType    string    `json:"order_type"`
-	Status       string    `json:"status"`
+	ID           uint64   `json:"id"`
+	Owner        string   `json:"owner"`
+	OrderType    string   `json:"order_type"`
+	Status       string   `json:"status"`
 	TriggerPrice *big.Int `json:"trigger_price"`
 	Amount       *big.Int `json:"amount"`
 }
@@ -59,22 +59,22 @@ type Order struct {
 // KeeperStats holds keeper statistics
 type KeeperStats struct {
 	LiquidationsExecuted uint64
-	OrdersExecuted     uint64
-	FailedExecutions   uint64
-	TotalGasUsed      *big.Int
+	OrdersExecuted       uint64
+	FailedExecutions     uint64
+	TotalGasUsed         *big.Int
 }
 
 // Keeper represents the keeper service
 type Keeper struct {
-	config   *KeeperConfig
-	clients  map[int64]*ethclient.Client
-	key      *ecdsa.PrivateKey
-	address  common.Address
-	stats    KeeperStats
-	mu       sync.RWMutex
-	ctx      context.Context
-	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	config    *KeeperConfig
+	clients   map[int64]*ethclient.Client
+	key       *ecdsa.PrivateKey
+	address   common.Address
+	stats     KeeperStats
+	mu        sync.RWMutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
 	positions map[uint64]*Position
 	orders    map[uint64]*Order
 }
@@ -108,13 +108,13 @@ func NewKeeper(config *KeeperConfig) (*Keeper, error) {
 
 	return &Keeper{
 		config:    config,
-		clients:  clients,
-		key:      key,
-		address:  address,
-		ctx:      ctx,
-		cancel:   cancel,
+		clients:   clients,
+		key:       key,
+		address:   address,
+		ctx:       ctx,
+		cancel:    cancel,
 		positions: make(map[uint64]*Position),
-		orders:   make(map[uint64]*Order),
+		orders:    make(map[uint64]*Order),
 		stats: KeeperStats{
 			TotalGasUsed: big.NewInt(0),
 		},
@@ -200,102 +200,102 @@ func (k *Keeper) checkLiquidations() {
 // liquidator contract. It does not fabricate a transaction hash: the hash comes
 // from the signed transaction actually broadcast to the chain.
 func (k *Keeper) executeLiquidation(pos *Position) {
-        if k.config.LiquidatorAddress == "" {
-                log.Printf("Liquidation skipped for position %d: no liquidator contract configured", pos.ID)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	if k.config.LiquidatorAddress == "" {
+		log.Printf("Liquidation skipped for position %d: no liquidator contract configured", pos.ID)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        client, ok := k.clients[1]
-        if !ok {
-                log.Printf("Liquidation skipped for position %d: no chain client", pos.ID)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	client, ok := k.clients[1]
+	if !ok {
+		log.Printf("Liquidation skipped for position %d: no chain client", pos.ID)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        ctx, cancel := context.WithTimeout(k.ctx, 30*time.Second)
-        defer cancel()
+	ctx, cancel := context.WithTimeout(k.ctx, 30*time.Second)
+	defer cancel()
 
-        gasPrice, err := client.SuggestGasPrice(ctx)
-        if err != nil {
-                log.Printf("Liquidation failed for position %d: gas price: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
-        if k.config.MaxGasPrice != nil && gasPrice.Cmp(k.config.MaxGasPrice) > 0 {
-                log.Printf("Liquidation deferred for position %d: gas price %s exceeds cap %s", pos.ID, gasPrice, k.config.MaxGasPrice)
-                return
-        }
+	gasPrice, err := client.SuggestGasPrice(ctx)
+	if err != nil {
+		log.Printf("Liquidation failed for position %d: gas price: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
+	if k.config.MaxGasPrice != nil && gasPrice.Cmp(k.config.MaxGasPrice) > 0 {
+		log.Printf("Liquidation deferred for position %d: gas price %s exceeds cap %s", pos.ID, gasPrice, k.config.MaxGasPrice)
+		return
+	}
 
-        chainID, err := client.ChainID(ctx)
-        if err != nil {
-                log.Printf("Liquidation failed for position %d: chain id: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	chainID, err := client.ChainID(ctx)
+	if err != nil {
+		log.Printf("Liquidation failed for position %d: chain id: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        nonce, err := client.PendingNonceAt(ctx, k.address)
-        if err != nil {
-                log.Printf("Liquidation failed for position %d: nonce: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	nonce, err := client.PendingNonceAt(ctx, k.address)
+	if err != nil {
+		log.Printf("Liquidation failed for position %d: nonce: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        to := common.HexToAddress(k.config.LiquidatorAddress)
+	to := common.HexToAddress(k.config.LiquidatorAddress)
 
-        // ABI-encode liquidatePosition(uint256)
-        liquidateSelector := crypto.Keccak256([]byte("liquidatePosition(uint256)"))[:4]
-        arg := common.LeftPadBytes(new(big.Int).SetUint64(pos.ID).Bytes(), 32)
-        data := append(liquidateSelector, arg...)
+	// ABI-encode liquidatePosition(uint256)
+	liquidateSelector := crypto.Keccak256([]byte("liquidatePosition(uint256)"))[:4]
+	arg := common.LeftPadBytes(new(big.Int).SetUint64(pos.ID).Bytes(), 32)
+	data := append(liquidateSelector, arg...)
 
-        gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
-                From: k.address,
-                To:   &to,
-                Data: data,
-        })
-        if err != nil {
-                log.Printf("Liquidation failed for position %d: gas estimate: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	gasLimit, err := client.EstimateGas(ctx, ethereum.CallMsg{
+		From: k.address,
+		To:   &to,
+		Data: data,
+	})
+	if err != nil {
+		log.Printf("Liquidation failed for position %d: gas estimate: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        tx := types.NewTransaction(nonce, to, big.NewInt(0), gasLimit, gasPrice, data)
-        signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), k.key)
-        if err != nil {
-                log.Printf("Liquidation failed for position %d: sign: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	tx := types.NewTransaction(nonce, to, big.NewInt(0), gasLimit, gasPrice, data)
+	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), k.key)
+	if err != nil {
+		log.Printf("Liquidation failed for position %d: sign: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        if err := client.SendTransaction(ctx, signedTx); err != nil {
-                log.Printf("Liquidation failed for position %d: broadcast: %v", pos.ID, err)
-                k.mu.Lock()
-                k.stats.FailedExecutions++
-                k.mu.Unlock()
-                return
-        }
+	if err := client.SendTransaction(ctx, signedTx); err != nil {
+		log.Printf("Liquidation failed for position %d: broadcast: %v", pos.ID, err)
+		k.mu.Lock()
+		k.stats.FailedExecutions++
+		k.mu.Unlock()
+		return
+	}
 
-        k.mu.Lock()
-        k.stats.LiquidationsExecuted++
-        k.stats.TotalGasUsed.Add(k.stats.TotalGasUsed, new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(gasLimit)))
-        pos.Status = "liquidating"
-        k.mu.Unlock()
+	k.mu.Lock()
+	k.stats.LiquidationsExecuted++
+	k.stats.TotalGasUsed.Add(k.stats.TotalGasUsed, new(big.Int).Mul(gasPrice, new(big.Int).SetUint64(gasLimit)))
+	pos.Status = "liquidating"
+	k.mu.Unlock()
 
-        log.Printf("Liquidation submitted: position=%d tx=%s", pos.ID, signedTx.Hash().Hex())
+	log.Printf("Liquidation submitted: position=%d tx=%s", pos.ID, signedTx.Hash().Hex())
 }
 
 // monitorOrders monitors orders for execution conditions
@@ -390,8 +390,8 @@ func (k *Keeper) healthCheck() {
 			"status":       "healthy",
 			"address":      k.address.Hex(),
 			"liquidations": stats.LiquidationsExecuted,
-			"orders":      stats.OrdersExecuted,
-			"failed":      stats.FailedExecutions,
+			"orders":       stats.OrdersExecuted,
+			"failed":       stats.FailedExecutions,
 		})
 	})
 
@@ -463,11 +463,11 @@ func getEnvBigInt(key string, defaultValue *big.Int) *big.Int {
 
 func main() {
 	config := &KeeperConfig{
-		PrivateKey:       getEnv("KEEPER_PRIVATE_KEY", ""),
-		RPCURLs:          []string{getEnv("RPC_URL", "https://eth.llamarpc.com")},
-		HealthCheckPort:  8095,
+		PrivateKey:        getEnv("KEEPER_PRIVATE_KEY", ""),
+		RPCURLs:           []string{getEnv("RPC_URL", "https://eth.llamarpc.com")},
+		HealthCheckPort:   8095,
 		ExecutionInterval: 1 * time.Second,
-		MaxGasPrice:      getEnvBigInt("MAX_GAS_PRICE", big.NewInt(100000000000)),
+		MaxGasPrice:       getEnvBigInt("MAX_GAS_PRICE", big.NewInt(100000000000)),
 	}
 
 	if config.PrivateKey == "" {
@@ -481,26 +481,26 @@ func main() {
 
 	// Add sample positions
 	keeper.AddPosition(&Position{
-		ID:          1,
-		Owner:       "0x1234567890123456789012345678901234567890",
-		Pair:        "ETH/USD",
-		Side:        "long",
-		Size:        big.NewInt(1000000000000000000),
-		Collateral:  big.NewInt(500000000000000000),
-		EntryPrice:  big.NewInt(300000000000),
-		MarkPrice:   big.NewInt(290000000000),
-		Leverage:    big.NewInt(10),
-		LiqPrice:    big.NewInt(295000000000),
-		Status:      "open",
+		ID:         1,
+		Owner:      "0x1234567890123456789012345678901234567890",
+		Pair:       "ETH/USD",
+		Side:       "long",
+		Size:       big.NewInt(1000000000000000000),
+		Collateral: big.NewInt(500000000000000000),
+		EntryPrice: big.NewInt(300000000000),
+		MarkPrice:  big.NewInt(290000000000),
+		Leverage:   big.NewInt(10),
+		LiqPrice:   big.NewInt(295000000000),
+		Status:     "open",
 	})
 
 	keeper.AddOrder(&Order{
 		ID:           1,
 		Owner:        "0x1234567890123456789012345678901234567890",
-		OrderType:   "stop_loss",
+		OrderType:    "stop_loss",
 		Status:       "open",
 		TriggerPrice: big.NewInt(290000000000),
-		Amount:      big.NewInt(1000000000000000000),
+		Amount:       big.NewInt(1000000000000000000),
 	})
 
 	keeper.Start()

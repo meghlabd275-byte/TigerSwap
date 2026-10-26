@@ -259,9 +259,12 @@ func (p *PerpetualPosition) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// CopyTrade represents a copy trade relationship
+// CopyTrade represents a copy trade relationship. FollowerID is the
+// authenticated account that owns the relationship; FollowerAddress is the
+// on-chain wallet the copied order executes from.
 type CopyTrade struct {
 	ID              uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	FollowerID      string    `gorm:"index;size:100" json:"follower_id"`
 	TraderAddress   string    `gorm:"index;size:42" json:"trader_address"`
 	FollowerAddress string    `gorm:"index;size:42" json:"follower_address"`
 	Pair            string    `gorm:"size:40" json:"pair"`
@@ -317,6 +320,7 @@ func (p *LaunchpadProject) BeforeCreate(tx *gorm.DB) error {
 // MasterWallet stores an encrypted admin master wallet.
 type MasterWallet struct {
 	ID              uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID          string    `gorm:"index;size:100" json:"user_id"`
 	Address         string    `gorm:"uniqueIndex;size:42" json:"address"`
 	EncryptedKey    string    `gorm:"type:text" json:"-"`
 	SeedEncrypted   string    `gorm:"type:text" json:"-"`
@@ -344,6 +348,111 @@ type FeeSettings struct {
 	DepositFeePercent     float64   `json:"deposit_fee_percent"`
 	LaunchpadFeePercent   float64   `json:"launchpad_fee_percent"`
 	UpdatedAt             time.Time `json:"updated_at"`
+}
+
+// SystemSettings stores platform-wide runtime switches (singleton row, key="default").
+type SystemSettings struct {
+	ID                  uint      `gorm:"primaryKey" json:"id"`
+	Key                 string    `gorm:"uniqueIndex;size:32" json:"key"`
+	MaintenanceMode     bool      `json:"maintenance_mode"`
+	TradingEnabled      bool      `gorm:"default:true" json:"trading_enabled"`
+	WithdrawalEnabled   bool      `gorm:"default:true" json:"withdrawal_enabled"`
+	DepositEnabled      bool      `gorm:"default:true" json:"deposit_enabled"`
+	NewUserRegistration bool      `gorm:"default:true" json:"new_user_registration_enabled"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
+// RevokedToken records a revoked JWT identifier so a logged-out token cannot be
+// replayed before it expires. Rows are pruned once the token's own expiry
+// passes, because the signature check rejects it after that point anyway.
+type RevokedToken struct {
+	JTI       string    `gorm:"primaryKey;size:64" json:"jti"`
+	UserID    string    `gorm:"index;size:100" json:"user_id"`
+	ExpiresAt time.Time `gorm:"index" json:"expires_at"`
+	RevokedAt time.Time `json:"revoked_at"`
+}
+
+// AccountBalance is the platform's internal ledger of user holdings. Every
+// deposit credits it and every withdrawal debits it, so a withdrawal can never
+// exceed what the user actually has on the platform.
+//
+// Amounts are stored as integer strings in the token's smallest unit, which
+// keeps the ledger exact and avoids floating-point drift.
+type AccountBalance struct {
+	ID           uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID       string    `gorm:"index:idx_account_balance,unique;size:100" json:"user_id"`
+	ChainID      int64     `gorm:"index:idx_account_balance,unique" json:"chain_id"`
+	TokenAddress string    `gorm:"index:idx_account_balance,unique;size:42" json:"token_address"`
+	Symbol       string    `gorm:"size:20" json:"symbol"`
+	Decimals     int       `json:"decimals"`
+	Available    string    `gorm:"size:78;default:'0'" json:"available"`
+	Locked       string    `gorm:"size:78;default:'0'" json:"locked"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+func (b *AccountBalance) BeforeCreate(tx *gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+	return nil
+}
+
+// DepositAddress maps a derived deposit address to the user who owns it. The
+// deposit watcher resolves ownership from this table, never from request data.
+type DepositAddress struct {
+	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID    string    `gorm:"index:idx_deposit_address,unique;size:100" json:"user_id"`
+	ChainID   int64     `gorm:"index:idx_deposit_address,unique" json:"chain_id"`
+	Address   string    `gorm:"index:idx_deposit_address,unique;size:42" json:"address"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (d *DepositAddress) BeforeCreate(tx *gorm.DB) error {
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	return nil
+}
+
+// ProcessedDeposit records a deposit the watcher has already credited. The
+// unique key is what makes crediting idempotent under reorgs and replays.
+type ProcessedDeposit struct {
+	ID           uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	ChainID      int64     `gorm:"index:idx_processed_deposit,unique" json:"chain_id"`
+	TxHash       string    `gorm:"index:idx_processed_deposit,unique;size:80" json:"tx_hash"`
+	LogIndex     int       `gorm:"index:idx_processed_deposit,unique" json:"log_index"`
+	UserID       string    `gorm:"index;size:100" json:"user_id"`
+	TokenAddress string    `gorm:"size:42" json:"token_address"`
+	Symbol       string    `gorm:"size:20" json:"symbol"`
+	Decimals     int       `json:"decimals"`
+	Amount       string    `gorm:"size:78" json:"amount"`
+	BlockNumber  uint64    `json:"block_number"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+func (p *ProcessedDeposit) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
+	return nil
+}
+
+// DepositCursor tracks how far the deposit watcher has scanned each chain.
+type DepositCursor struct {
+	ID               uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	ChainID          int64     `gorm:"uniqueIndex" json:"chain_id"`
+	LastScannedBlock uint64    `json:"last_scanned_block"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+func (d *DepositCursor) BeforeCreate(tx *gorm.DB) error {
+	if d.ID == uuid.Nil {
+		d.ID = uuid.New()
+	}
+	return nil
 }
 
 // BridgeTransfer records a TigerBridge cross-chain lock/mint transfer.

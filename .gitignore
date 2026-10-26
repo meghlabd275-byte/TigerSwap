@@ -57,6 +57,7 @@ Cargo.lock
 
 # C++ build artifacts
 backend/cpp/build/
+backend/cpp/build*/
 compile_commands.json
 
 # Python
@@ -66,3 +67,6 @@ __pycache__/
 
 # TypeScript incremental build info
 *.tsbuildinfo
+
+# Python egg-info
+*.egg-info/

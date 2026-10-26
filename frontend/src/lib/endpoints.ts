@@ -9,10 +9,17 @@
 
 import { api, apiRequest } from "./apiClient";
 import {
+  AccountBalance,
   AdminDashboard,
   Chain,
+  FuturesMarket,
+  FuturesMarketInput,
+  MarginListing,
+  MarginListingInput,
   MarketStats,
   PerpMarket,
+  PerpsListing,
+  PerpsListingInput,
   Pool,
   Portfolio,
   PriceEntry,
@@ -21,10 +28,17 @@ import {
   Trade,
   UserProfile,
   UserTransaction,
+  accountBalanceListValidator,
   adminDashboardValidator,
   chainListValidator,
+  futuresMarketListValidator,
+  futuresMarketValidator,
+  marginListingListValidator,
+  marginListingValidator,
   marketStatsValidator,
   perpMarketListValidator,
+  perpsListingListValidator,
+  perpsListingValidator,
   poolListValidator,
   portfolioValidator,
   priceListValidator,
@@ -148,5 +162,75 @@ export const endpoints = {
   async getPerpMarkets(): Promise<PerpMarket[]> {
     const body = await apiRequest("/perpetuals/markets", { authenticated: false, timeoutMs: 8000 });
     return perpMarketListValidator(body);
+  },
+
+  /**
+   * Admin listing management.
+   *
+   * These call the admin listing endpoints and validate the response. The
+   * status of a new listing is decided by the server (new listings start
+   * paused); the client never assumes otherwise.
+   */
+  /** The authenticated caller's platform ledger balances. */
+  async getAccountBalances(): Promise<AccountBalance[]> {
+    const body = await api.get("/wallet/balances");
+    return accountBalanceListValidator(body);
+  },
+
+  async getFuturesMarkets(): Promise<FuturesMarket[]> {
+    const body = await api.get("/admin/futures/markets");
+    return futuresMarketListValidator(body);
+  },
+
+  async createFuturesMarket(payload: FuturesMarketInput): Promise<FuturesMarket> {
+    const body = await api.post("/admin/futures/markets", payload);
+    return futuresMarketValidator(body);
+  },
+
+  async updateFuturesMarket(id: string, payload: Partial<FuturesMarketInput>): Promise<FuturesMarket> {
+    const body = await api.put(`/admin/futures/markets/${encodeURIComponent(id)}`, payload);
+    return futuresMarketValidator(body);
+  },
+
+  async deleteFuturesMarket(id: string): Promise<void> {
+    await apiRequest(`/admin/futures/markets/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  async getPerpsListings(): Promise<PerpsListing[]> {
+    const body = await api.get("/admin/perps/markets");
+    return perpsListingListValidator(body);
+  },
+
+  async createPerpsListing(payload: PerpsListingInput): Promise<PerpsListing> {
+    const body = await api.post("/admin/perps/markets", payload);
+    return perpsListingValidator(body);
+  },
+
+  async updatePerpsListing(id: string, payload: Partial<PerpsListingInput>): Promise<PerpsListing> {
+    const body = await api.put(`/admin/perps/markets/${encodeURIComponent(id)}`, payload);
+    return perpsListingValidator(body);
+  },
+
+  async deletePerpsListing(id: string): Promise<void> {
+    await apiRequest(`/admin/perps/markets/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  async getMarginListings(): Promise<MarginListing[]> {
+    const body = await api.get("/admin/margin/markets");
+    return marginListingListValidator(body);
+  },
+
+  async createMarginListing(payload: MarginListingInput): Promise<MarginListing> {
+    const body = await api.post("/admin/margin/markets", payload);
+    return marginListingValidator(body);
+  },
+
+  async updateMarginListing(id: string, payload: Partial<MarginListingInput>): Promise<MarginListing> {
+    const body = await api.put(`/admin/margin/markets/${encodeURIComponent(id)}`, payload);
+    return marginListingValidator(body);
+  },
+
+  async deleteMarginListing(id: string): Promise<void> {
+    await apiRequest(`/admin/margin/markets/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 };

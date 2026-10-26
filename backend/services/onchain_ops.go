@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -78,6 +80,38 @@ func signAndSend(ctx context.Context, client *ethclient.Client, key *ecdsa.Priva
 		return "", fmt.Errorf("send transaction: %w", err)
 	}
 	return signed.Hash().Hex(), nil
+}
+
+// broadcastSignedTransaction decodes a client-signed transaction and submits it
+// to the chain. The server never sees a private key on this path: the client
+// signs locally and posts only the signed payload.
+func broadcastSignedTransaction(ctx context.Context, client *ethclient.Client, signedTxHex string) (string, error) {
+	raw := strings.TrimPrefix(strings.TrimSpace(signedTxHex), "0x")
+	payload, err := hex.DecodeString(raw)
+	if err != nil {
+		return "", fmt.Errorf("signed_tx is not valid hex: %w", err)
+	}
+	if len(payload) == 0 {
+		return "", errors.New("signed_tx is empty")
+	}
+
+	var tx types.Transaction
+	if err := tx.UnmarshalBinary(payload); err != nil {
+		return "", fmt.Errorf("signed_tx is not a valid transaction: %w", err)
+	}
+	if err := client.SendTransaction(ctx, &tx); err != nil {
+		return "", fmt.Errorf("send transaction: %w", err)
+	}
+	return tx.Hash().Hex(), nil
+}
+
+// BroadcastTransaction submits a client-signed transaction to the chain.
+func (s *SwapExecutor) BroadcastTransaction(ctx context.Context, chainID int64, signedTxHex string) (string, error) {
+	client, err := s.blockchain.GetClient(chainID)
+	if err != nil {
+		return "", err
+	}
+	return broadcastSignedTransaction(ctx, client, signedTxHex)
 }
 
 // ApproveToken grants an unlimited allowance from privateKey's address to spender.

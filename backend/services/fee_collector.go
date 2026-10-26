@@ -5,7 +5,9 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/big"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -19,22 +21,22 @@ import (
 // FeeCollectorService collects and manages all platform fees
 type FeeCollectorService struct {
 	mu sync.RWMutex
-	
+
 	// Fee configurations
 	config *FeeConfig
-	
+
 	// Fee collection records
-	swapFees       map[string]*FeeRecord
+	swapFees      map[string]*FeeRecord
 	bridgeFees    map[string]*FeeRecord
 	walletFees    map[string]*FeeRecord
-	launchpadFees  map[string]*FeeRecord
+	launchpadFees map[string]*FeeRecord
 	depositFees   map[string]*FeeRecord
 	withdrawFees  map[string]*FeeRecord
-	
+
 	// Revenue tracking
-	totalRevenue  *big.Float
-	dailyRevenue   map[string]*big.Float
-	
+	totalRevenue *big.Float
+	dailyRevenue map[string]*big.Float
+
 	// Master wallet address for fee collection
 	masterWallet string
 
@@ -44,78 +46,78 @@ type FeeCollectorService struct {
 
 // FeeConfig holds all fee configurations
 type FeeConfig struct {
-	SwapFeePercent         float64 `json:"swap_fee_percent"`
-	SwapFeeFixed          float64 `json:"swap_fee_fixed"`
-	BridgeFeePercent      float64 `json:"bridge_fee_percent"`
-	BridgeFeeFixed       float64 `json:"bridge_fee_fixed"`
-	WalletTxFeePercent   float64 `json:"wallet_tx_fee_percent"`
+	SwapFeePercent      float64 `json:"swap_fee_percent"`
+	SwapFeeFixed        float64 `json:"swap_fee_fixed"`
+	BridgeFeePercent    float64 `json:"bridge_fee_percent"`
+	BridgeFeeFixed      float64 `json:"bridge_fee_fixed"`
+	WalletTxFeePercent  float64 `json:"wallet_tx_fee_percent"`
 	WalletTxFeeFixed    float64 `json:"wallet_tx_fee_fixed"`
-	DepositFeePercent    float64 `json:"deposit_fee_percent"`
+	DepositFeePercent   float64 `json:"deposit_fee_percent"`
 	DepositFeeFixed     float64 `json:"deposit_fee_fixed"`
-	WithdrawFeePercent   float64 `json:"withdraw_fee_percent"`
+	WithdrawFeePercent  float64 `json:"withdraw_fee_percent"`
 	WithdrawFeeFixed    float64 `json:"withdraw_fee_fixed"`
 	LaunchpadFeePercent float64 `json:"launchpad_fee_percent"`
-	LaunchpadFeeFixed  float64 `json:"launchpad_fee_fixed"`
-	ReferralFeePercent float64 `json:"referral_fee_percent"`
+	LaunchpadFeeFixed   float64 `json:"launchpad_fee_fixed"`
+	ReferralFeePercent  float64 `json:"referral_fee_percent"`
 }
 
 // FeeRecord represents a collected fee
 type FeeRecord struct {
-	ID          string    `json:"id"`
-	Type        string    `json:"type"` // swap, bridge, wallet, launchpad, deposit, withdraw
-	Amount      string    `json:"amount"`
-	AmountUSD   float64   `json:"amount_usd"`
-	Token       string    `json:"token"`
-	ChainID     int64     `json:"chain_id"`
-	UserAddress string    `json:"user_address"`
-	TxHash     string    `json:"tx_hash"`
-	FeeCharged float64   `json:"fee_charged"`
-	FeeChargedUSD float64 `json:"fee_charged_usd"`
-	Timestamp   time.Time `json:"timestamp"`
-	Status     string    `json:"status"` // pending, collected, distributed
+	ID            string    `json:"id"`
+	Type          string    `json:"type"` // swap, bridge, wallet, launchpad, deposit, withdraw
+	Amount        string    `json:"amount"`
+	AmountUSD     float64   `json:"amount_usd"`
+	Token         string    `json:"token"`
+	ChainID       int64     `json:"chain_id"`
+	UserAddress   string    `json:"user_address"`
+	TxHash        string    `json:"tx_hash"`
+	FeeCharged    float64   `json:"fee_charged"`
+	FeeChargedUSD float64   `json:"fee_charged_usd"`
+	Timestamp     time.Time `json:"timestamp"`
+	Status        string    `json:"status"` // pending, collected, distributed
 }
 
 // RevenueReport represents revenue summary
 type RevenueReport struct {
 	TotalSwapFees      float64 `json:"total_swap_fees"`
-	TotalBridgeFees   float64 `json:"total_bridge_fees"`
-	TotalWalletFees  float64 `json:"total_wallet_fees"`
-	TotalDepositFees float64 `json:"total_deposit_fees"`
-	TotalWithdrawFees float64 `json:"total_withdraw_fees"`
+	TotalBridgeFees    float64 `json:"total_bridge_fees"`
+	TotalWalletFees    float64 `json:"total_wallet_fees"`
+	TotalDepositFees   float64 `json:"total_deposit_fees"`
+	TotalWithdrawFees  float64 `json:"total_withdraw_fees"`
 	TotalLaunchpadFees float64 `json:"total_launchpad_fees"`
-	TotalRevenue    float64 `json:"total_revenue"`
-	DailyRevenue   float64 `json:"daily_revenue"`
-	WeeklyRevenue  float64 `json:"weekly_revenue"`
-	MonthlyRevenue float64 `json:"monthly_revenue"`
-	Period        string   `json:"period"`
+	TotalRevenue       float64 `json:"total_revenue"`
+	DailyRevenue       float64 `json:"daily_revenue"`
+	WeeklyRevenue      float64 `json:"weekly_revenue"`
+	MonthlyRevenue     float64 `json:"monthly_revenue"`
+	Period             string  `json:"period"`
 }
 
 func NewFeeCollectorService() *FeeCollectorService {
 	return &FeeCollectorService{
 		config: &FeeConfig{
-			SwapFeePercent:        0.3,     // 0.3% per swap
-			SwapFeeFixed:         0.0,
-			BridgeFeePercent:     0.1,     // 0.1% per bridge
-			BridgeFeeFixed:       1.0,     // $1 minimum
-			WalletTxFeePercent:  0.05,    // 0.05% per tx
-			WalletTxFeeFixed:    0.01,    // $0.01 minimum
-			DepositFeePercent:   0.0,     // No deposit fee
-			DepositFeeFixed:    0.0,
-			WithdrawFeePercent:  0.1,     // 0.1% per withdrawal
-			WithdrawFeeFixed:  1.0,      // $1 minimum
-			LaunchpadFeePercent: 5.0,     // 5% of sale amount
-			LaunchpadFeeFixed:  0.0,
-			ReferralFeePercent: 0.5,     // 0.5% referral reward
+			SwapFeePercent:      0.3, // 0.3% per swap
+			SwapFeeFixed:        0.0,
+			BridgeFeePercent:    0.1,  // 0.1% per bridge
+			BridgeFeeFixed:      1.0,  // $1 minimum
+			WalletTxFeePercent:  0.05, // 0.05% per tx
+			WalletTxFeeFixed:    0.01, // $0.01 minimum
+			DepositFeePercent:   0.0,  // No deposit fee
+			DepositFeeFixed:     0.0,
+			WithdrawFeePercent:  0.1, // 0.1% per withdrawal
+			WithdrawFeeFixed:    1.0, // $1 minimum
+			LaunchpadFeePercent: 5.0, // 5% of sale amount
+			LaunchpadFeeFixed:   0.0,
+			ReferralFeePercent:  0.5, // 0.5% referral reward
 		},
-		swapFees:       make(map[string]*FeeRecord),
+		swapFees:      make(map[string]*FeeRecord),
 		bridgeFees:    make(map[string]*FeeRecord),
 		walletFees:    make(map[string]*FeeRecord),
 		launchpadFees: make(map[string]*FeeRecord),
 		depositFees:   make(map[string]*FeeRecord),
-		withdrawFees: make(map[string]*FeeRecord),
-		totalRevenue: big.NewFloat(0),
-		dailyRevenue: make(map[string]*big.Float),
-		masterWallet: "",
+		withdrawFees:  make(map[string]*FeeRecord),
+		totalRevenue:  big.NewFloat(0),
+		dailyRevenue:  make(map[string]*big.Float),
+		masterWallet:  "",
 	}
 }
 
@@ -145,14 +147,14 @@ func (s *FeeCollectorService) GetConfig() *FeeConfig {
 func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash string, chainID int64, userAddress string, priceIn, priceOut float64) (*FeeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-		amountFloat := parseFloat(amount)
+
+	amountFloat := parseFloat(amount)
 	// Calculate fee
 	feeAmount := s.calculateFee(amountFloat, s.config.SwapFeePercent, s.config.SwapFeeFixed)
-	
+
 	// Calculate USD value
 	feeUSD := feeAmount * priceIn
-	
+
 	record := &FeeRecord{
 		ID:            fmt.Sprintf("swap_%d", time.Now().UnixNano()),
 		Type:          "swap",
@@ -161,19 +163,19 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 		Token:         tokenIn,
 		ChainID:       chainID,
 		UserAddress:   userAddress,
-		TxHash:       txHash,
+		TxHash:        txHash,
 		FeeCharged:    feeAmount,
 		FeeChargedUSD: feeUSD,
 		Timestamp:     time.Now(),
 		Status:        "collected",
 	}
-	
+
 	s.swapFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
-	
+
 	// Update daily revenue
 	s.updateDailyRevenue("swap", feeUSD)
-	
+
 	return record, nil
 }
 
@@ -181,11 +183,11 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount, txHash string, userAddress string, price float64) (*FeeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-		amountFloat := parseFloat(amount)
+
+	amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.BridgeFeePercent, s.config.BridgeFeeFixed)
 	feeUSD := feeAmount * price
-	
+
 	record := &FeeRecord{
 		ID:            fmt.Sprintf("bridge_%d", time.Now().UnixNano()),
 		Type:          "bridge",
@@ -193,17 +195,17 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 		AmountUSD:     feeUSD,
 		Token:         token,
 		UserAddress:   userAddress,
-		TxHash:       txHash,
+		TxHash:        txHash,
 		FeeCharged:    feeAmount,
 		FeeChargedUSD: feeUSD,
 		Timestamp:     time.Now(),
 		Status:        "collected",
 	}
-	
+
 	s.bridgeFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("bridge", feeUSD)
-	
+
 	return record, nil
 }
 
@@ -211,11 +213,11 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, chainID int64, userAddress string, price float64) (*FeeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-		amountFloat := parseFloat(amount)
+
+	amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.WalletTxFeePercent, s.config.WalletTxFeeFixed)
 	feeUSD := feeAmount * price
-	
+
 	record := &FeeRecord{
 		ID:            fmt.Sprintf("wallet_%d", time.Now().UnixNano()),
 		Type:          "wallet",
@@ -224,17 +226,17 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 		Token:         token,
 		ChainID:       chainID,
 		UserAddress:   userAddress,
-		TxHash:       txHash,
+		TxHash:        txHash,
 		FeeCharged:    feeAmount,
 		FeeChargedUSD: feeUSD,
 		Timestamp:     time.Now(),
 		Status:        "collected",
 	}
-	
+
 	s.walletFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("wallet", feeUSD)
-	
+
 	return record, nil
 }
 
@@ -242,11 +244,11 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, chainID int64, userAddress string, price float64) (*FeeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-		amountFloat := parseFloat(amount)
+
+	amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.WithdrawFeePercent, s.config.WithdrawFeeFixed)
 	feeUSD := feeAmount * price
-	
+
 	record := &FeeRecord{
 		ID:            fmt.Sprintf("withdraw_%d", time.Now().UnixNano()),
 		Type:          "withdraw",
@@ -255,17 +257,17 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 		Token:         token,
 		ChainID:       chainID,
 		UserAddress:   userAddress,
-		TxHash:       txHash,
+		TxHash:        txHash,
 		FeeCharged:    feeAmount,
 		FeeChargedUSD: feeUSD,
 		Timestamp:     time.Now(),
 		Status:        "collected",
 	}
-	
+
 	s.withdrawFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("withdraw", feeUSD)
-	
+
 	return record, nil
 }
 
@@ -273,11 +275,11 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHash, userAddress string, price float64) (*FeeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	
-		amountFloat := parseFloat(amount)
+
+	amountFloat := parseFloat(amount)
 	feeAmount := s.calculateFee(amountFloat, s.config.LaunchpadFeePercent, s.config.LaunchpadFeeFixed)
 	feeUSD := feeAmount * price
-	
+
 	record := &FeeRecord{
 		ID:            fmt.Sprintf("launchpad_%d", time.Now().UnixNano()),
 		Type:          "launchpad",
@@ -285,17 +287,17 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 		AmountUSD:     feeUSD,
 		Token:         token,
 		UserAddress:   userAddress,
-		TxHash:       txHash,
+		TxHash:        txHash,
 		FeeCharged:    feeAmount,
 		FeeChargedUSD: feeUSD,
 		Timestamp:     time.Now(),
 		Status:        "collected",
 	}
-	
+
 	s.launchpadFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("launchpad", feeUSD)
-	
+
 	return record, nil
 }
 
@@ -320,11 +322,11 @@ func (s *FeeCollectorService) updateDailyRevenue(feeType string, amount float64)
 func (s *FeeCollectorService) GetRevenueReport(period string) *RevenueReport {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	report := &RevenueReport{
 		Period: period,
 	}
-	
+
 	// Calculate totals
 	for _, fee := range s.swapFees {
 		report.TotalSwapFees += fee.FeeChargedUSD
@@ -341,17 +343,17 @@ func (s *FeeCollectorService) GetRevenueReport(period string) *RevenueReport {
 	for _, fee := range s.launchpadFees {
 		report.TotalLaunchpadFees += fee.FeeChargedUSD
 	}
-	
-	report.TotalRevenue = report.TotalSwapFees + report.TotalBridgeFees + 
+
+	report.TotalRevenue = report.TotalSwapFees + report.TotalBridgeFees +
 		report.TotalWalletFees + report.TotalWithdrawFees + report.TotalLaunchpadFees
-	
+
 	// Daily revenue
 	today := time.Now().Format("2006-01-02")
 	if d := s.dailyRevenue[today]; d != nil {
 		f, _ := d.Float64()
 		report.DailyRevenue = f
 	}
-	
+
 	return report
 }
 
@@ -359,9 +361,9 @@ func (s *FeeCollectorService) GetRevenueReport(period string) *RevenueReport {
 func (s *FeeCollectorService) GetFeeRecords(feeType string) []*FeeRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	var records []*FeeRecord
-	
+
 	switch feeType {
 	case "swap":
 		for _, r := range s.swapFees {
@@ -384,7 +386,7 @@ func (s *FeeCollectorService) GetFeeRecords(feeType string) []*FeeRecord {
 			records = append(records, r)
 		}
 	}
-	
+
 	return records
 }
 
@@ -392,7 +394,7 @@ func (s *FeeCollectorService) GetFeeRecords(feeType string) []*FeeRecord {
 func (s *FeeCollectorService) GetTotalRevenue() float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	
+
 	f, _ := s.totalRevenue.Float64()
 	return f
 }
@@ -475,50 +477,99 @@ func (s *FeeCollectorService) SetBlockchain(blockchain *BlockchainClient) {
 	defer s.mu.Unlock()
 	s.blockchain = blockchain
 }
-	
 
 // API Handlers
 
 func (s *FeeCollectorService) GetConfigHandler(c *gin.Context) {
-	c.JSON(200, s.GetConfig())
+	c.JSON(http.StatusOK, s.GetConfig())
 }
 
+// UpdateConfigHandler applies a validated fee configuration. Every percentage
+// is bounded so a mistyped or hostile value cannot set an absurd fee.
 func (s *FeeCollectorService) UpdateConfigHandler(c *gin.Context) {
 	var req FeeConfig
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
-	err := s.UpdateConfig(&req)
-	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+	if err := validateFeeConfig(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
-	c.JSON(200, gin.H{"success": true, "message": "Fee configuration updated"})
+
+	if err := s.UpdateConfig(&req); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Fee configuration updated"})
+}
+
+// validateFeeConfig rejects negative fees and percentages above 100.
+func validateFeeConfig(config *FeeConfig) error {
+	percents := map[string]float64{
+		"swap_fee_percent":      config.SwapFeePercent,
+		"bridge_fee_percent":    config.BridgeFeePercent,
+		"wallet_tx_fee_percent": config.WalletTxFeePercent,
+		"deposit_fee_percent":   config.DepositFeePercent,
+		"withdraw_fee_percent":  config.WithdrawFeePercent,
+		"launchpad_fee_percent": config.LaunchpadFeePercent,
+		"referral_fee_percent":  config.ReferralFeePercent,
+	}
+	for name, value := range percents {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 || value > 100 {
+			return fmt.Errorf("%s must be between 0 and 100", name)
+		}
+	}
+
+	fixed := map[string]float64{
+		"swap_fee_fixed":      config.SwapFeeFixed,
+		"bridge_fee_fixed":    config.BridgeFeeFixed,
+		"wallet_tx_fee_fixed": config.WalletTxFeeFixed,
+		"deposit_fee_fixed":   config.DepositFeeFixed,
+		"withdraw_fee_fixed":  config.WithdrawFeeFixed,
+		"launchpad_fee_fixed": config.LaunchpadFeeFixed,
+	}
+	for name, value := range fixed {
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return fmt.Errorf("%s must be non-negative", name)
+		}
+	}
+
+	return nil
 }
 
 func (s *FeeCollectorService) GetRevenueReportHandler(c *gin.Context) {
 	period := c.DefaultQuery("period", "daily")
-	
-	report := s.GetRevenueReport(period)
-	c.JSON(200, report)
+	switch period {
+	case "daily", "weekly", "monthly", "all":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "period must be daily, weekly, monthly or all"})
+		return
+	}
+
+	c.JSON(http.StatusOK, s.GetRevenueReport(period))
 }
 
 func (s *FeeCollectorService) GetTotalRevenueHandler(c *gin.Context) {
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"total_revenue": s.GetTotalRevenue(),
 	})
 }
 
 func (s *FeeCollectorService) GetFeeRecordsHandler(c *gin.Context) {
 	feeType := c.DefaultQuery("type", "swap")
-	
+	switch feeType {
+	case "swap", "bridge", "wallet", "launchpad", "deposit", "withdraw":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown fee type"})
+		return
+	}
+
 	records := s.GetFeeRecords(feeType)
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"records": records,
-		"count":  len(records),
+		"count":   len(records),
 	})
 }
 
@@ -526,14 +577,19 @@ func (s *FeeCollectorService) SetMasterWalletHandler(c *gin.Context) {
 	var req struct {
 		Address string `json:"address" binding:"required"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	
-	s.SetMasterWallet(req.Address)
-	c.JSON(200, gin.H{"success": true, "master_wallet": req.Address})
+	if !common.IsHexAddress(req.Address) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid master wallet address"})
+		return
+	}
+
+	address := strings.ToLower(req.Address)
+	s.SetMasterWallet(address)
+	c.JSON(http.StatusOK, gin.H{"success": true, "master_wallet": address})
 }
 
 func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
@@ -543,19 +599,27 @@ func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
 		Amount  string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !common.IsHexAddress(req.Token) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid token address"})
+		return
+	}
+	if _, ok := new(big.Int).SetString(req.Amount, 10); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be an integer in base units"})
 		return
 	}
 
 	txHash, err := s.DistributeFees(c.Request.Context(), req.ChainID, req.Token, req.Amount)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, gin.H{
-		"success":  true,
-		"tx_hash":  txHash,
-		"message":  "Fees distributed to master wallet",
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"tx_hash": txHash,
+		"message": "Fees distributed to master wallet",
 	})
 }

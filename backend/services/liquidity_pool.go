@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -17,26 +18,26 @@ import (
 // LiquidityPoolService manages real on-chain liquidity pools
 type LiquidityPoolService struct {
 	blockchain *BlockchainClient
-	priceAgg  *PriceAggregator
-	db        interface{} // Would be *gorm.DB
-	mu        sync.RWMutex
-	pools     map[string]*PoolData
+	priceAgg   *PriceAggregator
+	db         interface{} // Would be *gorm.DB
+	mu         sync.RWMutex
+	pools      map[string]*PoolData
 }
 
 // PoolData represents real pool data from blockchain
 type PoolData struct {
-	Address         string    `json:"address"`
-	Token0          string    `json:"token0"`
-	Token1          string    `json:"token1"`
-	Reserve0        string    `json:"reserve0"`
-	Reserve1        string    `json:"reserve1"`
-	TotalSupply     string    `json:"total_supply"`
-	Token0Price     float64   `json:"token0_price"`
-	Token1Price     float64   `json:"token1_price"`
-	Volume24h       float64   `json:"volume_24h"`
-	Fees24h        float64   `json:"fees_24h"`
-	APY             float64   `json:"apy"`
-	LastUpdated     time.Time `json:"last_updated"`
+	Address     string    `json:"address"`
+	Token0      string    `json:"token0"`
+	Token1      string    `json:"token1"`
+	Reserve0    string    `json:"reserve0"`
+	Reserve1    string    `json:"reserve1"`
+	TotalSupply string    `json:"total_supply"`
+	Token0Price float64   `json:"token0_price"`
+	Token1Price float64   `json:"token1_price"`
+	Volume24h   float64   `json:"volume_24h"`
+	Fees24h     float64   `json:"fees_24h"`
+	APY         float64   `json:"apy"`
+	LastUpdated time.Time `json:"last_updated"`
 }
 
 // PoolOrder represents an order in the pool
@@ -91,14 +92,14 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	if err != nil {
 		return nil, fmt.Errorf("failed to get token0: %v", err)
 	}
-		token0Vals, err := parsedABI.Unpack("token0", token0Result)
-		if err != nil || len(token0Vals) != 1 {
-			return nil, fmt.Errorf("decode token0: %w", err)
-		}
-		token0, ok := token0Vals[0].(common.Address)
-		if !ok {
-			return nil, fmt.Errorf("unexpected token0 type %T", token0Vals[0])
-		}
+	token0Vals, err := parsedABI.Unpack("token0", token0Result)
+	if err != nil || len(token0Vals) != 1 {
+		return nil, fmt.Errorf("decode token0: %w", err)
+	}
+	token0, ok := token0Vals[0].(common.Address)
+	if !ok {
+		return nil, fmt.Errorf("unexpected token0 type %T", token0Vals[0])
+	}
 
 	// Get token1
 	token1Data, err := parsedABI.Pack("token1")
@@ -112,14 +113,14 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	if err != nil {
 		return nil, err
 	}
-		token1Vals, err := parsedABI.Unpack("token1", token1Result)
-		if err != nil || len(token1Vals) != 1 {
-			return nil, fmt.Errorf("decode token1: %w", err)
-		}
-		token1, ok := token1Vals[0].(common.Address)
-		if !ok {
-			return nil, fmt.Errorf("unexpected token1 type %T", token1Vals[0])
-		}
+	token1Vals, err := parsedABI.Unpack("token1", token1Result)
+	if err != nil || len(token1Vals) != 1 {
+		return nil, fmt.Errorf("decode token1: %w", err)
+	}
+	token1, ok := token1Vals[0].(common.Address)
+	if !ok {
+		return nil, fmt.Errorf("unexpected token1 type %T", token1Vals[0])
+	}
 
 	// Get reserves
 	reserveData, err := parsedABI.Pack("getReserves")
@@ -135,14 +136,14 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	}
 
 	type reserves struct {
-		Reserve0          *big.Int
-		Reserve1          *big.Int
+		Reserve0           *big.Int
+		Reserve1           *big.Int
 		BlockTimestampLast uint32
 	}
-		var res reserves
-		if err := parsedABI.UnpackIntoInterface(&res, "getReserves", reserveResult); err != nil {
-			return nil, fmt.Errorf("decode getReserves: %w", err)
-		}
+	var res reserves
+	if err := parsedABI.UnpackIntoInterface(&res, "getReserves", reserveResult); err != nil {
+		return nil, fmt.Errorf("decode getReserves: %w", err)
+	}
 
 	// Get token prices
 	token0Symbol := s.getSymbolFromAddress(token0.Hex())
@@ -194,11 +195,13 @@ func (s *LiquidityPoolService) GetAllPools(ctx context.Context, chainID int64) (
 	return pools, nil
 }
 
-// AddLiquidity adds real liquidity to a pool
-func (s *LiquidityPoolService) AddLiquidity(ctx context.Context, chainID int64, privateKey, tokenA, tokenB, amountA, amountB string) (string, error) {
-	// This would call the router contract
-	// For now, return execution via swap executor
-	return "", fmt.Errorf("use swap executor for liquidity addition")
+// BroadcastTransaction submits a client-signed transaction for this service.
+func (s *LiquidityPoolService) BroadcastTransaction(ctx context.Context, chainID int64, signedTxHex string) (string, error) {
+	client, err := s.blockchain.GetClient(chainID)
+	if err != nil {
+		return "", err
+	}
+	return broadcastSignedTransaction(ctx, client, signedTxHex)
 }
 
 // RemoveLiquidity removes liquidity from a pool
@@ -211,7 +214,7 @@ func (s *LiquidityPoolService) getKnownPoolAddresses(chainID int64) []string {
 	pools := map[int64][]string{
 		1: { // Ethereum
 			"0x88e6A0c2d26E5B7E6944928D8c744e67F4C5E9d3", // USDC/WETH Uniswap V3
-			"0x4e68Ccc3aE2D6D2E2e7C1f9F6C3A3D2E1F4B5C6", // USDT/WETH
+			"0x4e68Ccc3aE2D6D2E2e7C1f9F6C3A3D2E1F4B5C6",  // USDT/WETH
 			"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D", // Uniswap V2 Router
 		},
 		56: { // BSC
@@ -219,7 +222,7 @@ func (s *LiquidityPoolService) getKnownPoolAddresses(chainID int64) []string {
 			"0x58F876857a02D6762E0100bbC5c1ea58eEb3a400", // USDT/WBNB
 		},
 		137: { // Polygon
-			"0xA374094527E1673A86dE625aa59517c5d2993EE", // USDC/WETH
+			"0xA374094527E1673A86dE625aa59517c5d2993EE",  // USDC/WETH
 			"0x53E0bca35eC356BD5ddDFEbdD1Fc0fD03FaBad39", // WETH/WSOL
 		},
 	}
@@ -304,30 +307,31 @@ func (s *LiquidityPoolService) GetPoolsHandler(c *gin.Context) {
 	})
 }
 
+// AddLiquidityHandler broadcasts a client-signed add-liquidity transaction.
 func (s *LiquidityPoolService) AddLiquidityHandler(c *gin.Context) {
 	var req struct {
-		ChainID   int64  `json:"chain_id" binding:"required"`
-		PrivateKey string `json:"private_key" binding:"required"`
-		TokenA    string `json:"token_a" binding:"required"`
-		TokenB    string `json:"token_b" binding:"required"`
-		AmountA   string `json:"amount_a" binding:"required"`
-		AmountB   string `json:"amount_b" binding:"required"`
+		ChainID  int64  `json:"chain_id" binding:"required"`
+		SignedTx string `json:"signed_tx" binding:"required"`
+		TokenA   string `json:"token_a" binding:"required"`
+		TokenB   string `json:"token_b" binding:"required"`
+		AmountA  string `json:"amount_a" binding:"required"`
+		AmountB  string `json:"amount_b" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	txHash, err := s.AddLiquidity(c.Request.Context(), req.ChainID, req.PrivateKey, req.TokenA, req.TokenB, req.AmountA, req.AmountB)
+	txHash, err := s.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, gin.H{
+	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"tx_hash": txHash,
+		"status":  "submitted",
 	})
 }
-

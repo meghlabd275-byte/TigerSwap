@@ -300,6 +300,23 @@ func (c *Client) Swap(ctx context.Context, family amm.Family, path []common.Addr
 	return signed, nil
 }
 
+// BuildSwapCalldata returns the router target and calldata for an unsigned
+// swap. The caller (a user's wallet) signs and broadcasts it; no key is needed.
+func (c *Client) BuildSwapCalldata(family amm.Family, path []common.Address, amountIn, amountOutMin *big.Int, to common.Address, deadline *big.Int) (common.Address, []byte, error) {
+	if len(path) < 2 {
+		return common.Address{}, nil, errors.New("path must have at least 2 tokens")
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokens",
+		path[0], path[len(path)-1], FamilyCode(family), amountIn, amountOutMin, to, deadline)
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	return c.deployment.Router, data, nil
+}
+
+// RouterAddress returns the configured TigerSwap router for the chain.
+func (c *Client) RouterAddress() common.Address { return c.deployment.Router }
+
 // LoadSigner reads the TigerSwap signer key from the environment.
 func LoadSigner() (*ecdsa.PrivateKey, error) {
 	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")

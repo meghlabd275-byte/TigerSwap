@@ -238,7 +238,7 @@ export interface PerpMarket {
 }
 
 export const perpMarketValidator = object<PerpMarket>({
-  marketId: hex,
+  marketId: string,
   symbol,
   markPrice: nonNegative,
   indexPrice: nonNegative,
@@ -249,7 +249,7 @@ export const perpMarketValidator = object<PerpMarket>({
   isActive: boolean,
 });
 
-export const perpMarketListValidator = arrayLenient(perpMarketValidator);
+export const perpMarketListValidator = listingArray(perpMarketValidator);
 
 /** The authenticated user's profile. */
 export interface UserProfile {
@@ -291,6 +291,310 @@ export const adminDashboardValidator = object<AdminDashboard>(
   { optional: ["activePools", "updatedAt"] },
 );
 
+/**
+ * Admin-managed listing models.
+ *
+ * These mirror the futures, perps and margin listing records the backend
+ * exposes under `/admin/futures/markets`, `/admin/perps/markets` and
+ * `/admin/margin/markets`. Every field is validated before it reaches the UI.
+ */
+
+export type ListingStatus = "active" | "paused" | "delisting" | "maintenance";
+
+export const listingStatusValidator = oneOf([
+  "active",
+  "paused",
+  "delisting",
+  "maintenance",
+] as const);
+
+/** A futures contract listing. */
+export interface FuturesMarket {
+  id: string;
+  symbol: string;
+  contract_type: string;
+  base_asset: string;
+  quote_asset: string;
+  settlement: string;
+  contract_size: string;
+  tick_size: string;
+  max_leverage: number;
+  min_order_size: string;
+  funding_rate: string;
+  funding_interval_hours: number;
+  funding_rate_cap: string;
+  oracle_sources: string;
+  maintenance_margin_rate: number;
+  initial_margin_rate: number;
+  liquidation_fee_rate: number;
+  insurance_fund_share: number;
+  maker_fee_rate: number;
+  taker_fee_rate: number;
+  status: ListingStatus;
+  listing_type: string;
+  is_tradfi: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const futuresMarketValidator = object<FuturesMarket>(
+  {
+    id: string,
+    symbol,
+    contract_type: string,
+    base_asset: string,
+    quote_asset: string,
+    settlement: string,
+    contract_size: string,
+    tick_size: string,
+    max_leverage: integer,
+    min_order_size: withDefault(string, ""),
+    funding_rate: string,
+    funding_interval_hours: integer,
+    funding_rate_cap: withDefault(string, ""),
+    oracle_sources: withDefault(string, ""),
+    maintenance_margin_rate: nonNegative,
+    initial_margin_rate: nonNegative,
+    liquidation_fee_rate: nonNegative,
+    insurance_fund_share: nonNegative,
+    maker_fee_rate: nonNegative,
+    taker_fee_rate: nonNegative,
+    status: listingStatusValidator,
+    listing_type: string,
+    is_tradfi: boolean,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "min_order_size",
+      "funding_rate_cap",
+      "oracle_sources",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/** A perpetual listing, priced either from an oracle or a CLOB order book. */
+export interface PerpsListing {
+  id: string;
+  symbol: string;
+  market_type: string;
+  collateral_assets: string;
+  max_open_interest: string;
+  max_leverage: number;
+  price_impact_rate: number;
+  borrow_fee_per_hour: number;
+  maker_fee_rate: number;
+  taker_fee_rate: number;
+  maintenance_margin_rate: number;
+  liquidation_fee_rate: number;
+  status: ListingStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export const perpsListingValidator = object<PerpsListing>(
+  {
+    id: string,
+    symbol,
+    market_type: string,
+    collateral_assets: withDefault(string, ""),
+    max_open_interest: withDefault(string, "0"),
+    max_leverage: integer,
+    price_impact_rate: nonNegative,
+    borrow_fee_per_hour: nonNegative,
+    maker_fee_rate: nonNegative,
+    taker_fee_rate: nonNegative,
+    maintenance_margin_rate: nonNegative,
+    liquidation_fee_rate: nonNegative,
+    status: listingStatusValidator,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "collateral_assets",
+      "max_open_interest",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/** A spot-margin listing with its risk parameters and interest curve. */
+export interface MarginListing {
+  id: string;
+  pair: string;
+  base_asset: string;
+  quote_asset: string;
+  margin_mode: string;
+  max_leverage: number;
+  collateral_assets: string;
+  borrowable_assets: string;
+  base_rate_apy: number;
+  kink_utilization: number;
+  jump_multiplier: number;
+  ltv: number;
+  liquidation_threshold: number;
+  liquidation_bonus: number;
+  close_factor: number;
+  supply_cap: string;
+  borrow_cap: string;
+  risk_tier: string;
+  status: ListingStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export const marginListingValidator = object<MarginListing>(
+  {
+    id: string,
+    pair: symbol,
+    base_asset: string,
+    quote_asset: string,
+    margin_mode: string,
+    max_leverage: integer,
+    collateral_assets: withDefault(string, ""),
+    borrowable_assets: withDefault(string, ""),
+    base_rate_apy: nonNegative,
+    kink_utilization: nonNegative,
+    jump_multiplier: nonNegative,
+    ltv: nonNegative,
+    liquidation_threshold: nonNegative,
+    liquidation_bonus: nonNegative,
+    close_factor: nonNegative,
+    supply_cap: withDefault(string, "0"),
+    borrow_cap: withDefault(string, "0"),
+    risk_tier: string,
+    status: listingStatusValidator,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "collateral_assets",
+      "borrowable_assets",
+      "supply_cap",
+      "borrow_cap",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/**
+ * Extracts a listing array from a single-key envelope such as
+ * `{ markets: [...] }`, `{ listings: [...] }` or `{ balances: [...] }`,
+ * tolerating a bare array.
+ */
+function listingArray<T>(element: (value: unknown, path?: string) => T) {
+  return (value: unknown, path = "value"): T[] => {
+    if (Array.isArray(value)) {
+      return arrayLenient(element)(value, path);
+    }
+    if (value && typeof value === "object") {
+      const record = value as Record<string, unknown>;
+      const items = record.markets ?? record.listings ?? record.balances ?? record.items;
+      if (items !== undefined) {
+        return arrayLenient(element)(items, `${path}.items`);
+      }
+    }
+    return arrayLenient(element)(value, path);
+  };
+}
+
+export const futuresMarketListValidator = listingArray(futuresMarketValidator);
+export const perpsListingListValidator = listingArray(perpsListingValidator);
+export const marginListingListValidator = listingArray(marginListingValidator);
+
+/** Payload accepted when creating a futures listing. */
+export interface FuturesMarketInput {
+  symbol: string;
+  contract_type: string;
+  settlement: string;
+  contract_size?: string;
+  tick_size?: string;
+  max_leverage: number;
+  funding_rate?: string;
+  funding_interval_hours?: number;
+  funding_rate_cap?: string;
+  oracle_sources?: string;
+  maintenance_margin_rate?: number;
+  initial_margin_rate?: number;
+  liquidation_fee_rate?: number;
+  insurance_fund_share?: number;
+  maker_fee_rate?: number;
+  taker_fee_rate?: number;
+  listing_type?: string;
+  is_tradfi?: boolean;
+  status?: ListingStatus;
+}
+
+/** Payload accepted when creating a perpetual listing. */
+export interface PerpsListingInput {
+  symbol: string;
+  market_type?: string;
+  collateral_assets?: string;
+  max_open_interest?: string;
+  max_leverage: number;
+  price_impact_rate?: number;
+  borrow_fee_per_hour?: number;
+  maker_fee_rate?: number;
+  taker_fee_rate?: number;
+  maintenance_margin_rate?: number;
+  liquidation_fee_rate?: number;
+  status?: ListingStatus;
+}
+
+/** Payload accepted when creating a spot-margin listing. */
+export interface MarginListingInput {
+  pair: string;
+  margin_mode?: string;
+  max_leverage: number;
+  collateral_assets?: string;
+  borrowable_assets?: string;
+  base_rate_apy?: number;
+  kink_utilization?: number;
+  jump_multiplier?: number;
+  ltv: number;
+  liquidation_threshold: number;
+  liquidation_bonus?: number;
+  close_factor?: number;
+  supply_cap?: string;
+  borrow_cap?: string;
+  risk_tier?: string;
+  status?: ListingStatus;
+}
+
+/** A user's platform ledger balance for one token on one chain. */
+export interface AccountBalance {
+  user_id: string;
+  chain_id: number;
+  token_address: string;
+  symbol: string;
+  decimals: number;
+  available: string;
+  locked: string;
+}
+
+export const accountBalanceValidator = object<AccountBalance>({
+  user_id: string,
+  chain_id: integer,
+  token_address: string,
+  symbol: string,
+  decimals: integer,
+  available: string,
+  locked: withDefault(string, "0"),
+});
+
+/**
+ * Extracts the balances array from a `{ balances: [...] }` envelope, tolerating
+ * a bare array.
+ */
+export const accountBalanceListValidator = listingArray(accountBalanceValidator);
+
 /** A generic paginated envelope. */
 export interface Page<T> {
   items: T[];
@@ -298,7 +602,6 @@ export interface Page<T> {
   page: number;
   pageSize: number;
 }
-
 export function pageValidator<T>(item: (value: unknown, path?: string) => T): (value: unknown, path?: string) => Page<T> {
   return object<Page<T>>({
     items: arrayLenient(item),

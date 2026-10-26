@@ -3,9 +3,11 @@ package services
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -14,7 +16,6 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
@@ -300,6 +301,63 @@ func (s *SwapExecutor) ExecuteSwap(ctx context.Context, chainID int64, privateKe
 	return result, nil
 }
 
+// BuildSwap quotes the best TigerSwap family and returns an unsigned router
+// call. The transaction is signed by the caller's wallet, so the server never
+// needs a key for this path.
+func (s *SwapExecutor) BuildSwap(ctx context.Context, chainID int64, fromToken, toToken, amountIn, recipient string, slippageBps uint32) (string, string, string, uint64, error) {
+	amount, ok := new(big.Int).SetString(amountIn, 10)
+	if !ok || amount.Sign() <= 0 {
+		return "", "", "", 0, fmt.Errorf("invalid amount %q", amountIn)
+	}
+	if slippageBps > 5_000 {
+		return "", "", "", 0, errors.New("slippage above 50% is not permitted")
+	}
+	if !common.IsHexAddress(fromToken) || !common.IsHexAddress(toToken) {
+		return "", "", "", 0, errors.New("invalid token address")
+	}
+	if !common.IsHexAddress(recipient) {
+		return "", "", "", 0, errors.New("invalid recipient address")
+	}
+
+	quote, err := s.GetSwapQuote(ctx, chainID, fromToken, toToken, amountIn)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	best, ok := new(big.Int).SetString(quote.AmountOut, 10)
+	if !ok {
+		return "", "", "", 0, errors.New("quote produced an invalid amount")
+	}
+
+	family, err := familyFromName(quote.BestSource)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+
+	client, err := s.newClient(chainID, s.signer)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	defer client.Close()
+
+	path := []common.Address{common.HexToAddress(fromToken), common.HexToAddress(toToken)}
+	deadline := big.NewInt(time.Now().Add(20 * time.Minute).Unix())
+	router, data, err := client.BuildSwapCalldata(family, path, amount, applySlippage(best, slippageBps), common.HexToAddress(recipient), deadline)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+
+	gasLimit, err := client.RPC().EstimateGas(ctx, ethereum.CallMsg{
+		From: common.HexToAddress(recipient),
+		To:   &router,
+		Data: data,
+	})
+	if err != nil {
+		return "", "", "", 0, fmt.Errorf("estimate gas: %w", err)
+	}
+
+	return router.Hex(), "0x" + hex.EncodeToString(data), "0", gasLimit, nil
+}
+
 // ensureAllowance approves the TigerSwap router if the current allowance is low.
 func (s *SwapExecutor) ensureAllowance(ctx context.Context, client *tigerswap.Client, key *ecdsa.PrivateKey, chainID int64, token string, amount *big.Int) error {
 	deployment, ok := s.deployments[chainID]
@@ -402,33 +460,29 @@ func (s *SwapExecutor) GetSwapQuoteHandler(c *gin.Context) {
 	c.JSON(200, quote)
 }
 
-// ExecuteSwapHandler executes a swap on the TigerSwap router.
+// ExecuteSwapHandler broadcasts a client-signed swap against the TigerSwap
+// router. The server never accepts a private key.
 func (s *SwapExecutor) ExecuteSwapHandler(c *gin.Context) {
 	var req struct {
-		ChainID    int64  `json:"chain_id" binding:"required"`
-		PrivateKey string `json:"private_key"`
-		FromToken  string `json:"from_token" binding:"required"`
-		ToToken    string `json:"to_token" binding:"required"`
-		Amount     string `json:"amount" binding:"required"`
-		Slippage   string `json:"slippage"`
-		Family     string `json:"family"`
+		ChainID   int64  `json:"chain_id" binding:"required"`
+		SignedTx  string `json:"signed_tx" binding:"required"`
+		FromToken string `json:"from_token"`
+		ToToken   string `json:"to_token"`
+		Amount    string `json:"amount"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	result, err := s.ExecuteSwap(
-		c.Request.Context(), req.ChainID, req.PrivateKey,
-		req.FromToken, req.ToToken, req.Amount, req.Slippage, req.Family,
-	)
+	txHash, err := s.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, result)
+	c.JSON(http.StatusOK, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
 }
 
 // GetSupportedDEXHandler reports the TigerSwap families available on a chain.
@@ -458,6 +512,3 @@ func LoadExecutorSigner() (*ecdsa.PrivateKey, error) {
 	}
 	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
 }
-
-// Ensure the unused imports stay meaningful: types is used by signAndSend.
-var _ = types.NewTransaction

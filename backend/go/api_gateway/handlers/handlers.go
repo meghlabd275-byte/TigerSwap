@@ -82,25 +82,25 @@ func NewSwapHandler(cfg *config.Config) *SwapHandler {
 
 // QuoteRequest represents a quote request
 type QuoteRequest struct {
-	ChainID     int64  `json:"chain_id" binding:"required"`
-	FromToken   string `json:"from_token" binding:"required"`
-	ToToken     string `json:"to_token" binding:"required"`
-	Amount      string `json:"amount" binding:"required"`
-	Slippage    string `json:"slippage"`
-	 DEX        string `json:"dex"`
+	ChainID   int64  `json:"chain_id" binding:"required"`
+	FromToken string `json:"from_token" binding:"required"`
+	ToToken   string `json:"to_token" binding:"required"`
+	Amount    string `json:"amount" binding:"required"`
+	Slippage  string `json:"slippage"`
+	DEX       string `json:"dex"`
 }
 
 // QuoteResponse represents a quote response
 type QuoteResponse struct {
-	FromToken    string `json:"from_token"`
-	ToToken      string `json:"to_token"`
-	AmountIn     string `json:"amount_in"`
-	AmountOut    string `json:"amount_out"`
-	AmountOutMin string `json:"amount_out_min"`
-	PriceImpact  string `json:"price_impact"`
+	FromToken    string   `json:"from_token"`
+	ToToken      string   `json:"to_token"`
+	AmountIn     string   `json:"amount_in"`
+	AmountOut    string   `json:"amount_out"`
+	AmountOutMin string   `json:"amount_out_min"`
+	PriceImpact  string   `json:"price_impact"`
 	Route        []string `json:"route"`
-	GasEstimate  string `json:"gas_estimate"`
-	DEX          string `json:"dex"`
+	GasEstimate  string   `json:"gas_estimate"`
+	DEX          string   `json:"dex"`
 }
 
 // GetQuote handles quote requests
@@ -139,11 +139,11 @@ func (h *SwapHandler) ExecuteSwap(c *gin.Context) {
 	var req struct {
 		ChainID     int64  `json:"chain_id" binding:"required"`
 		FromToken   string `json:"from_token" binding:"required"`
-	ToToken     string `json:"to_token" binding:"required"`
-	Amount      string `json:"amount" binding:"required"`
-	Slippage    string `json:"slippage"`
-	FromAddress string `json:"from_address" binding:"required"`
-	GasPrice    string `json:"gas_price"`
+		ToToken     string `json:"to_token" binding:"required"`
+		Amount      string `json:"amount" binding:"required"`
+		Slippage    string `json:"slippage"`
+		FromAddress string `json:"from_address" binding:"required"`
+		GasPrice    string `json:"gas_price"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -245,12 +245,12 @@ func NewPriceHandler(cfg *config.Config, redisClient *redis.Client) *PriceHandle
 // GetPrices returns all prices
 func (h *PriceHandler) GetPrices(c *gin.Context) {
 	symbols := c.Query("symbols")
-	
+
 	// Try cache first
 	if h.redis != nil {
 		cacheKey := fmt.Sprintf("prices:%s", symbols)
 		ctx := context.Background()
-		
+
 		if cached, err := h.redis.Get(ctx, cacheKey).Result(); err == nil {
 			var prices map[string]interface{}
 			if json.Unmarshal([]byte(cached), &prices) == nil {
@@ -295,7 +295,7 @@ func (h *PriceHandler) GetPrice(c *gin.Context) {
 	if h.redis != nil {
 		cacheKey := fmt.Sprintf("price:%s", strings.ToUpper(symbol))
 		ctx := context.Background()
-		
+
 		if cached, err := h.redis.Get(ctx, cacheKey).Result(); err == nil {
 			var price map[string]interface{}
 			if json.Unmarshal([]byte(cached), &price) == nil {
@@ -483,14 +483,14 @@ func NewPoolHandler(cfg *config.Config) *PoolHandler {
 
 // Pool represents a liquidity pool
 type Pool struct {
-	Token0          string `json:"token0"`
-	Token1          string `json:"token1"`
-	Reserve0        string `json:"reserve0"`
-	Reserve1        string `json:"reserve1"`
-	Fee             int    `json:"fee"`
-	LiquidityUSD    string `json:"liquidityUSD"`
-	Volume24h       string `json:"volume24h"`
-	APR             string `json:"apr"`
+	Token0       string `json:"token0"`
+	Token1       string `json:"token1"`
+	Reserve0     string `json:"reserve0"`
+	Reserve1     string `json:"reserve1"`
+	Fee          int    `json:"fee"`
+	LiquidityUSD string `json:"liquidityUSD"`
+	Volume24h    string `json:"volume24h"`
+	APR          string `json:"apr"`
 }
 
 // GetPools returns all pools
@@ -726,11 +726,11 @@ func (h *WalletHandler) Transfer(c *gin.Context) {
 // Approve handles token approval
 func (h *WalletHandler) Approve(c *gin.Context) {
 	var req struct {
-		Owner     string `json:"owner" binding:"required"`
-		Spender   string `json:"spender" binding:"required"`
-		Token     string `json:"token" binding:"required"`
-		Amount    string `json:"amount" binding:"required"`
-		ChainID   int64  `json:"chainId" binding:"required"`
+		Owner   string `json:"owner" binding:"required"`
+		Spender string `json:"spender" binding:"required"`
+		Token   string `json:"token" binding:"required"`
+		Amount  string `json:"amount" binding:"required"`
+		ChainID int64  `json:"chainId" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -770,11 +770,11 @@ func NewChainHandler(cfg *config.Config) *ChainHandler {
 
 // Chain represents a blockchain
 type Chain struct {
-	ChainID   int64  `json:"chainId"`
-	Name      string `json:"name"`
-	Symbol    string `json:"symbol"`
-	Explorer  string `json:"explorer"`
-	RPC       string `json:"rpc"`
+	ChainID     int64  `json:"chainId"`
+	Name        string `json:"name"`
+	Symbol      string `json:"symbol"`
+	Explorer    string `json:"explorer"`
+	RPC         string `json:"rpc"`
 	NativeToken string `json:"nativeToken"`
 }
 
@@ -868,16 +868,16 @@ func NewOrderHandler(cfg *config.Config) *OrderHandler {
 
 // Order represents a trading order
 type Order struct {
-	OrderID     string `json:"orderId"`
-	UserID      string `json:"userId"`
-	Type        string `json:"type"`
-	Side        string `json:"side"`
-	Price       string `json:"price"`
-	Amount      string `json:"amount"`
-	Filled      string `json:"filled"`
-	Status      string `json:"status"`
-	CreatedAt   int64  `json:"createdAt"`
-	UpdatedAt   int64  `json:"updatedAt"`
+	OrderID   string `json:"orderId"`
+	UserID    string `json:"userId"`
+	Type      string `json:"type"`
+	Side      string `json:"side"`
+	Price     string `json:"price"`
+	Amount    string `json:"amount"`
+	Filled    string `json:"filled"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"createdAt"`
+	UpdatedAt int64  `json:"updatedAt"`
 }
 
 // CreateOrder creates a new order
@@ -1028,17 +1028,17 @@ func NewPerpetualHandler(cfg *config.Config) *PerpetualHandler {
 
 // Position represents a perpetual position
 type Position struct {
-	PositionID    string `json:"positionId"`
-	UserID        string `json:"userId"`
-	Pair          string `json:"pair"`
-	Side          string `json:"side"`
-	Size          string `json:"size"`
-	EntryPrice    string `json:"entryPrice"`
-	MarkPrice     string `json:"markPrice"`
+	PositionID       string `json:"positionId"`
+	UserID           string `json:"userId"`
+	Pair             string `json:"pair"`
+	Side             string `json:"side"`
+	Size             string `json:"size"`
+	EntryPrice       string `json:"entryPrice"`
+	MarkPrice        string `json:"markPrice"`
 	LiquidationPrice string `json:"liquidationPrice"`
-	Leverage      string `json:"leverage"`
-	UnrealizedPNL string `json:"unrealizedPnl"`
-	Status        string `json:"status"`
+	Leverage         string `json:"leverage"`
+	UnrealizedPNL    string `json:"unrealizedPnl"`
+	Status           string `json:"status"`
 }
 
 // GetPositions returns user positions
@@ -1164,12 +1164,12 @@ func NewStakingHandler(cfg *config.Config) *StakingHandler {
 
 // StakingPool represents a staking pool
 type StakingPool struct {
-	PoolID     string `json:"poolId"`
-	Token      string `json:"token"`
+	PoolID      string `json:"poolId"`
+	Token       string `json:"token"`
 	RewardToken string `json:"rewardToken"`
-	APY        string `json:"apy"`
-	TVL        string `json:"tvl"`
-	Duration   int    `json:"duration"`
+	APY         string `json:"apy"`
+	TVL         string `json:"tvl"`
+	Duration    int    `json:"duration"`
 }
 
 // GetPools returns staking pools
@@ -1200,9 +1200,9 @@ func (h *StakingHandler) GetPools(c *gin.Context) {
 // Stake stakes tokens
 func (h *StakingHandler) Stake(c *gin.Context) {
 	var req struct {
-		UserID  string `json:"userId" binding:"required"`
-		PoolID  string `json:"poolId" binding:"required"`
-		Amount  string `json:"amount" binding:"required"`
+		UserID string `json:"userId" binding:"required"`
+		PoolID string `json:"poolId" binding:"required"`
+		Amount string `json:"amount" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1233,9 +1233,9 @@ func (h *StakingHandler) Stake(c *gin.Context) {
 // Unstake unstakes tokens
 func (h *StakingHandler) Unstake(c *gin.Context) {
 	var req struct {
-		UserID  string `json:"userId" binding:"required"`
-		PoolID  string `json:"poolId" binding:"required"`
-		Amount  string `json:"amount" binding:"required"`
+		UserID string `json:"userId" binding:"required"`
+		PoolID string `json:"poolId" binding:"required"`
+		Amount string `json:"amount" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1451,8 +1451,8 @@ func (h *FarmingHandler) Deposit(c *gin.Context) {
 // Withdraw withdraws liquidity
 func (h *FarmingHandler) Withdraw(c *gin.Context) {
 	var req struct {
-		UserID  string `json:"userId" binding:"required"`
-		PoolID  string `json:"poolId" binding:"required"`
+		UserID    string `json:"userId" binding:"required"`
+		PoolID    string `json:"poolId" binding:"required"`
 		Liquidity string `json:"liquidity" binding:"required"`
 	}
 
@@ -1900,91 +1900,91 @@ func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 
 // callUpstreamService POSTs a JSON body to an upstream service.
 func callUpstreamService(c *gin.Context, url string, body interface{}) (*http.Response, error) {
-return callUpstreamJSON(c, http.MethodPost, url, body)
+	return callUpstreamJSON(c, http.MethodPost, url, body)
 }
 
 // callUpstreamJSON performs a JSON request against an upstream service.
 func callUpstreamJSON(c *gin.Context, method, url string, body interface{}) (*http.Response, error) {
-var reader io.Reader
-if body != nil {
-data, err := json.Marshal(body)
-if err != nil {
-return nil, err
-}
-reader = bytes.NewReader(data)
-}
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(data)
+	}
 
-req, err := http.NewRequestWithContext(c.Request.Context(), method, url, reader)
-if err != nil {
-return nil, err
-}
+	req, err := http.NewRequestWithContext(c.Request.Context(), method, url, reader)
+	if err != nil {
+		return nil, err
+	}
 
-req.Header.Set("Content-Type", "application/json")
-req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
-if auth := c.GetHeader("Authorization"); auth != "" {
-req.Header.Set("Authorization", auth)
-}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
+	if auth := c.GetHeader("Authorization"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 
-client := &http.Client{Timeout: 15 * time.Second}
-return client.Do(req)
+	client := &http.Client{Timeout: 15 * time.Second}
+	return client.Do(req)
 }
 
 // generateWallet creates a BIP39 mnemonic and derives the BIP44 Ethereum account.
 func generateWallet() (mnemonic, privateKey, address string, err error) {
-entropy, err := bip39.NewEntropy(256)
-if err != nil {
-return "", "", "", fmt.Errorf("entropy: %w", err)
-}
-mnemonic, err = bip39.NewMnemonic(entropy)
-if err != nil {
-return "", "", "", fmt.Errorf("mnemonic: %w", err)
-}
+	entropy, err := bip39.NewEntropy(256)
+	if err != nil {
+		return "", "", "", fmt.Errorf("entropy: %w", err)
+	}
+	mnemonic, err = bip39.NewMnemonic(entropy)
+	if err != nil {
+		return "", "", "", fmt.Errorf("mnemonic: %w", err)
+	}
 
-key, addr, err := deriveKeyFromMnemonic(mnemonic)
-if err != nil {
-return "", "", "", err
-}
-return mnemonic, hex.EncodeToString(crypto.FromECDSA(key)), addr, nil
+	key, addr, err := deriveKeyFromMnemonic(mnemonic)
+	if err != nil {
+		return "", "", "", err
+	}
+	return mnemonic, hex.EncodeToString(crypto.FromECDSA(key)), addr, nil
 }
 
 // deriveAddressFromMnemonic returns the BIP44 Ethereum address for a mnemonic.
 func deriveAddressFromMnemonic(mnemonic string) (string, error) {
-_, addr, err := deriveKeyFromMnemonic(mnemonic)
-return addr, err
+	_, addr, err := deriveKeyFromMnemonic(mnemonic)
+	return addr, err
 }
 
 // deriveKeyFromMnemonic performs BIP39 seed + BIP32/BIP44 m/44'/60'/0'/0/0 derivation.
 func deriveKeyFromMnemonic(mnemonic string) (*ecdsa.PrivateKey, string, error) {
-seed := bip39.NewSeed(mnemonic, "")
-master, err := bip32.NewMasterKey(seed)
-if err != nil {
-return nil, "", fmt.Errorf("bip32 master: %w", err)
-}
+	seed := bip39.NewSeed(mnemonic, "")
+	master, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		return nil, "", fmt.Errorf("bip32 master: %w", err)
+	}
 
-purpose, err := master.NewChildKey(bip32.FirstHardenedChild + 44)
-if err != nil {
-return nil, "", err
-}
-coin, err := purpose.NewChildKey(bip32.FirstHardenedChild + 60)
-if err != nil {
-return nil, "", err
-}
-account, err := coin.NewChildKey(bip32.FirstHardenedChild + 0)
-if err != nil {
-return nil, "", err
-}
-change, err := account.NewChildKey(0)
-if err != nil {
-return nil, "", err
-}
-index, err := change.NewChildKey(0)
-if err != nil {
-return nil, "", err
-}
+	purpose, err := master.NewChildKey(bip32.FirstHardenedChild + 44)
+	if err != nil {
+		return nil, "", err
+	}
+	coin, err := purpose.NewChildKey(bip32.FirstHardenedChild + 60)
+	if err != nil {
+		return nil, "", err
+	}
+	account, err := coin.NewChildKey(bip32.FirstHardenedChild + 0)
+	if err != nil {
+		return nil, "", err
+	}
+	change, err := account.NewChildKey(0)
+	if err != nil {
+		return nil, "", err
+	}
+	index, err := change.NewChildKey(0)
+	if err != nil {
+		return nil, "", err
+	}
 
-key, err := crypto.ToECDSA(index.Key)
-if err != nil {
-return nil, "", fmt.Errorf("to ecdsa: %w", err)
-}
-return key, crypto.PubkeyToAddress(key.PublicKey).Hex(), nil
+	key, err := crypto.ToECDSA(index.Key)
+	if err != nil {
+		return nil, "", fmt.Errorf("to ecdsa: %w", err)
+	}
+	return key, crypto.PubkeyToAddress(key.PublicKey).Hex(), nil
 }

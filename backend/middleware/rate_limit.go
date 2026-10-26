@@ -17,8 +17,8 @@ type RateLimiter struct {
 }
 
 type bucket struct {
-	tokens    int
-	lastFill  time.Time
+	tokens   int
+	lastFill time.Time
 }
 
 // NewRateLimiter creates a new rate limiter
@@ -28,10 +28,10 @@ func NewRateLimiter(requests int, window time.Duration) *RateLimiter {
 		rate:     requests,
 		window:   window,
 	}
-	
+
 	// Cleanup old entries periodically
 	go rl.cleanup()
-	
+
 	return rl
 }
 
@@ -54,10 +54,10 @@ func (rl *RateLimiter) cleanup() {
 func (rl *RateLimiter) allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	now := time.Now()
 	b, exists := rl.requests[key]
-	
+
 	if !exists || now.Sub(b.lastFill) > rl.window {
 		// New window - reset tokens
 		rl.requests[key] = &bucket{
@@ -66,35 +66,35 @@ func (rl *RateLimiter) allow(key string) bool {
 		}
 		return true
 	}
-	
+
 	if b.tokens > 0 {
 		b.tokens--
 		return true
 	}
-	
+
 	return false
 }
 
 // RateLimitMiddleware returns Gin middleware for rate limiting
 func RateLimitMiddleware(requests int, window time.Duration) gin.HandlerFunc {
 	limiter := NewRateLimiter(requests, window)
-	
+
 	return func(c *gin.Context) {
 		// Get client identifier (IP or user ID)
 		key := c.ClientIP()
 		if userID, exists := c.Get("user_id"); exists {
 			key = userID.(string)
 		}
-		
+
 		if !limiter.allow(key) {
 			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": "Rate limit exceeded. Please try again later.",
+				"error":       "Rate limit exceeded. Please try again later.",
 				"retry_after": window.Seconds(),
 			})
 			c.Abort()
 			return
 		}
-		
+
 		c.Next()
 	}
 }
@@ -122,7 +122,7 @@ func BanIP(ip string) {
 func IsBanned(ip string) bool {
 	banList.mu.RLock()
 	defer banList.mu.RUnlock()
-	
+
 	if banTime, exists := banList.banned[ip]; exists {
 		if time.Since(banTime) < banList.duration {
 			return true
@@ -137,7 +137,7 @@ func IsBanned(ip string) bool {
 func BanCheckMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ip := c.ClientIP()
-		
+
 		if IsBanned(ip) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "Your IP has been banned",
@@ -145,7 +145,7 @@ func BanCheckMiddleware() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		
+
 		c.Next()
 	}
 }

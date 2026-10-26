@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"fmt"
+	"math/big"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -12,57 +14,57 @@ import (
 
 // PerpetualEngine handles real perpetual trading
 type PerpetualEngine struct {
-	blockchain    *BlockchainClient
-	priceAgg     *PriceAggregator
-	positions    map[string]*PerpetualPosition // positionID -> position
-	orders       map[string]*PerpetualOrder
-	mu           sync.RWMutex
+	blockchain     *BlockchainClient
+	priceAgg       *PriceAggregator
+	positions      map[string]*PerpetualPosition // positionID -> position
+	orders         map[string]*PerpetualOrder
+	mu             sync.RWMutex
 	supportedPairs []string
 }
 
 // PerpetualPosition represents a real perpetual position
 type PerpetualPosition struct {
-	ID             string    `json:"id"`
-	UserAddress    string    `json:"user_address"`
-	Pair           string    `json:"pair"` // BTC-USD, ETH-USD
-	Side           string    `json:"side"` // long, short
-	Size           string    `json:"size"` // Position size in USD
-	Collateral     string    `json:"collateral"` // Margin deposited
-	EntryPrice    float64   `json:"entry_price"`
-	MarkPrice     float64   `json:"mark_price"`
-	IndexPrice    float64   `json:"index_price"`
-	LiquidationPrice float64 `json:"liquidation_price"`
-	Leverage       int       `json:"leverage"`
-	UnrealizedPNL string    `json:"unrealized_pnl"`
-	FundingPaid   string    `json:" funding_paid"`
-	Status        string    `json:"status"` // open, closed, liquidated
-	OpenedAt      time.Time `json:"opened_at"`
-	ClosedAt      *time.Time `json:"closed_at"`
-	BlockNumber   uint64    `json:"block_number"`
+	ID               string     `json:"id"`
+	UserAddress      string     `json:"user_address"`
+	Pair             string     `json:"pair"`       // BTC-USD, ETH-USD
+	Side             string     `json:"side"`       // long, short
+	Size             string     `json:"size"`       // Position size in USD
+	Collateral       string     `json:"collateral"` // Margin deposited
+	EntryPrice       float64    `json:"entry_price"`
+	MarkPrice        float64    `json:"mark_price"`
+	IndexPrice       float64    `json:"index_price"`
+	LiquidationPrice float64    `json:"liquidation_price"`
+	Leverage         int        `json:"leverage"`
+	UnrealizedPNL    string     `json:"unrealized_pnl"`
+	FundingPaid      string     `json:" funding_paid"`
+	Status           string     `json:"status"` // open, closed, liquidated
+	OpenedAt         time.Time  `json:"opened_at"`
+	ClosedAt         *time.Time `json:"closed_at"`
+	BlockNumber      uint64     `json:"block_number"`
 }
 
 // PerpetualOrder represents a perpetual order
 type PerpetualOrder struct {
-	ID            string    `json:"id"`
-	UserAddress   string    `json:"user_address"`
-	Pair          string    `json:"pair"`
-	Side          string    `json:"side"`
-	OrderType     string    `json:"order_type"` // market, limit
-	Size          string    `json:"size"`
-	Price         float64   `json:"price"`
-	TriggerPrice  float64   `json:"trigger_price"`
-	Status        string    `json:"status"` // pending, filled, cancelled
-	FilledSize    string    `json:"filled_size"`
-	CreatedAt     time.Time `json:"created_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
+	ID           string    `json:"id"`
+	UserAddress  string    `json:"user_address"`
+	Pair         string    `json:"pair"`
+	Side         string    `json:"side"`
+	OrderType    string    `json:"order_type"` // market, limit
+	Size         string    `json:"size"`
+	Price        float64   `json:"price"`
+	TriggerPrice float64   `json:"trigger_price"`
+	Status       string    `json:"status"` // pending, filled, cancelled
+	FilledSize   string    `json:"filled_size"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }
 
 // FundingInfo tracks funding rates
 type FundingInfo struct {
-	Pair          string    `json:"pair"`
-	LastFundingRate float64 `json:"last_funding_rate"`
+	Pair            string    `json:"pair"`
+	LastFundingRate float64   `json:"last_funding_rate"`
 	NextFundingTime time.Time `json:"next_funding_time"`
-	InterestRate  float64   `json:"interest_rate"`
+	InterestRate    float64   `json:"interest_rate"`
 }
 
 func NewPerpetualEngine(blockchain *BlockchainClient, priceAgg *PriceAggregator) *PerpetualEngine {
@@ -75,8 +77,10 @@ func NewPerpetualEngine(blockchain *BlockchainClient, priceAgg *PriceAggregator)
 	}
 }
 
-// OpenPosition opens a new perpetual position
-func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, privateKey, pair, side, size, collateral string, leverage int) (*PerpetualPosition, error) {
+// OpenPosition opens a new perpetual position. The position is opened against
+// the engine's own mark and index prices; the caller's on-chain settlement is
+// broadcast separately with a client-signed transaction.
+func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, pair, side, size, collateral string, leverage int) (*PerpetualPosition, error) {
 	// Validate inputs
 	if !e.isValidPair(pair) {
 		return nil, fmt.Errorf("unsupported pair: %s", pair)
@@ -97,39 +101,39 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, priva
 	// Calculate liquidation price
 	liquidationPrice := e.calculateLiquidationPrice(markPrice, leverage, side == "long")
 
-        // Validate numeric inputs and enforce leverage limits.
-        sizeFloat := parseFloat(size)
-        collateralFloat := parseFloat(collateral)
-        if sizeFloat <= 0 || collateralFloat <= 0 {
-                return nil, fmt.Errorf("size and collateral must be positive")
-        }
-        if markPrice <= 0 {
-                return nil, fmt.Errorf("no mark price available for %s", pair)
-        }
-        if leverage < 1 || leverage > 1001 {
-                return nil, fmt.Errorf("leverage must be between 1 and 1001")
-        }
-        if requiredMargin := sizeFloat / float64(leverage); collateralFloat+1e-9 < requiredMargin {
-                return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", requiredMargin, leverage, sizeFloat)
-        }
+	// Validate numeric inputs and enforce leverage limits.
+	sizeFloat := parseFloat(size)
+	collateralFloat := parseFloat(collateral)
+	if sizeFloat <= 0 || collateralFloat <= 0 {
+		return nil, fmt.Errorf("size and collateral must be positive")
+	}
+	if markPrice <= 0 {
+		return nil, fmt.Errorf("no mark price available for %s", pair)
+	}
+	if leverage < 1 || leverage > 1001 {
+		return nil, fmt.Errorf("leverage must be between 1 and 1001")
+	}
+	if requiredMargin := sizeFloat / float64(leverage); collateralFloat+1e-9 < requiredMargin {
+		return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", requiredMargin, leverage, sizeFloat)
+	}
 
 	position := &PerpetualPosition{
-		ID:                fmt.Sprintf("pos_%d", time.Now().UnixNano()),
-		UserAddress:       "", // Would derive from private key
-		Pair:              pair,
-		Side:              side,
-		Size:              size,
-		Collateral:        collateral,
-		EntryPrice:        markPrice,
-		MarkPrice:         markPrice,
-		IndexPrice:        indexPrice,
-		LiquidationPrice:  liquidationPrice,
-		Leverage:          leverage,
+		ID:               fmt.Sprintf("pos_%d", time.Now().UnixNano()),
+		UserAddress:      "", // Would derive from private key
+		Pair:             pair,
+		Side:             side,
+		Size:             size,
+		Collateral:       collateral,
+		EntryPrice:       markPrice,
+		MarkPrice:        markPrice,
+		IndexPrice:       indexPrice,
+		LiquidationPrice: liquidationPrice,
+		Leverage:         leverage,
 		UnrealizedPNL:    "0",
 		FundingPaid:      "0",
-		Status:            "open",
-		OpenedAt:          time.Now(),
-		BlockNumber:       0,
+		Status:           "open",
+		OpenedAt:         time.Now(),
+		BlockNumber:      0,
 	}
 
 	// Store position
@@ -399,10 +403,12 @@ func (e *PerpetualEngine) nextFundingTime() time.Time {
 
 // API Handlers
 
+// OpenPositionHandler broadcasts a client-signed position-opening transaction.
+// The server never receives a private key.
 func (e *PerpetualEngine) OpenPositionHandler(c *gin.Context) {
 	var req struct {
 		ChainID    int64  `json:"chain_id" binding:"required"`
-		PrivateKey string `json:"private_key" binding:"required"`
+		SignedTx   string `json:"signed_tx" binding:"required"`
 		Pair       string `json:"pair" binding:"required"`
 		Side       string `json:"side" binding:"required"`
 		Size       string `json:"size" binding:"required"`
@@ -411,17 +417,26 @@ func (e *PerpetualEngine) OpenPositionHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	position, err := e.OpenPosition(c.Request.Context(), req.ChainID, req.PrivateKey, req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
+	txHash, err := e.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, position)
+	c.JSON(http.StatusOK, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
+}
+
+// BroadcastTransaction submits a client-signed transaction for this engine.
+func (e *PerpetualEngine) BroadcastTransaction(ctx context.Context, chainID int64, signedTxHex string) (string, error) {
+	client, err := e.blockchain.GetClient(chainID)
+	if err != nil {
+		return "", err
+	}
+	return broadcastSignedTransaction(ctx, client, signedTxHex)
 }
 
 func (e *PerpetualEngine) ClosePositionHandler(c *gin.Context) {
@@ -443,20 +458,20 @@ func (e *PerpetualEngine) GetPositionsHandler(c *gin.Context) {
 
 	c.JSON(200, gin.H{
 		"positions": positions,
-		"count":    len(positions),
+		"count":     len(positions),
 	})
 }
 
 func (e *PerpetualEngine) CreateOrderHandler(c *gin.Context) {
 	var req struct {
 		UserAddress  string  `json:"user_address" binding:"required"`
-		Pair        string  `json:"pair" binding:"required"`
-		Side        string  `json:"side" binding:"required"`
-		OrderType   string  `json:"order_type" binding:"required"`
-		Size        string  `json:"size" binding:"required"`
-		Price       float64 `json:"price"`
+		Pair         string  `json:"pair" binding:"required"`
+		Side         string  `json:"side" binding:"required"`
+		OrderType    string  `json:"order_type" binding:"required"`
+		Size         string  `json:"size" binding:"required"`
+		Price        float64 `json:"price"`
 		TriggerPrice float64 `json:"trigger_price"`
-		ExpiresIn   int     `json:"expires_in"`
+		ExpiresIn    int     `json:"expires_in"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -496,3 +511,70 @@ func (e *PerpetualEngine) GetSupportedPairsHandler(c *gin.Context) {
 	})
 }
 
+// PerpMarketView is the public description of a tradable perpetual market.
+type PerpMarketView struct {
+	MarketID          string  `json:"marketId"`
+	Symbol            string  `json:"symbol"`
+	MarkPrice         float64 `json:"markPrice"`
+	IndexPrice        float64 `json:"indexPrice"`
+	FundingRate       float64 `json:"fundingRate"`
+	MaxLeverage       int     `json:"maxLeverage"`
+	OpenInterestLong  float64 `json:"openInterestLong"`
+	OpenInterestShort float64 `json:"openInterestShort"`
+	IsActive          bool    `json:"isActive"`
+}
+
+// maxPerpLeverage caps leverage for engine-priced perpetual markets.
+const maxPerpLeverage = 100
+
+// GetMarketsHandler lists the engine's markets with live mark/index prices and
+// funding. A market whose price feed is unavailable is still returned but is
+// marked inactive, so a client never trades against a stale price.
+func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
+	ctx := c.Request.Context()
+	markets := make([]PerpMarketView, 0, len(e.supportedPairs))
+
+	for _, pair := range e.supportedPairs {
+		view := PerpMarketView{
+			MarketID:    pair,
+			Symbol:      pair,
+			MaxLeverage: maxPerpLeverage,
+		}
+
+		markPrice, err := e.getMarkPrice(ctx, pair)
+		if err != nil {
+			markets = append(markets, view)
+			continue
+		}
+
+		view.MarkPrice = markPrice
+		view.IndexPrice = markPrice
+		view.IsActive = true
+
+		if funding, err := e.GetFundingRate(ctx, pair); err == nil {
+			view.FundingRate = funding.LastFundingRate
+		}
+
+		e.mu.RLock()
+		for _, position := range e.positions {
+			if position.Pair != pair || position.Status != "open" {
+				continue
+			}
+			size, ok := new(big.Float).SetString(position.Size)
+			if !ok {
+				continue
+			}
+			notional, _ := size.Float64()
+			if position.Side == "short" {
+				view.OpenInterestShort += notional
+			} else {
+				view.OpenInterestLong += notional
+			}
+		}
+		e.mu.RUnlock()
+
+		markets = append(markets, view)
+	}
+
+	c.JSON(200, gin.H{"markets": markets})
+}

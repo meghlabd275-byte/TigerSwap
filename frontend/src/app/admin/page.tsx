@@ -32,8 +32,9 @@ import {
 import { useAdminStore, Blockchain, Token, LaunchpadProject } from '@/store/adminStore';
 import { login, logout } from '@/lib/auth';
 import { useAdminDashboard } from '@/hooks/useApi';
+import { AdminListingsPanel } from '@/components/AdminListingsPanel';
 
-type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'launchpad' | 'fees' | 'settings' | 'activity';
+type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'fees' | 'settings' | 'activity';
 
 export default function AdminPage() {
   const {
@@ -294,6 +295,7 @@ export default function AdminPage() {
               { id: 'dashboard', label: 'Dashboard', icon: BarChart3 },
               { id: 'blockchains', label: 'Blockchains', icon: Globe },
               { id: 'tokens', label: 'Tokens', icon: Coins },
+              { id: 'listings', label: 'Listings', icon: BarChart3 },
               { id: 'launchpad', label: 'Launchpad', icon: Rocket },
               { id: 'fees', label: 'Fees', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
@@ -586,6 +588,12 @@ export default function AdminPage() {
                   </tbody>
                 </table>
               </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'listings' && (
+            <motion.div key="listings" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <AdminListingsPanel />
             </motion.div>
           )}
 

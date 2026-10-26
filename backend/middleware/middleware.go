@@ -71,7 +71,7 @@ func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 
 			if count > int64(limit) {
 				c.JSON(http.StatusTooManyRequests, gin.H{
-					"error": "Rate limit exceeded",
+					"error":       "Rate limit exceeded",
 					"retry_after": 60,
 				})
 				c.Abort()

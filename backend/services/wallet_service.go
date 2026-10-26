@@ -7,10 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +38,7 @@ type WalletService struct {
 	swapExecutor  *SwapExecutor
 	perpetuals    *PerpetualEngine
 	copyEngine    *CopyTradingEngine
+	ledger        *LedgerService
 	masterKeys    map[string]*ecdsa.PrivateKey
 	encryptionKey []byte
 	hdSeed        []byte
@@ -72,49 +75,74 @@ func (s *WalletService) SetDependencies(blockchain *BlockchainClient, executor *
 	s.copyEngine = copy
 }
 
+// SetLedger wires the internal accounting service used to authorize withdrawals.
+func (s *WalletService) SetLedger(ledger *LedgerService) {
+	s.ledger = ledger
+}
+
+// GetBalances returns the authenticated caller's platform ledger balances.
+func (s *WalletService) GetBalances(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+	if s.ledger == nil {
+		c.JSON(503, gin.H{"error": "Ledger not configured"})
+		return
+	}
+
+	balances, err := s.ledger.Balances(userID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to load balances"})
+		return
+	}
+	c.JSON(200, gin.H{"success": true, "balances": balances})
+}
+
 // MasterWallet represents the admin master wallet
 type MasterWallet struct {
-	ID                uuid.UUID              `json:"id"`
-	SeedPhrase        string                 `json:"seed_phrase"`
-	MasterAddress     string                 `json:"master_address"`
-	BackupCode        string                 `json:"backup_code"`
-	SupportedChains   []int64                `json:"supported_chains"`
-	AutoSignEnabled   bool                   `json:"auto_sign_enabled"`
-	CreatedAt         time.Time              `json:"created_at"`
-	UpdatedAt         time.Time              `json:"updated_at"`
+	ID              uuid.UUID `json:"id"`
+	UserID          string    `json:"user_id"`
+	SeedPhrase      string    `json:"seed_phrase"`
+	MasterAddress   string    `json:"master_address"`
+	BackupCode      string    `json:"backup_code"`
+	SupportedChains []int64   `json:"supported_chains"`
+	AutoSignEnabled bool      `json:"auto_sign_enabled"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // UserWallet represents a user wallet
 type UserWallet struct {
-	ID              uuid.UUID              `json:"id"`
-	UserID          uuid.UUID              `json:"user_id"`
-	SeedPhrase      string                 `json:"seed_phrase"`
-	WalletAddresses map[string]string      `json:"wallet_addresses"` // chainType_chainId -> address
-	CreatedAt       time.Time              `json:"created_at"`
-	UpdatedAt       time.Time              `json:"updated_at"`
+	ID              uuid.UUID         `json:"id"`
+	UserID          uuid.UUID         `json:"user_id"`
+	SeedPhrase      string            `json:"seed_phrase"`
+	WalletAddresses map[string]string `json:"wallet_addresses"` // chainType_chainId -> address
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
 // TransactionRequest represents a transaction request
 type TransactionRequest struct {
-	FromChain    int64  `json:"from_chain" binding:"required"`
-	ToChain      int64  `json:"to_chain" binding:"required"`
-	FromToken    string `json:"from_token" binding:"required"`
-	ToToken      string `json:"to_token" binding:"required"`
-	Amount       string `json:"amount" binding:"required"`
-	Slippage     float64 `json:"slippage"`
-	UserID       string `json:"user_id"`
-	AutoSign     bool   `json:"auto_sign"`
+	FromChain int64   `json:"from_chain" binding:"required"`
+	ToChain   int64   `json:"to_chain" binding:"required"`
+	FromToken string  `json:"from_token" binding:"required"`
+	ToToken   string  `json:"to_token" binding:"required"`
+	Amount    string  `json:"amount" binding:"required"`
+	Slippage  float64 `json:"slippage"`
+	UserID    string  `json:"user_id"`
+	AutoSign  bool    `json:"auto_sign"`
 }
 
-// SwapRequest represents a swap request
+// SwapRequest represents a swap request. It carries a client-signed payload;
+// a raw private key is never accepted over HTTP.
 type SwapRequest struct {
-	ChainID     int64   `json:"chain_id" binding:"required"`
-	FromToken   string  `json:"from_token" binding:"required"`
-	ToToken     string  `json:"to_token" binding:"required"`
-	Amount      string  `json:"amount" binding:"required"`
-	Slippage    float64 `json:"slippage"`
-	UserID      string  `json:"user_id"`
-	PrivateKey  string  `json:"private_key"`
+	ChainID   int64   `json:"chain_id" binding:"required"`
+	FromToken string  `json:"from_token" binding:"required"`
+	ToToken   string  `json:"to_token" binding:"required"`
+	Amount    string  `json:"amount" binding:"required"`
+	Slippage  float64 `json:"slippage"`
+	SignedTx  string  `json:"signed_tx" binding:"required"`
 }
 
 // CopyTrade represents a copy trade
@@ -159,6 +187,10 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
 	if !bip39.IsMnemonicValid(req.SeedPhrase) {
 		c.JSON(400, gin.H{"error": "Invalid BIP39 seed phrase"})
@@ -173,6 +205,7 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 
 	masterWallet := MasterWallet{
 		ID:              uuid.New(),
+		UserID:          userID,
 		SeedPhrase:      req.SeedPhrase,
 		MasterAddress:   address.Hex(),
 		BackupCode:      uuid.New().String(),
@@ -194,60 +227,64 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "wallet": masterWallet})
 }
 
-// GetMasterWallet returns master wallet info.
+// GetMasterWallet returns the authenticated caller's master wallet info.
 func (s *WalletService) GetMasterWallet(c *gin.Context) {
-	address := c.Param("address")
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	s.mu.RLock()
-	_, exists := s.masterKeys[address]
-	s.mu.RUnlock()
-
-	if !exists {
-		var stored models.MasterWallet
-		if err := s.db.Where("address = ?", address).First(&stored).Error; err != nil {
-			c.JSON(404, gin.H{"error": "Master wallet not found"})
-			return
-		}
-		c.JSON(200, gin.H{
-			"success":           true,
-			"address":           stored.Address,
-			"auto_sign_enabled": stored.AutoSignEnabled,
-			"supported_chains":  stored.SupportedChains,
-		})
+	var stored models.MasterWallet
+	if err := s.db.Where("user_id = ?", userID).First(&stored).Error; err != nil {
+		c.JSON(404, gin.H{"error": "Master wallet not found"})
 		return
 	}
 
 	c.JSON(200, gin.H{
 		"success":           true,
-		"address":           address,
-		"auto_sign_enabled": true,
+		"address":           stored.Address,
+		"auto_sign_enabled": stored.AutoSignEnabled,
+		"supported_chains":  stored.SupportedChains,
 	})
 }
 
-// AutoSignTransaction signs and broadcasts a transfer from a stored master wallet.
+// AutoSignTransaction signs and broadcasts a transfer from the caller's own
+// stored master wallet. The wallet is looked up by owner, so one account can
+// never spend from another account's custody wallet.
 func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 	var req struct {
-		MasterAddress string `json:"master_address" binding:"required"`
-		ToAddress     string `json:"to_address" binding:"required"`
-		Amount        string `json:"amount" binding:"required"`
-		ChainID       int64  `json:"chain_id" binding:"required"`
-		TokenAddress  string `json:"token_address"`
+		ToAddress    string `json:"to_address" binding:"required"`
+		Amount       string `json:"amount" binding:"required"`
+		ChainID      int64  `json:"chain_id" binding:"required"`
+		TokenAddress string `json:"token_address"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	s.mu.RLock()
-	privateKey, exists := s.masterKeys[req.MasterAddress]
-	s.mu.RUnlock()
-	if !exists {
+	var stored models.MasterWallet
+	if err := s.db.Where("user_id = ?", userID).First(&stored).Error; err != nil {
 		c.JSON(404, gin.H{"error": "Master wallet not found"})
+		return
+	}
+	if !stored.AutoSignEnabled {
+		c.JSON(403, gin.H{"error": "Auto-sign is disabled for this wallet"})
 		return
 	}
 	if s.blockchain == nil {
 		c.JSON(503, gin.H{"error": "Blockchain client not configured"})
+		return
+	}
+
+	privateKey, err := s.loadMasterKey(&stored)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Master wallet signer unavailable", "details": err.Error()})
 		return
 	}
 
@@ -269,47 +306,54 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
 }
 
-// ExecuteSwap executes a token swap through the configured swap executor.
+// loadMasterKey returns the decrypted private key for a stored master wallet,
+// preferring the in-memory cache and falling back to the encrypted record.
+func (s *WalletService) loadMasterKey(stored *models.MasterWallet) (*ecdsa.PrivateKey, error) {
+	s.mu.RLock()
+	cached, exists := s.masterKeys[stored.Address]
+	s.mu.RUnlock()
+	if exists {
+		return cached, nil
+	}
+
+	raw, err := s.decryptSecret(stored.EncryptedKey)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt master key: %w", err)
+	}
+	key, err := crypto.ToECDSA(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parse master key: %w", err)
+	}
+
+	s.mu.Lock()
+	s.masterKeys[stored.Address] = key
+	s.mu.Unlock()
+	return key, nil
+}
+
+// ExecuteSwap broadcasts a client-signed swap. The server holds no private key:
+// the client signs locally and posts the signed payload.
 func (s *WalletService) ExecuteSwap(c *gin.Context) {
 	var req SwapRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
 	if s.swapExecutor == nil {
-		c.JSON(503, gin.H{"error": "Swap executor not configured"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Swap executor not configured"})
 		return
 	}
 
-	privateKey, err := s.resolveUserKey(req.UserID, req.PrivateKey)
+	txHash, err := s.swapExecutor.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Swap failed", "details": err.Error()})
 		return
 	}
 
-	slippage := req.Slippage
-	if slippage <= 0 {
-		slippage = 0.5
-	}
-
-	result, err := s.swapExecutor.ExecuteSwap(
-		c.Request.Context(), req.ChainID, privateKey,
-		req.FromToken, req.ToToken, req.Amount,
-		strconv.FormatFloat(slippage, 'f', 4, 64), "tigerswap",
-	)
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Swap failed", "details": err.Error()})
-		return
-	}
-
-	c.JSON(200, gin.H{
-		"success":    true,
-		"tx_hash":    result.TxHash,
-		"status":     result.Status,
-		"from_token": result.FromToken,
-		"to_token":   result.ToToken,
-		"amount_in":  result.AmountIn,
-		"amount_out": result.AmountOut,
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"tx_hash": txHash,
+		"status":  "submitted",
 	})
 }
 
@@ -350,10 +394,21 @@ func (s *WalletService) GetSwapQuote(c *gin.Context) {
 	})
 }
 
+// authenticatedUserID returns the caller's id from the session middleware.
+// Wallet operations act only on the authenticated account; a client-supplied
+// user id is never trusted.
+func authenticatedUserID(c *gin.Context) (string, bool) {
+	userID := c.GetString("user_id")
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authenticated session required"})
+		return "", false
+	}
+	return userID, true
+}
+
 // CreatePerpetualPosition opens a perpetual position and persists it.
 func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 	var req struct {
-		UserID     string `json:"user_id" binding:"required"`
 		Pair       string `json:"pair" binding:"required"`
 		Side       string `json:"side" binding:"required"`
 		Size       string `json:"size" binding:"required"`
@@ -369,15 +424,19 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 		c.JSON(503, gin.H{"error": "Perpetual engine not configured"})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	position, err := s.perpetuals.OpenPosition(c.Request.Context(), 1, "", req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
+	position, err := s.perpetuals.OpenPosition(c.Request.Context(), 1, req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
 	stored := models.PerpetualPosition{
-		UserID:     req.UserID,
+		UserID:     userID,
 		Pair:       position.Pair,
 		Side:       position.Side,
 		Size:       position.Size,
@@ -397,12 +456,18 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "position": stored})
 }
 
-// ClosePerpetualPosition closes a perpetual trading position.
+// ClosePerpetualPosition closes a perpetual trading position owned by the
+// authenticated caller.
 func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 	positionID := c.Param("id")
 
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+
 	var stored models.PerpetualPosition
-	if err := s.db.Where("id = ?", positionID).First(&stored).Error; err != nil {
+	if err := s.db.Where("id = ? AND user_id = ?", positionID, userID).First(&stored).Error; err != nil {
 		c.JSON(404, gin.H{"error": "Position not found"})
 		return
 	}
@@ -440,16 +505,15 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 	})
 }
 
-// GetPerpetualPositions returns all positions for a user.
+// GetPerpetualPositions returns the authenticated caller's positions.
 func (s *WalletService) GetPerpetualPositions(c *gin.Context) {
-	userID := c.Query("user_id")
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
 	positions := []models.PerpetualPosition{}
-	q := s.db.Order("opened_at desc")
-	if userID != "" {
-		q = q.Where("user_id = ?", userID)
-	}
-	if err := q.Find(&positions).Error; err != nil {
+	if err := s.db.Where("user_id = ?", userID).Order("opened_at desc").Find(&positions).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to load positions"})
 		return
 	}
@@ -471,6 +535,10 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 	if !common.IsHexAddress(req.TraderAddress) || !common.IsHexAddress(req.FollowerAddress) {
 		c.JSON(400, gin.H{"error": "Invalid address"})
 		return
@@ -486,6 +554,7 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	}
 
 	copyTrade := models.CopyTrade{
+		FollowerID:      userID,
 		TraderAddress:   common.HexToAddress(req.TraderAddress).Hex(),
 		FollowerAddress: common.HexToAddress(req.FollowerAddress).Hex(),
 		Pair:            req.Pair,
@@ -502,16 +571,15 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "copy_trade": copyTrade})
 }
 
-// GetCopyTrades returns copy trades for a user.
+// GetCopyTrades returns the authenticated caller's copy trades.
 func (s *WalletService) GetCopyTrades(c *gin.Context) {
-	address := c.Query("address")
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
 	trades := []models.CopyTrade{}
-	q := s.db.Order("copied_at desc")
-	if address != "" {
-		q = q.Where("trader_address = ? OR follower_address = ?", address, address)
-	}
-	if err := q.Find(&trades).Error; err != nil {
+	if err := s.db.Where("follower_id = ?", userID).Order("copied_at desc").Find(&trades).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to load copy trades"})
 		return
 	}
@@ -583,16 +651,20 @@ func (s *WalletService) UpdateLaunchpadProject(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "project": project})
 }
 
-// ParticipateInLaunchpad records a contribution to a launchpad project.
+// ParticipateInLaunchpad records the authenticated caller's contribution to a
+// launchpad project.
 func (s *WalletService) ParticipateInLaunchpad(c *gin.Context) {
 	var req struct {
 		ProjectID string `json:"project_id" binding:"required"`
-		UserID    string `json:"user_id" binding:"required"`
 		Amount    string `json:"amount" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		return
+	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
 		return
 	}
 
@@ -635,7 +707,7 @@ func (s *WalletService) ParticipateInLaunchpad(c *gin.Context) {
 	c.JSON(200, gin.H{
 		"success":       true,
 		"project_id":    project.ID,
-		"user_id":       req.UserID,
+		"user_id":       userID,
 		"amount":        req.Amount,
 		"raised_amount": project.RaisedAmount,
 		"status":        "participated",
@@ -645,7 +717,6 @@ func (s *WalletService) ParticipateInLaunchpad(c *gin.Context) {
 // Deposit derives the user's deterministic deposit address and returns it.
 func (s *WalletService) Deposit(c *gin.Context) {
 	var req struct {
-		UserID  string `json:"user_id" binding:"required"`
 		ChainID int64  `json:"chain_id" binding:"required"`
 		Token   string `json:"token" binding:"required"`
 		Amount  string `json:"amount" binding:"required"`
@@ -655,10 +726,28 @@ func (s *WalletService) Deposit(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	depositAddress, err := s.deriveDepositAddress(req.UserID, req.ChainID)
+	depositAddress, err := s.deriveDepositAddress(userID, req.ChainID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to derive deposit address", "details": err.Error()})
+		return
+	}
+
+	// Persist the address-to-owner mapping so the deposit watcher can credit
+	// the right account when funds arrive. The unique key keeps this idempotent
+	// across repeat requests.
+	mapping := models.DepositAddress{
+		UserID:  userID,
+		ChainID: req.ChainID,
+		Address: depositAddress,
+	}
+	if err := s.db.Where("chain_id = ? AND address = ?", req.ChainID, depositAddress).
+		FirstOrCreate(&mapping).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to register deposit address", "details": err.Error()})
 		return
 	}
 
@@ -672,10 +761,12 @@ func (s *WalletService) Deposit(c *gin.Context) {
 	})
 }
 
-// Withdraw signs and broadcasts a withdrawal from the platform wallet.
+// Withdraw signs and broadcasts a withdrawal from the platform wallet. The
+// amount is debited from the caller's ledger balance under a row lock, so a
+// withdrawal can never exceed what the user holds on the platform. If the
+// on-chain transfer fails the debit is reversed.
 func (s *WalletService) Withdraw(c *gin.Context) {
 	var req struct {
-		UserID    string `json:"user_id" binding:"required"`
 		ToAddress string `json:"to_address" binding:"required"`
 		ChainID   int64  `json:"chain_id" binding:"required"`
 		Token     string `json:"token" binding:"required"`
@@ -686,6 +777,10 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 	if !common.IsHexAddress(req.ToAddress) {
 		c.JSON(400, gin.H{"error": "Invalid destination address"})
 		return
@@ -694,10 +789,8 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		c.JSON(503, gin.H{"error": "Blockchain client not configured"})
 		return
 	}
-
-	key, err := s.platformKey()
-	if err != nil {
-		c.JSON(500, gin.H{"error": "Platform signer unavailable", "details": err.Error()})
+	if s.ledger == nil {
+		c.JSON(503, gin.H{"error": "Ledger not configured"})
 		return
 	}
 
@@ -707,17 +800,62 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		return
 	}
 
+	// Debit first: this is the authorization gate. It fails closed if the user
+	// does not hold enough on the platform.
+	if err := s.ledger.Debit(userID, req.ChainID, req.Token, amount); err != nil {
+		if errors.Is(err, ErrInsufficientBalance) {
+			c.JSON(409, gin.H{"error": "Insufficient balance"})
+			return
+		}
+		c.JSON(500, gin.H{"error": "Failed to reserve funds", "details": err.Error()})
+		return
+	}
+
+	key, err := s.platformKey()
+	if err != nil {
+		// Reverse the debit so the user is not charged for a failed withdrawal.
+		s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount)
+		c.JSON(500, gin.H{"error": "Platform signer unavailable", "details": err.Error()})
+		return
+	}
+
 	txHash, err := s.blockchain.SendTransaction(
 		c.Request.Context(), req.ChainID, hex.EncodeToString(crypto.FromECDSA(key)),
 		req.ToAddress, amount, req.Token, nil,
 	)
 	if err != nil {
+		if creditErr := s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount); creditErr != nil {
+			log.Printf("failed to reverse withdrawal debit for user %s: %v", userID, creditErr)
+		}
 		c.JSON(500, gin.H{"error": "Withdrawal failed", "details": err.Error()})
 		return
 	}
 
+	s.db.Create(&models.Transaction{
+		UserID:     parseUserUUID(userID),
+		Hash:       txHash,
+		ChainID:    req.ChainID,
+		Type:       "withdraw",
+		FromToken:  req.Token,
+		FromAmount: req.Amount,
+		ToAddress:  common.HexToAddress(req.ToAddress).Hex(),
+		Status:     "pending",
+		Timestamp:  time.Now(),
+	})
+
 	c.JSON(200, gin.H{"success": true, "tx_hash": txHash, "status": "processing"})
 }
+
+// parseUserUUID converts a session user id into a UUID, returning the nil UUID
+// when the identifier is not a UUID (for example an external wallet subject).
+func parseUserUUID(userID string) uuid.UUID {
+	parsed, err := uuid.Parse(userID)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
+}
+
 // AddBlockchain adds a new blockchain (Super Admin only)
 func (s *WalletService) AddBlockchain(c *gin.Context) {
 	var req models.Blockchain
@@ -725,16 +863,16 @@ func (s *WalletService) AddBlockchain(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
-	
+
 	req.ID = 0
 	req.IsActive = true
 	req.CreatedAt = time.Now()
 	req.UpdatedAt = time.Now()
-	
+
 	s.db.Create(&req)
-	
+
 	c.JSON(200, gin.H{
-		"success": true,
+		"success":    true,
 		"blockchain": req,
 	})
 }
@@ -742,25 +880,25 @@ func (s *WalletService) AddBlockchain(c *gin.Context) {
 // UpdateBlockchain updates a blockchain (Super Admin only)
 func (s *WalletService) UpdateBlockchain(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	var req struct {
 		Name        string `json:"name"`
 		RPCURL      string `json:"rpc_url"`
 		ExplorerURL string `json:"explorer_url"`
 		IsActive    *bool  `json:"is_active"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
-	
+
 	var blockchain models.Blockchain
 	if err := s.db.First(&blockchain, id).Error; err != nil {
 		c.JSON(404, gin.H{"error": "Blockchain not found"})
 		return
 	}
-	
+
 	if req.Name != "" {
 		blockchain.Name = req.Name
 	}
@@ -773,12 +911,12 @@ func (s *WalletService) UpdateBlockchain(c *gin.Context) {
 	if req.IsActive != nil {
 		blockchain.IsActive = *req.IsActive
 	}
-	
+
 	blockchain.UpdatedAt = time.Now()
 	s.db.Save(&blockchain)
-	
+
 	c.JSON(200, gin.H{
-		"success": true,
+		"success":    true,
 		"blockchain": blockchain,
 	})
 }
@@ -790,44 +928,44 @@ func (s *WalletService) AddToken(c *gin.Context) {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
-	
+
 	req.ID = 0
 	req.IsActive = true
 	req.CreatedAt = time.Now()
 	req.UpdatedAt = time.Now()
-	
+
 	s.db.Create(&req)
-	
+
 	c.JSON(200, gin.H{
 		"success": true,
-		"token": req,
+		"token":   req,
 	})
 }
 
 // UpdateToken updates a token (Super Admin only)
 func (s *WalletService) UpdateToken(c *gin.Context) {
 	id := c.Param("id")
-	
+
 	var req struct {
-		Name       string  `json:"name"`
-		Symbol     string  `json:"symbol"`
-		Decimals   int     `json:"decimals"`
-		LogoURI    string  `json:"logo_uri"`
-		IsActive   *bool   `json:"is_active"`
-		IsVerified *bool   `json:"is_verified"`
+		Name       string `json:"name"`
+		Symbol     string `json:"symbol"`
+		Decimals   int    `json:"decimals"`
+		LogoURI    string `json:"logo_uri"`
+		IsActive   *bool  `json:"is_active"`
+		IsVerified *bool  `json:"is_verified"`
 	}
-	
+
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
 		return
 	}
-	
+
 	var token models.Token
 	if err := s.db.First(&token, id).Error; err != nil {
 		c.JSON(404, gin.H{"error": "Token not found"})
 		return
 	}
-	
+
 	if req.Name != "" {
 		token.Name = req.Name
 	}
@@ -846,13 +984,13 @@ func (s *WalletService) UpdateToken(c *gin.Context) {
 	if req.IsVerified != nil {
 		token.IsVerified = *req.IsVerified
 	}
-	
+
 	token.UpdatedAt = time.Now()
 	s.db.Save(&token)
-	
+
 	c.JSON(200, gin.H{
 		"success": true,
-		"token": token,
+		"token":   token,
 	})
 }
 
@@ -924,30 +1062,30 @@ func (s *WalletService) GetFeeSettings(c *gin.Context) {
 func (s *WalletService) GetAllBlockchains(c *gin.Context) {
 	var blockchains []models.Blockchain
 	s.db.Where("is_active = ?", true).Find(&blockchains)
-	
+
 	c.JSON(200, gin.H{
-		"success": true,
+		"success":     true,
 		"blockchains": blockchains,
-		"count": len(blockchains),
+		"count":       len(blockchains),
 	})
 }
 
 // GetAllTokens returns all supported tokens
 func (s *WalletService) GetAllTokens(c *gin.Context) {
 	chainID := c.Query("chain_id")
-	
+
 	query := s.db.Where("is_active = ?", true)
 	if chainID != "" {
 		query = query.Where("chain_id = ?", chainID)
 	}
-	
+
 	var tokens []models.Token
 	query.Find(&tokens)
-	
+
 	c.JSON(200, gin.H{
 		"success": true,
-		"tokens": tokens,
-		"count": len(tokens),
+		"tokens":  tokens,
+		"count":   len(tokens),
 	})
 }
 
@@ -966,11 +1104,11 @@ func (s *WalletService) getRPCForChain(chainID int64) string {
 		5000:  "https://rpc.mantle.xyz",
 		81457: "https://rpc.blast.io",
 	}
-	
+
 	if url, ok := rpcURLs[chainID]; ok {
 		return url
 	}
-	
+
 	return "https://eth.llamarpc.com"
 }
 
@@ -978,152 +1116,130 @@ func (s *WalletService) getRPCForChain(chainID int64) string {
 
 // deriveEVMKey derives the BIP44 m/44'/60'/0'/0/index key from a BIP39 mnemonic.
 func deriveEVMKey(mnemonic string, index uint32) (*ecdsa.PrivateKey, error) {
-        seed := bip39.NewSeed(mnemonic, "")
-        master, err := bip32.NewMasterKey(seed)
-        if err != nil {
-                return nil, fmt.Errorf("master key: %w", err)
-        }
+	seed := bip39.NewSeed(mnemonic, "")
+	master, err := bip32.NewMasterKey(seed)
+	if err != nil {
+		return nil, fmt.Errorf("master key: %w", err)
+	}
 
-        // m/44'/60'/0'/0/index
-        path := []uint32{
-                bip32.FirstHardenedChild + 44,
-                bip32.FirstHardenedChild + 60,
-                bip32.FirstHardenedChild + 0,
-                0,
-                index,
-        }
-        key := master
-        for _, idx := range path {
-                key, err = key.NewChildKey(idx)
-                if err != nil {
-                        return nil, fmt.Errorf("derive child %d: %w", idx, err)
-                }
-        }
+	// m/44'/60'/0'/0/index
+	path := []uint32{
+		bip32.FirstHardenedChild + 44,
+		bip32.FirstHardenedChild + 60,
+		bip32.FirstHardenedChild + 0,
+		0,
+		index,
+	}
+	key := master
+	for _, idx := range path {
+		key, err = key.NewChildKey(idx)
+		if err != nil {
+			return nil, fmt.Errorf("derive child %d: %w", idx, err)
+		}
+	}
 
-        priv, err := crypto.ToECDSA(key.Key)
-        if err != nil {
-                return nil, fmt.Errorf("to ecdsa: %w", err)
-        }
-        return priv, nil
+	priv, err := crypto.ToECDSA(key.Key)
+	if err != nil {
+		return nil, fmt.Errorf("to ecdsa: %w", err)
+	}
+	return priv, nil
 }
 
 // encryptSecret seals plaintext with AES-256-GCM using the service key.
 func (s *WalletService) encryptSecret(plaintext []byte) (string, error) {
-        block, err := aes.NewCipher(s.encryptionKey)
-        if err != nil {
-                return "", err
-        }
-        gcm, err := cipher.NewGCM(block)
-        if err != nil {
-                return "", err
-        }
-        nonce := make([]byte, gcm.NonceSize())
-        if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-                return "", err
-        }
-        sealed := gcm.Seal(nonce, nonce, plaintext, nil)
-        return hex.EncodeToString(sealed), nil
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, plaintext, nil)
+	return hex.EncodeToString(sealed), nil
 }
 
 // decryptSecret opens a value produced by encryptSecret.
 func (s *WalletService) decryptSecret(encoded string) ([]byte, error) {
-        raw, err := hex.DecodeString(encoded)
-        if err != nil {
-                return nil, err
-        }
-        block, err := aes.NewCipher(s.encryptionKey)
-        if err != nil {
-                return nil, err
-        }
-        gcm, err := cipher.NewGCM(block)
-        if err != nil {
-                return nil, err
-        }
-        if len(raw) < gcm.NonceSize() {
-                return nil, fmt.Errorf("ciphertext too short")
-        }
-        nonce, ciphertext := raw[:gcm.NonceSize()], raw[gcm.NonceSize():]
-        return gcm.Open(nil, nonce, ciphertext, nil)
+	raw, err := hex.DecodeString(encoded)
+	if err != nil {
+		return nil, err
+	}
+	block, err := aes.NewCipher(s.encryptionKey)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) < gcm.NonceSize() {
+		return nil, fmt.Errorf("ciphertext too short")
+	}
+	nonce, ciphertext := raw[:gcm.NonceSize()], raw[gcm.NonceSize():]
+	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
 // storeMasterWallet persists the encrypted key material for a master wallet.
 func (s *WalletService) storeMasterWallet(w *MasterWallet, key *ecdsa.PrivateKey) error {
-        encKey, err := s.encryptSecret(crypto.FromECDSA(key))
-        if err != nil {
-                return err
-        }
-        encSeed, err := s.encryptSecret([]byte(w.SeedPhrase))
-        if err != nil {
-                return err
-        }
-        backupHash, err := bcrypt.GenerateFromPassword([]byte(w.BackupCode), bcrypt.DefaultCost)
-        if err != nil {
-                return err
-        }
+	encKey, err := s.encryptSecret(crypto.FromECDSA(key))
+	if err != nil {
+		return err
+	}
+	encSeed, err := s.encryptSecret([]byte(w.SeedPhrase))
+	if err != nil {
+		return err
+	}
+	backupHash, err := bcrypt.GenerateFromPassword([]byte(w.BackupCode), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
 
-        record := models.MasterWallet{
-                Address:         w.MasterAddress,
-                EncryptedKey:    encKey,
-                SeedEncrypted:   encSeed,
-                BackupCodeHash:  string(backupHash),
-                SupportedChains: w.SupportedChains,
-                AutoSignEnabled: w.AutoSignEnabled,
-        }
-        return s.db.Create(&record).Error
+	record := models.MasterWallet{
+		UserID:          w.UserID,
+		Address:         w.MasterAddress,
+		EncryptedKey:    encKey,
+		SeedEncrypted:   encSeed,
+		BackupCodeHash:  string(backupHash),
+		SupportedChains: w.SupportedChains,
+		AutoSignEnabled: w.AutoSignEnabled,
+	}
+	return s.db.Create(&record).Error
 }
 
 // deriveDepositAddress derives a stable per-user, per-chain deposit address.
 func (s *WalletService) deriveDepositAddress(userID string, chainID int64) (string, error) {
-        if len(s.hdSeed) == 0 {
-                return "", fmt.Errorf("WALLET_HD_SEED is not configured")
-        }
-        // Deterministic index from the user identifier and chain.
-        digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", userID, chainID)))
-        index := uint32(digest[0])<<24 | uint32(digest[1])<<16 | uint32(digest[2])<<8 | uint32(digest[3])
+	if len(s.hdSeed) == 0 {
+		return "", fmt.Errorf("WALLET_HD_SEED is not configured")
+	}
+	// Deterministic index from the user identifier and chain.
+	digest := sha256.Sum256([]byte(fmt.Sprintf("%s:%d", userID, chainID)))
+	index := uint32(digest[0])<<24 | uint32(digest[1])<<16 | uint32(digest[2])<<8 | uint32(digest[3])
 
-        master, err := bip32.NewMasterKey(s.hdSeed)
-        if err != nil {
-                return "", fmt.Errorf("hd seed: %w", err)
-        }
-        child, err := master.NewChildKey(bip32.FirstHardenedChild + index)
-        if err != nil {
-                return "", err
-        }
-        priv, err := crypto.ToECDSA(child.Key)
-        if err != nil {
-                return "", err
-        }
-        return crypto.PubkeyToAddress(priv.PublicKey).Hex(), nil
+	master, err := bip32.NewMasterKey(s.hdSeed)
+	if err != nil {
+		return "", fmt.Errorf("hd seed: %w", err)
+	}
+	child, err := master.NewChildKey(bip32.FirstHardenedChild + index)
+	if err != nil {
+		return "", err
+	}
+	priv, err := crypto.ToECDSA(child.Key)
+	if err != nil {
+		return "", err
+	}
+	return crypto.PubkeyToAddress(priv.PublicKey).Hex(), nil
 }
 
 // platformKey returns the signing key for platform withdrawals.
 func (s *WalletService) platformKey() (*ecdsa.PrivateKey, error) {
-        raw := os.Getenv("PLATFORM_SIGNER_KEY")
-        if raw == "" {
-                return nil, fmt.Errorf("PLATFORM_SIGNER_KEY is not configured")
-        }
-        return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
+	raw := os.Getenv("PLATFORM_SIGNER_KEY")
+	if raw == "" {
+		return nil, fmt.Errorf("PLATFORM_SIGNER_KEY is not configured")
+	}
+	return crypto.HexToECDSA(strings.TrimPrefix(raw, "0x"))
 }
-
-// resolveUserKey prefers a caller-supplied private key, falling back to the
-// user's stored HD-derived key.
-func (s *WalletService) resolveUserKey(userID, privateKey string) (string, error) {
-        if privateKey != "" {
-                if _, err := crypto.HexToECDSA(strings.TrimPrefix(privateKey, "0x")); err != nil {
-                        return "", fmt.Errorf("invalid private key")
-                }
-                return strings.TrimPrefix(privateKey, "0x"), nil
-        }
-        if userID == "" {
-                return "", fmt.Errorf("user_id or private_key is required")
-        }
-        addr, err := s.deriveDepositAddress(userID, 1)
-        if err != nil {
-                return "", err
-        }
-        return addr, nil
-}
-
-// strconv is referenced by handler code for slippage formatting.
-var _ = strconv.Itoa
-var _ = json.Marshal

@@ -2,8 +2,8 @@ package middleware
 
 import (
 	"net/http"
-	"strings"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 

@@ -22,7 +22,7 @@ import (
 // ============== MESSAGE QUEUE ==============
 
 type Message struct {
-	ID        string          `json:"id"`
+	ID       string          `json:"id"`
 	Type     string          `json:"type"`
 	Payload  json.RawMessage `json:"payload"`
 	Priority int             `json:"priority"`
@@ -54,7 +54,7 @@ func (q *Queue) Push(msg *Message) {
 	defer q.mu.Unlock()
 	msg.ID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(10000))
 	msg.Created = time.Now().UnixMilli()
-	
+
 	pos := 0
 	for i, m := range q.messages {
 		if msg.Priority > m.Priority {
@@ -63,11 +63,11 @@ func (q *Queue) Push(msg *Message) {
 		}
 		pos = i + 1
 	}
-	
+
 	q.messages = append(q.messages, nil)
 	copy(q.messages[pos+1:], q.messages[pos:])
 	q.messages[pos] = msg
-	
+
 	ctx := context.Background()
 	data, _ := json.Marshal(msg)
 	q.redis.LPush(ctx, fmt.Sprintf("queue:%s", q.name), data)
@@ -76,7 +76,9 @@ func (q *Queue) Push(msg *Message) {
 func (q *Queue) Pop() *Message {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if len(q.messages) == 0 { return nil }
+	if len(q.messages) == 0 {
+		return nil
+	}
 	msg := q.messages[0]
 	q.messages = q.messages[1:]
 	atomic.AddInt64(&q.processed, 1)
@@ -108,18 +110,20 @@ func (q *Queue) Stats() (processed, delivered, failed int64) {
 // ============== ANALYTICS ==============
 
 type Counter struct{ value int64 }
+
 func (c *Counter) Incr(n int64) { atomic.AddInt64(&c.value, n) }
 func (c *Counter) Value() int64 { return atomic.LoadInt64(&c.value) }
 
 type Gauge struct{ value uint64 }
-func (g *Gauge) Set(v float64) { atomic.StoreUint64(&g.value, math.Float64bits(v)) }
+
+func (g *Gauge) Set(v float64)  { atomic.StoreUint64(&g.value, math.Float64bits(v)) }
 func (g *Gauge) Value() float64 { return math.Float64frombits(atomic.LoadUint64(&g.value)) }
 
 type AnalyticsEngine struct {
-	mu         sync.RWMutex
-	counters   map[string]*Counter
-	gauges     map[string]*Gauge
-	redis      *redis.Client
+	mu       sync.RWMutex
+	counters map[string]*Counter
+	gauges   map[string]*Gauge
+	redis    *redis.Client
 }
 
 func NewAnalytics(redisAddr string) *AnalyticsEngine {
@@ -133,7 +137,9 @@ func NewAnalytics(redisAddr string) *AnalyticsEngine {
 func (a *AnalyticsEngine) Counter(name string) *Counter {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if c, ok := a.counters[name]; ok { return c }
+	if c, ok := a.counters[name]; ok {
+		return c
+	}
 	c := &Counter{}
 	a.counters[name] = c
 	return c
@@ -142,7 +148,9 @@ func (a *AnalyticsEngine) Counter(name string) *Counter {
 func (a *AnalyticsEngine) Gauge(name string) *Gauge {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if g, ok := a.gauges[name]; ok { return g }
+	if g, ok := a.gauges[name]; ok {
+		return g
+	}
 	g := &Gauge{}
 	a.gauges[name] = g
 	return g
@@ -190,15 +198,15 @@ var streamProc *StreamProcessor
 
 func main() {
 	redisAddr := getEnv("REDIS_HOST", "localhost:6379")
-	
+
 	queue = NewQueue("tigerswap", redisAddr)
 	analytics = NewAnalytics(redisAddr)
 	streamProc = NewStreamProcessor(redisAddr)
-	
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	
+
 	// Queue routes
 	r.POST("/api/v1/queue/:name/push", func(c *gin.Context) {
 		var msg Message
@@ -209,7 +217,7 @@ func main() {
 		queue.Push(&msg)
 		c.JSON(200, gin.H{"success": true})
 	})
-	
+
 	r.GET("/api/v1/queue/:name/pop", func(c *gin.Context) {
 		msg := queue.Pop()
 		if msg == nil {
@@ -218,62 +226,74 @@ func main() {
 		}
 		c.JSON(200, msg)
 	})
-	
+
 	r.POST("/api/v1/queue/:name/ack", func(c *gin.Context) {
 		queue.Ack()
 		c.JSON(200, gin.H{"success": true})
 	})
-	
+
 	r.GET("/api/v1/queue/:name/size", func(c *gin.Context) {
 		c.JSON(200, gin.H{"size": queue.Size()})
 	})
-	
+
 	// Analytics routes
 	r.POST("/api/v1/analytics/counter/:name", func(c *gin.Context) {
-		var req struct{ Value int64 }
-		c.ShouldBindJSON(&req)
+		var req struct {
+			Value int64 `json:"value"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		analytics.Counter(c.Param("name")).Incr(req.Value)
-		c.JSON(200, gin.H{"success": true})
+		c.JSON(http.StatusOK, gin.H{"success": true})
 	})
-	
+
 	r.POST("/api/v1/analytics/gauge/:name", func(c *gin.Context) {
-		var req struct{ Value float64 }
-		c.ShouldBindJSON(&req)
+		var req struct {
+			Value float64 `json:"value"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 		analytics.Gauge(c.Param("name")).Set(req.Value)
-		c.JSON(200, gin.H{"success": true})
+		c.JSON(http.StatusOK, gin.H{"success": true})
 	})
-	
+
 	r.GET("/api/v1/analytics/stats", func(c *gin.Context) {
 		p, d, f := queue.Stats()
 		c.JSON(200, gin.H{
-			"queue":     gin.H{"processed": p, "delivered": d, "failed": f},
+			"queue":      gin.H{"processed": p, "delivered": d, "failed": f},
 			"goroutines": runtime.NumGoroutine(),
 		})
 	})
-	
+
 	// Health
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "healthy"})
 	})
-	
+
 	port := getEnv("PORT", "9092")
 	fmt.Printf("TigerSwap MQ & Analytics: port=%s\n", port)
-	
+
 	srv := &http.Server{Addr: ":" + port, Handler: r}
-	
+
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	
+
 	go func() {
 		<-quit
 		srv.Shutdown(context.Background())
 		os.Exit(0)
 	}()
-	
+
 	srv.ListenAndServe()
 }
 
 func getEnv(key, def string) string {
-	if v := os.Getenv(key); v != "" { return v }
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
 	return def
 }

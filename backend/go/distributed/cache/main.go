@@ -19,11 +19,11 @@ import (
 // ============== CONSISTENT HASHING ==============
 
 type ConsistentHash struct {
-	ring           map[uint32][]string
-	nodes          map[string]*Node
+	ring            map[uint32][]string
+	nodes           map[string]*Node
 	virtualReplicas int
-	sortedKeys     []uint32
-	mu             sync.RWMutex
+	sortedKeys      []uint32
+	mu              sync.RWMutex
 }
 
 type Node struct {
@@ -34,24 +34,24 @@ type Node struct {
 
 func NewConsistentHash(replicas int) *ConsistentHash {
 	return &ConsistentHash{
-		ring:           make(map[uint32][]string),
-		nodes:          make(map[string]*Node),
+		ring:            make(map[uint32][]string),
+		nodes:           make(map[string]*Node),
 		virtualReplicas: replicas,
-		sortedKeys:     make([]uint32, 0),
+		sortedKeys:      make([]uint32, 0),
 	}
 }
 
 func (h *ConsistentHash) Add(node *Node) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	
+
 	h.nodes[node.ID] = node
-	
+
 	for i := 0; i < h.virtualReplicas; i++ {
 		key := fmt.Sprintf("%s-%d-%s", node.ID, i, node.Host)
 		hash := h.hash(key)
 		h.ring[hash] = append(h.ring[hash], node.ID)
-		
+
 		pos := sort.Search(len(h.sortedKeys), func(i int) bool { return h.sortedKeys[i] >= hash })
 		h.sortedKeys = append(h.sortedKeys, 0)
 		copy(h.sortedKeys[pos+1:], h.sortedKeys[pos:])
@@ -62,13 +62,17 @@ func (h *ConsistentHash) Add(node *Node) {
 func (h *ConsistentHash) Get(key string) *Node {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	
-	if len(h.nodes) == 0 { return nil }
-	
+
+	if len(h.nodes) == 0 {
+		return nil
+	}
+
 	hash := h.hash(key)
 	pos := sort.Search(len(h.sortedKeys), func(i int) bool { return h.sortedKeys[i] >= hash })
-	if pos >= len(h.sortedKeys) { pos = 0 }
-	
+	if pos >= len(h.sortedKeys) {
+		pos = 0
+	}
+
 	hash = h.sortedKeys[pos]
 	if ids, ok := h.ring[hash]; ok && len(ids) > 0 {
 		return h.nodes[ids[0]]
@@ -133,18 +137,22 @@ func (shard *Shard) Get(key string) (interface{}, bool) {
 		return val, true
 	}
 	shard.mu.RUnlock()
-	
+
 	ctx := context.Background()
 	data, err := shard.redis.Get(ctx, key).Result()
-	if err != nil { return nil, false }
-	
+	if err != nil {
+		return nil, false
+	}
+
 	var result interface{}
-	if err := json.Unmarshal([]byte(data), &result); err != nil { return nil, false }
-	
+	if err := json.Unmarshal([]byte(data), &result); err != nil {
+		return nil, false
+	}
+
 	shard.mu.Lock()
 	shard.data[key] = result
 	shard.mu.Unlock()
-	
+
 	return result, true
 }
 
@@ -152,7 +160,7 @@ func (shard *Shard) Set(key string, value interface{}) {
 	shard.mu.Lock()
 	shard.data[key] = value
 	shard.mu.Unlock()
-	
+
 	ctx := context.Background()
 	data, _ := json.Marshal(value)
 	shard.redis.Set(ctx, key, data, 24*time.Hour)
@@ -187,20 +195,22 @@ func NewSlidingWindowRateLimiter(rate int, window time.Duration) *SlidingWindowR
 func (rl *SlidingWindowRateLimiter) Allow(key string) bool {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
-	
+
 	now := time.Now()
 	cutoff := now.Add(-rl.window)
-	
+
 	var valid []time.Time
 	for _, t := range rl.requests[key] {
-		if t.After(cutoff) { valid = append(valid, t) }
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
 	}
-	
+
 	if len(valid) >= rl.rate {
 		rl.requests[key] = valid
 		return false
 	}
-	
+
 	rl.requests[key] = append(valid, now)
 	return true
 }
@@ -214,7 +224,9 @@ func (rl *SlidingWindowRateLimiter) cleanup() {
 		for key, requests := range rl.requests {
 			var valid []time.Time
 			for _, t := range requests {
-				if t.After(cutoff) { valid = append(valid, t) }
+				if t.After(cutoff) {
+					valid = append(valid, t)
+				}
 			}
 			if len(valid) == 0 {
 				delete(rl.requests, key)
@@ -269,7 +281,7 @@ func (p *WSPool) Run() {
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  256,
 	WriteBufferSize: 256,
-	CheckOrigin:    func(r *http.Request) bool { return true },
+	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
 // ============== HANDLERS ==============
@@ -281,14 +293,14 @@ func main() {
 	redisAddrs := []string{getEnv("REDIS_HOST", "localhost:6379")}
 	cache = NewShardedCache(16, redisAddrs)
 	rateLimiter = NewSlidingWindowRateLimiter(10000, time.Second)
-	
+
 	pool := NewWSPool()
 	go pool.Run()
-	
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	
+
 	r.GET("/api/v1/cache/:key", func(c *gin.Context) {
 		if !rateLimiter.Allow(c.ClientIP()) {
 			c.JSON(429, gin.H{"error": "Rate limit exceeded"})
@@ -302,10 +314,12 @@ func main() {
 		}
 		c.JSON(200, gin.H{"key": key, "value": val})
 	})
-	
+
 	r.POST("/api/v1/cache/:key", func(c *gin.Context) {
 		key := c.Param("key")
-		var req struct{ Value interface{} `json:"value"` }
+		var req struct {
+			Value interface{} `json:"value"`
+		}
 		if err := c.ShouldBindJSON(&req); err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
 			return
@@ -313,34 +327,40 @@ func main() {
 		cache.Set(key, req.Value)
 		c.JSON(200, gin.H{"success": true})
 	})
-	
+
 	r.DELETE("/api/v1/cache/:key", func(c *gin.Context) {
 		cache.Delete(c.Param("key"))
 		c.JSON(200, gin.H{"success": true})
 	})
-	
+
 	r.GET("/ws", func(c *gin.Context) {
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-		if err != nil { return }
+		if err != nil {
+			return
+		}
 		defer conn.Close()
 		pool.register <- conn
 		defer func() { pool.unregister <- conn }()
 		for {
 			_, _, err := conn.ReadMessage()
-			if err != nil { break }
+			if err != nil {
+				break
+			}
 		}
 	})
-	
+
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "healthy", "shards": 16})
 	})
-	
+
 	port := getEnv("PORT", "9091")
 	fmt.Printf("Distributed Cache Server: port=%s shards=16\n", port)
 	r.Run(":" + port)
 }
 
 func getEnv(key, def string) string {
-	if v := os.Getenv(key); v != "" { return v }
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
 	return def
 }

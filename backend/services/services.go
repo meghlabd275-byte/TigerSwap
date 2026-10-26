@@ -4,20 +4,24 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
-        "github.com/gorilla/websocket"
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
@@ -177,9 +181,9 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 	// Fallback: calculate from individual prices
 	tokenInSymbol := s.getSymbolFromAddress(req.TokenIn)
 	tokenOutSymbol := s.getSymbolFromAddress(req.TokenOut)
-	
+
 	var tokenInPrice, tokenOutPrice float64 = 1.0, 1.0
-	
+
 	if globalPriceAggregator != nil {
 		if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), tokenInSymbol); err == nil {
 			tokenInPrice = pd.USD
@@ -188,11 +192,11 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 			tokenOutPrice = pd.USD
 		}
 	}
-	
+
 	rate := tokenOutPrice / tokenInPrice
 	amountFloat, _ := new(big.Float).SetString(req.Amount)
 	amountOut := new(big.Float).Mul(amountFloat, big.NewFloat(rate))
-	
+
 	// Apply 0.3% fee
 	amountOutMin := new(big.Float).Mul(amountOut, big.NewFloat(0.997))
 
@@ -204,7 +208,7 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 		"amount_out_min": amountOutMin.String(),
 		"rate":           fmt.Sprintf("%f", rate),
 		"price_impact":   "0.1",
-		"gas_estimate":  "21000",
+		"gas_estimate":   "21000",
 		"chain_id":       req.ChainID,
 		"route":          []string{req.TokenIn, req.TokenOut},
 	}
@@ -230,13 +234,48 @@ func (s *SwapService) getSymbolFromAddress(address string) string {
 	return "UNKNOWN"
 }
 
+// BuildTransaction returns an unsigned TigerSwap router call for the client
+// wallet to sign. The server holds no key for this path.
 func (s *SwapService) BuildTransaction(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"to":           "0x742d35Cc6634C0532925a3b844Bc9e7595f0fEb1",
-		"data":         "0x...",
-		"value":        "0x0",
-		"gas":          "21000",
-		"gas_price":    "1000000000",
+	var req struct {
+		TokenIn     string `json:"token_in" binding:"required"`
+		TokenOut    string `json:"token_out" binding:"required"`
+		AmountIn    string `json:"amount_in" binding:"required"`
+		ChainID     int64  `json:"chain_id"`
+		Recipient   string `json:"recipient" binding:"required"`
+		SlippageBps uint32 `json:"slippage_bps"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if globalSwapExecutor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "swap executor not configured"})
+		return
+	}
+	if req.SlippageBps == 0 {
+		req.SlippageBps = DefaultSlippageBps
+	}
+
+	chainID := req.ChainID
+	if chainID == 0 {
+		chainID = 1
+	}
+
+	to, data, value, gasLimit, err := globalSwapExecutor.BuildSwap(
+		c.Request.Context(), chainID, req.TokenIn, req.TokenOut, req.AmountIn, req.Recipient, req.SlippageBps,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"to":        to,
+		"data":      data,
+		"value":     value,
+		"gas_limit": strconv.FormatUint(gasLimit, 10),
+		"chain_id":  chainID,
 	})
 }
 
@@ -261,63 +300,114 @@ func (s *SwapService) GetPool(c *gin.Context) {
 func (s *SwapService) GetPrices(c *gin.Context) {
 	// Get real prices from price aggregator
 	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "SHIB", "PEPE", "FIL", "ATOM", "XTZ", "ADA", "VET", "ALGO", "XLM", "HBAR", "FTM", "NEAR", "EGLD", "FTG", "CAKE", "GRT", "CRO", "KCS", "HT", "ONE", "AR", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "1INCH", "COMP", "MIM", "FEI", "RAI", "USDP", "TUSD", "BUSD", "FRAX", "DAI", "MNT", "BLUR"}
-	
+
 	prices := make(map[string]interface{})
-	
+
 	if globalPriceAggregator != nil {
 		for _, symbol := range symbols {
 			if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol); err == nil {
 				prices[symbol] = map[string]interface{}{
-					"usd": pd.USD,
+					"usd":            pd.USD,
 					"usd_24h_change": pd.USDChange24h,
-					"usd_24h_vol": pd.USDVolume24h,
+					"usd_24h_vol":    pd.USDVolume24h,
 					"usd_market_cap": pd.USDMarketCap,
 				}
 			}
 		}
 	}
-	
+
 	if len(prices) == 0 {
 		// Fallback to empty if no prices available
 		prices = map[string]interface{}{}
 	}
-	
+
 	c.JSON(200, prices)
 }
 
 func (s *SwapService) GetPrice(c *gin.Context) {
-	symbol := c.Param("symbol")
-	price := gin.H{
-		"symbol":      symbol,
-		"usd":         3450.00,
-		"change_24h":  2.5,
-		"volume_24h":  "1.2B",
-		"market_cap":  "400B",
+	symbol := strings.ToUpper(c.Param("symbol"))
+	if globalPriceAggregator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "price aggregator not configured"})
+		return
 	}
-	c.JSON(200, price)
+
+	priceData, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price unavailable", "details": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"symbol":       symbol,
+		"usd":          priceData.USD,
+		"change_24h":   priceData.USDChange24h,
+		"volume_24h":   priceData.USDVolume24h,
+		"market_cap":   priceData.USDMarketCap,
+		"last_updated": priceData.LastUpdated,
+		"sources":      priceData.Sources,
+	})
 }
 
+// GetMarketStats aggregates real counts from the database. Values that are not
+// tracked server-side (TVL, 24h volume) are reported as zero rather than
+// invented.
 func (s *SwapService) GetMarketStats(c *gin.Context) {
-	stats := gin.H{
-		"total_tvl":     "2.4B",
-		"volume_24h":    "892M",
-		"volume_7d":     "6.2B",
-		"fees_24h":     "2.7M",
-		"user_count":   "125000",
-		"pool_count":   "12450",
-		"token_count":  "8500",
-		"chain_count":  "100",
-	}
-	c.JSON(200, stats)
+	var poolCount int64
+	var tokenCount int64
+	var chainCount int64
+	var userCount int64
+
+	s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount)
+	s.db.Model(&models.Token{}).Where("is_active = ?", true).Count(&tokenCount)
+	s.db.Model(&models.Blockchain{}).Where("is_active = ?", true).Count(&chainCount)
+	s.db.Model(&models.User{}).Count(&userCount)
+
+	var tvl float64
+	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_tvl":   tvl,
+		"volume_24h":  0,
+		"volume_7d":   0,
+		"fees_24h":    0,
+		"user_count":  userCount,
+		"pool_count":  poolCount,
+		"token_count": tokenCount,
+		"chain_count": chainCount,
+	})
 }
 
+// GetRecentTrades returns confirmed swaps from the database.
 func (s *SwapService) GetRecentTrades(c *gin.Context) {
-	trades := []gin.H{
-		{"hash": "0x1234...", "from": "ETH", "to": "USDC", "amount": "1.5", "price": 3450, "time": "2s ago"},
-		{"hash": "0x5678...", "from": "USDT", "to": "ETH", "amount": "5000", "price": 3450, "time": "15s ago"},
-		{"hash": "0xabcd...", "from": "WBTC", "to": "USDC", "amount": "0.1", "price": 67500, "time": "32s ago"},
+	limit := 50
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
 	}
-	c.JSON(200, gin.H{"trades": trades})
+
+	var txs []models.Transaction
+	s.db.Where("type = ? AND status = ?", "swap", "confirmed").
+		Order("timestamp DESC").
+		Limit(limit).
+		Find(&txs)
+
+	trades := make([]gin.H, 0, len(txs))
+	for _, tx := range txs {
+		trades = append(trades, gin.H{
+			"id":         tx.ID.String(),
+			"hash":       tx.Hash,
+			"pair":       tx.Pair,
+			"from":       tx.FromToken,
+			"to":         tx.ToToken,
+			"amount":     tx.FromAmount,
+			"amount_usd": tx.AmountUSD,
+			"status":     tx.Status,
+			"timestamp":  tx.Timestamp,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"trades": trades})
 }
 
 // Global swap executor instance
@@ -327,71 +417,63 @@ func SetSwapExecutor(exec *SwapExecutor) {
 	globalSwapExecutor = exec
 }
 
+// ExecuteSwap broadcasts a swap the client already signed locally. The server
+// receives only the signed payload: it never accepts, holds or logs a private
+// key.
 func (s *SwapService) ExecuteSwap(c *gin.Context) {
 	var req struct {
-		ChainID    int64  `json:"chain_id"`
-		PrivateKey string `json:"private_key" binding:"required"`
-		TokenIn    string `json:"token_in" binding:"required"`
-		TokenOut   string `json:"token_out" binding:"required"`
-		Amount     string `json:"amount" binding:"required"`
-		To         string `json:"to" binding:"required"`
-		Slippage   string `json:"slippage"`
+		ChainID  int64  `json:"chain_id"`
+		SignedTx string `json:"signed_tx" binding:"required"`
+		TokenIn  string `json:"token_in"`
+		TokenOut string `json:"token_out"`
+		Amount   string `json:"amount"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	chainID := req.ChainID
 	if chainID == 0 {
-		chainID = 1 // Default to Ethereum
+		chainID = 1
 	}
 
-	slippage := "0.5"
-	if req.Slippage != "" {
-		slippage = req.Slippage
-	}
-
-	// Execute real swap via swap executor
-	if globalSwapExecutor != nil {
-		result, err := globalSwapExecutor.ExecuteSwap(
-			c.Request.Context(),
-			chainID,
-			req.PrivateKey,
-			req.TokenIn,
-			req.TokenOut,
-			req.Amount,
-			req.To,
-			slippage,
-		)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-
-		// Record transaction
-		tx := models.Transaction{
-			Hash:       result.TxHash,
-			Type:       "swap",
-			FromToken:  req.TokenIn,
-			ToToken:    req.TokenOut,
-			FromAmount: req.Amount,
-			Status:     "confirmed",
-			Timestamp:  time.Now(),
-		}
-		s.db.Create(&tx)
-
-		c.JSON(200, gin.H{
-			"success":      true,
-			"transaction":  tx,
-			"tx_hash":     result.TxHash,
-			"message":      "Swap executed successfully",
-		})
+	if globalSwapExecutor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Swap executor not configured"})
 		return
 	}
 
-	// Fallback if no executor configured
-	c.JSON(500, gin.H{"error": "Swap executor not configured"})
+	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	var userID uuid.UUID
+	if parsed, parseErr := uuid.Parse(c.GetString("user_id")); parseErr == nil {
+		userID = parsed
+	}
+
+	tx := models.Transaction{
+		UserID:     userID,
+		Hash:       txHash,
+		ChainID:    chainID,
+		Type:       "swap",
+		FromToken:  req.TokenIn,
+		ToToken:    req.TokenOut,
+		FromAmount: req.Amount,
+		Status:     "submitted",
+		Timestamp:  time.Now(),
+	}
+	if err := s.db.Create(&tx).Error; err != nil {
+		log.Printf("failed to record swap transaction %s: %v", txHash, err)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"tx_hash": txHash,
+		"status":  "submitted",
+	})
 }
 
 // Global blockchain client for real transactions
@@ -401,16 +483,17 @@ func SetBlockchainClient(client *BlockchainClient) {
 	globalBlockchainClient = client
 }
 
+// ApproveToken broadcasts a client-signed ERC-20 approval. The server holds no
+// key: the client signs the approval locally and posts the signed payload.
 func (s *SwapService) ApproveToken(c *gin.Context) {
 	var req struct {
-		ChainID    int64  `json:"chain_id"`
-		PrivateKey string `json:"private_key" binding:"required"`
-                TokenAddr  string `json:"token_address" binding:"required"`
-                Spender    string `json:"spender" binding:"required"`
-                Amount     string `json:"amount"`
+		ChainID   int64  `json:"chain_id"`
+		SignedTx  string `json:"signed_tx" binding:"required"`
+		TokenAddr string `json:"token_address" binding:"required"`
+		Spender   string `json:"spender" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -419,56 +502,132 @@ func (s *SwapService) ApproveToken(c *gin.Context) {
 		chainID = 1
 	}
 
-	// Execute real approval transaction
-	if globalBlockchainClient != nil {
-		txHash, err := globalBlockchainClient.ApproveToken(
-			c.Request.Context(),
-			chainID,
-			req.PrivateKey,
-                        req.TokenAddr,
-                        req.Spender,
-                )
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{
-			"success":  true,
-			"tx_hash": txHash,
-			"message": "Token approved",
-		})
+	if globalSwapExecutor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Swap executor not configured"})
 		return
 	}
 
-	c.JSON(500, gin.H{"error": "Blockchain client not configured"})
+	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"tx_hash": txHash,
+		"status":  "submitted",
+	})
 }
 
+// CreateOrder records a limit/stop order in the database.
 func (s *SwapService) CreateOrder(c *gin.Context) {
-	// Orders handled by perpetual engine
-	c.JSON(200, gin.H{"order_id": uuid.New().String(), "status": "pending"})
+	var req struct {
+		ChainID      int64  `json:"chain_id"`
+		OrderType    string `json:"order_type" binding:"required"`
+		Side         string `json:"side" binding:"required"`
+		TokenIn      string `json:"token_in" binding:"required"`
+		TokenOut     string `json:"token_out" binding:"required"`
+		AmountIn     string `json:"amount_in" binding:"required"`
+		AmountOutMin string `json:"amount_out_min"`
+		Price        string `json:"price" binding:"required"`
+		ExpiresIn    int    `json:"expires_in"` // seconds
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	orderType := strings.ToLower(req.OrderType)
+	switch orderType {
+	case "limit", "stop_loss", "take_profit":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_type must be limit, stop_loss or take_profit"})
+		return
+	}
+	side := strings.ToLower(req.Side)
+	if side != "buy" && side != "sell" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "side must be buy or sell"})
+		return
+	}
+
+	userID, err := uuid.Parse(c.GetString("user_id"))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
+		return
+	}
+
+	expiresIn := req.ExpiresIn
+	if expiresIn <= 0 {
+		expiresIn = 7 * 24 * 3600
+	}
+
+	order := models.Order{
+		UserID:       userID,
+		ChainID:      req.ChainID,
+		OrderType:    orderType,
+		Side:         side,
+		TokenIn:      req.TokenIn,
+		TokenOut:     req.TokenOut,
+		AmountIn:     req.AmountIn,
+		AmountOutMin: req.AmountOutMin,
+		Price:        req.Price,
+		Status:       "pending",
+		ExpiresAt:    time.Now().Add(time.Duration(expiresIn) * time.Second),
+	}
+	if err := s.db.Create(&order).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create order"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, order)
 }
 
+// GetOrders lists the caller's orders.
 func (s *SwapService) GetOrders(c *gin.Context) {
-	// Orders handled by perpetual engine
-	c.JSON(200, gin.H{"orders": []interface{}{}})
+	userID := c.GetString("user_id")
+
+	var orders []models.Order
+	if err := s.db.Where("user_id = ?", userID).Order("created_at DESC").Limit(200).Find(&orders).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load orders"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"orders": orders, "count": len(orders)})
 }
 
+// CancelOrder cancels one of the caller's own pending orders.
 func (s *SwapService) CancelOrder(c *gin.Context) {
-	// Orders handled by perpetual engine
-	c.JSON(200, gin.H{"success": true, "status": "cancelled"})
+	userID := c.GetString("user_id")
+	orderID := c.Param("id")
+
+	result := s.db.Model(&models.Order{}).
+		Where("id = ? AND user_id = ? AND status = ?", orderID, userID, "pending").
+		Update("status", "cancelled")
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to cancel order"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Order not found or not cancellable"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "status": "cancelled", "order_id": orderID})
 }
 
+// AddLiquidity broadcasts a client-signed add-liquidity transaction.
 func (s *SwapService) AddLiquidity(c *gin.Context) {
 	var req struct {
-		ChainID    int64  `json:"chain_id"`
-		PrivateKey string `json:"private_key" binding:"required"`
-		TokenA     string `json:"token_a" binding:"required"`
-		TokenB     string `json:"token_b" binding:"required"`
-		AmountA    string `json:"amount_a" binding:"required"`
-		AmountB    string `json:"amount_b" binding:"required"`
+		ChainID  int64  `json:"chain_id"`
+		SignedTx string `json:"signed_tx" binding:"required"`
+		TokenA   string `json:"token_a" binding:"required"`
+		TokenB   string `json:"token_b" binding:"required"`
+		AmountA  string `json:"amount_a" binding:"required"`
+		AmountB  string `json:"amount_b" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -477,39 +636,32 @@ func (s *SwapService) AddLiquidity(c *gin.Context) {
 		chainID = 1
 	}
 
-	// Execute real add liquidity via swap executor
-	if globalSwapExecutor != nil {
-		txHash, err := globalSwapExecutor.AddLiquidity(
-			c.Request.Context(),
-			chainID,
-			req.PrivateKey,
-			req.TokenA,
-			req.TokenB,
-			req.AmountA,
-			req.AmountB,
-		)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"success": true, "tx_hash": txHash})
+	if globalSwapExecutor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Swap executor not configured"})
 		return
 	}
 
-	c.JSON(500, gin.H{"error": "Swap executor not configured"})
+	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
 }
 
+// RemoveLiquidity broadcasts a client-signed remove-liquidity transaction.
 func (s *SwapService) RemoveLiquidity(c *gin.Context) {
 	var req struct {
-		ChainID    int64  `json:"chain_id"`
-		PrivateKey string `json:"private_key" binding:"required"`
-		PoolAddr   string `json:"pool_address" binding:"required"`
-		Liquidity  string `json:"liquidity" binding:"required"`
-		AmountA    string `json:"amount_a"`
-		AmountB    string `json:"amount_b"`
+		ChainID   int64  `json:"chain_id"`
+		SignedTx  string `json:"signed_tx" binding:"required"`
+		PoolAddr  string `json:"pool_address" binding:"required"`
+		Liquidity string `json:"liquidity" binding:"required"`
+		AmountA   string `json:"amount_a"`
+		AmountB   string `json:"amount_b"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -518,29 +670,31 @@ func (s *SwapService) RemoveLiquidity(c *gin.Context) {
 		chainID = 1
 	}
 
-	if globalSwapExecutor != nil {
-		txHash, err := globalSwapExecutor.RemoveLiquidity(
-			c.Request.Context(),
-			chainID,
-			req.PrivateKey,
-			req.PoolAddr,
-			req.Liquidity,
-			req.AmountA,
-			req.AmountB,
-		)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(200, gin.H{"success": true, "tx_hash": txHash})
+	if globalSwapExecutor == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Swap executor not configured"})
 		return
 	}
 
-	c.JSON(500, gin.H{"error": "Swap executor not configured"})
+	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
 }
 
+// GetPositions lists the caller's perpetual positions.
 func (s *SwapService) GetPositions(c *gin.Context) {
-	c.JSON(200, gin.H{"positions": []interface{}{}})
+	userID := c.GetString("user_id")
+
+	var positions []models.PerpetualPosition
+	if err := s.db.Where("user_id = ?", userID).Order("created_at DESC").Limit(200).Find(&positions).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load positions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"positions": positions, "count": len(positions)})
 }
 
 // AuthService handles authentication
@@ -548,6 +702,7 @@ type AuthService struct {
 	db           *gorm.DB
 	jwtSecret    []byte
 	accessExpiry time.Duration
+	revocations  *revocationStore
 }
 
 func NewAuthService(db *gorm.DB) *AuthService {
@@ -556,21 +711,27 @@ func NewAuthService(db *gorm.DB) *AuthService {
 	if jwtSecret == "" {
 		panic("JWT_SECRET environment variable is required for security")
 	}
-	
-	return &AuthService{
+
+	svc := &AuthService{
 		db:           db,
 		jwtSecret:    []byte(jwtSecret),
 		accessExpiry: time.Hour * 24 * 7, // 7 days
+		revocations:  newRevocationStore(db),
 	}
+	svc.revocations.load()
+	return svc
 }
 
 func (s *AuthService) generateToken(userID uuid.UUID, email, role string) (string, error) {
+	now := time.Now()
+	expiry := now.Add(s.accessExpiry)
 	claims := jwt.MapClaims{
+		"jti":     uuid.NewString(),
 		"user_id": userID.String(),
 		"email":   email,
 		"role":    role,
-		"exp":     time.Now().Add(s.accessExpiry).Unix(),
-		"iat":     time.Now().Unix(),
+		"exp":     expiry.Unix(),
+		"iat":     now.Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(s.jwtSecret)
@@ -589,6 +750,9 @@ func (s *AuthService) ValidateToken(tokenString string) (jwt.MapClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+		if jti, _ := claims["jti"].(string); jti != "" && s.revocations.isRevoked(jti) {
+			return nil, fmt.Errorf("token has been revoked")
+		}
 		return claims, nil
 	}
 
@@ -671,54 +835,210 @@ func (s *AuthService) Login(c *gin.Context) {
 	})
 }
 
+// RefreshToken issues a new access token from a still-valid bearer token.
 func (s *AuthService) RefreshToken(c *gin.Context) {
-	c.JSON(200, gin.H{"token": "new_token"})
+	authHeader := c.GetHeader("Authorization")
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+		return
+	}
+
+	claims, err := s.ValidateToken(parts[1])
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		return
+	}
+
+	userID, err := uuid.Parse(fmt.Sprintf("%v", claims["user_id"]))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
+		return
+	}
+
+	var user models.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
+		return
+	}
+	if !user.IsActive {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account is not active"})
+		return
+	}
+
+	token, err := s.generateToken(user.ID, user.Email, user.Role)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to issue token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": token})
 }
 
 func (s *AuthService) Logout(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	authHeader := c.GetHeader("Authorization")
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid authorization header format"})
+		return
+	}
+
+	claims, err := s.ValidateToken(parts[1])
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		return
+	}
+
+	jti, _ := claims["jti"].(string)
+	if jti == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Token carries no identifier"})
+		return
+	}
+
+	var expiresAt time.Time
+	if exp, ok := claims["exp"].(float64); ok {
+		expiresAt = time.Unix(int64(exp), 0)
+	} else {
+		expiresAt = time.Now().Add(s.accessExpiry)
+	}
+
+	if err := s.revocations.revoke(jti, expiresAt); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke token"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func (s *AuthService) GetProfile(c *gin.Context) {
 	userID := c.GetString("user_id")
 	var user models.User
 	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(404, gin.H{"error": "User not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	c.JSON(200, user)
+	c.JSON(http.StatusOK, user)
 }
 
+// UpdateProfile updates the caller's mutable profile fields.
 func (s *AuthService) UpdateProfile(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	userID := c.GetString("user_id")
+
+	var req struct {
+		Username      string `json:"username"`
+		WalletAddress string `json:"wallet_address"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if strings.TrimSpace(req.Username) != "" {
+		updates["username"] = strings.TrimSpace(req.Username)
+	}
+	if strings.TrimSpace(req.WalletAddress) != "" {
+		if !common.IsHexAddress(req.WalletAddress) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid wallet address"})
+			return
+		}
+		updates["wallet_address"] = strings.ToLower(req.WalletAddress)
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no updatable fields supplied"})
+		return
+	}
+
+	if err := s.db.Model(&models.User{}).Where("id = ?", userID).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
+		return
+	}
+
+	var user models.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	c.JSON(http.StatusOK, user)
 }
 
+// GetPortfolio aggregates the caller's confirmed transaction value from the
+// database. It does not invent balances: assets are derived from recorded
+// transactions only.
 func (s *AuthService) GetPortfolio(c *gin.Context) {
-	portfolio := gin.H{
-		"total_value":   "24580.50",
-		"assets":        []interface{}{},
+	userID := c.GetString("user_id")
+
+	var txs []models.Transaction
+	if err := s.db.Where("user_id = ? AND status = ?", userID, "confirmed").Order("timestamp DESC").Limit(500).Find(&txs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load portfolio"})
+		return
 	}
-	c.JSON(200, portfolio)
+
+	assets := make([]gin.H, 0, len(txs))
+	var total float64
+	for _, tx := range txs {
+		total += tx.AmountUSD
+		assets = append(assets, gin.H{
+			"hash":       tx.Hash,
+			"chain_id":   tx.ChainID,
+			"symbol":     tx.ToToken,
+			"amount":     tx.ToAmount,
+			"value_usd":  tx.AmountUSD,
+			"created_at": tx.Timestamp,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_value": total,
+		"assets":      assets,
+		"updated_at":  time.Now().UTC(),
+	})
 }
 
 func (s *AuthService) GetTransactions(c *gin.Context) {
-	c.JSON(200, gin.H{"transactions": []interface{}{}})
+	userID := c.GetString("user_id")
+
+	var txs []models.Transaction
+	if err := s.db.Where("user_id = ?", userID).Order("timestamp DESC").Limit(200).Find(&txs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load transactions"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"transactions": txs, "count": len(txs)})
 }
 
+// ConnectWallet records the caller's wallet address against their account.
 func (s *AuthService) ConnectWallet(c *gin.Context) {
 	var req struct {
 		Address string `json:"address" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !common.IsHexAddress(req.Address) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid wallet address"})
 		return
 	}
 
-	c.JSON(200, gin.H{"success": true, "address": req.Address})
+	userID := c.GetString("user_id")
+	address := strings.ToLower(req.Address)
+	if err := s.db.Model(&models.User{}).Where("id = ?", userID).Update("wallet_address", address).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to link wallet"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "address": address})
 }
 
+// DisconnectWallet clears the wallet address linked to the caller's account.
 func (s *AuthService) DisconnectWallet(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	userID := c.GetString("user_id")
+	if err := s.db.Model(&models.User{}).Where("id = ?", userID).Update("wallet_address", "").Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unlink wallet"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 // AdminService handles admin operations
@@ -730,241 +1050,666 @@ func NewAdminService(db *gorm.DB) *AdminService {
 	return &AdminService{db: db}
 }
 
+// GetDashboard reports real aggregate counts from the database.
 func (s *AdminService) GetDashboard(c *gin.Context) {
-	var userCount int64
-	var txCount int64
-	var tokenCount int64
-	var poolCount int64
+	var userCount, txCount, tokenCount, poolCount, orderCount, positionCount int64
 
 	s.db.Model(&models.User{}).Count(&userCount)
 	s.db.Model(&models.Transaction{}).Count(&txCount)
 	s.db.Model(&models.Token{}).Count(&tokenCount)
 	s.db.Model(&models.Pool{}).Count(&poolCount)
+	s.db.Model(&models.Order{}).Count(&orderCount)
+	s.db.Model(&models.PerpetualPosition{}).Where("status = ?", "open").Count(&positionCount)
 
-	dashboard := gin.H{
-		"users":      userCount,
-		"transactions": txCount,
-		"tokens":     tokenCount,
-		"pools":      poolCount,
-		"tvl":        "2.4B",
-		"volume_24h": "892M",
-	}
-	c.JSON(200, dashboard)
+	var tvl float64
+	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
+
+	c.JSON(http.StatusOK, gin.H{
+		"users":          userCount,
+		"transactions":   txCount,
+		"tokens":         tokenCount,
+		"pools":          poolCount,
+		"orders":         orderCount,
+		"open_positions": positionCount,
+		"tvl":            tvl,
+		"volume_24h":     0,
+	})
 }
 
 func (s *AdminService) GetUsers(c *gin.Context) {
+	limit, offset := paginationParams(c, 50)
+
 	var users []models.User
-	s.db.Limit(50).Find(&users)
-	c.JSON(200, gin.H{"users": users})
+	if err := s.db.Order("created_at DESC").Limit(limit).Offset(offset).Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load users"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users, "count": len(users)})
 }
 
 func (s *AdminService) GetUser(c *gin.Context) {
 	id := c.Param("id")
 	var user models.User
 	if err := s.db.Where("id = ?", id).First(&user).Error; err != nil {
-		c.JSON(404, gin.H{"error": "User not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	c.JSON(200, user)
+	c.JSON(http.StatusOK, user)
 }
 
+// UpdateUser applies admin-editable fields to a user account.
 func (s *AdminService) UpdateUser(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	var req struct {
+		Role       string `json:"role"`
+		IsActive   *bool  `json:"is_active"`
+		IsVerified *bool  `json:"is_verified"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Role != "" {
+		switch req.Role {
+		case "user", "admin", "superadmin":
+			updates["role"] = req.Role
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
+			return
+		}
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+	}
+	if req.IsVerified != nil {
+		updates["is_verified"] = *req.IsVerified
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no updatable fields supplied"})
+		return
+	}
+
+	result := s.db.Model(&models.User{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	var user models.User
+	if err := s.db.Where("id = ?", id).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	s.logAdminAction(c, "update_user", "user", id, updates)
+	c.JSON(http.StatusOK, user)
 }
 
+// DeleteUser deactivates a user account. Records are retained for audit.
 func (s *AdminService) DeleteUser(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	result := s.db.Model(&models.User{}).Where("id = ?", id).Update("is_active", false)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate user"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	s.logAdminAction(c, "deactivate_user", "user", id, nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": id})
 }
 
 func (s *AdminService) CreateChain(c *gin.Context) {
 	var chain models.Blockchain
 	if err := c.ShouldBindJSON(&chain); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	s.db.Create(&chain)
-	c.JSON(201, chain)
+	if err := s.db.Create(&chain).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create chain"})
+		return
+	}
+	s.logAdminAction(c, "create_chain", "chain", chain.Name, nil)
+	c.JSON(http.StatusCreated, chain)
 }
 
+// UpdateChain updates an existing chain configuration.
 func (s *AdminService) UpdateChain(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	var req struct {
+		Name        *string `json:"name"`
+		RPCURL      *string `json:"rpc_url"`
+		ExplorerURL *string `json:"explorer_url"`
+		IsActive    *bool   `json:"is_active"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.RPCURL != nil {
+		updates["rpc_url"] = *req.RPCURL
+	}
+	if req.ExplorerURL != nil {
+		updates["explorer_url"] = *req.ExplorerURL
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no updatable fields supplied"})
+		return
+	}
+
+	result := s.db.Model(&models.Blockchain{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update chain"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Chain not found"})
+		return
+	}
+
+	var chain models.Blockchain
+	if err := s.db.Where("id = ?", id).First(&chain).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Chain not found"})
+		return
+	}
+	s.logAdminAction(c, "update_chain", "chain", id, updates)
+	c.JSON(http.StatusOK, chain)
 }
 
+// DeleteChain deactivates a chain rather than removing its history.
 func (s *AdminService) DeleteChain(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	result := s.db.Model(&models.Blockchain{}).Where("id = ?", id).Update("is_active", false)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate chain"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Chain not found"})
+		return
+	}
+
+	s.logAdminAction(c, "deactivate_chain", "chain", id, nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": id})
 }
 
 func (s *AdminService) CreateToken(c *gin.Context) {
 	var token models.Token
 	if err := c.ShouldBindJSON(&token); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	s.db.Create(&token)
-	c.JSON(201, token)
+	if err := s.db.Create(&token).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create token"})
+		return
+	}
+	s.logAdminAction(c, "create_token", "token", token.Symbol, nil)
+	c.JSON(http.StatusCreated, token)
 }
 
+// UpdateToken applies admin-editable token metadata.
 func (s *AdminService) UpdateToken(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	var req struct {
+		Name       *string  `json:"name"`
+		Symbol     *string  `json:"symbol"`
+		LogoURL    *string  `json:"logo_url"`
+		PriceUSD   *float64 `json:"price_usd"`
+		IsActive   *bool    `json:"is_active"`
+		IsVerified *bool    `json:"is_verified"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.Name != nil {
+		updates["name"] = *req.Name
+	}
+	if req.Symbol != nil {
+		updates["symbol"] = *req.Symbol
+	}
+	if req.LogoURL != nil {
+		updates["logo_url"] = *req.LogoURL
+	}
+	if req.PriceUSD != nil {
+		updates["price_usd"] = *req.PriceUSD
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+	}
+	if req.IsVerified != nil {
+		updates["is_verified"] = *req.IsVerified
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no updatable fields supplied"})
+		return
+	}
+
+	result := s.db.Model(&models.Token{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update token"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
+		return
+	}
+
+	var token models.Token
+	if err := s.db.Where("id = ?", id).First(&token).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
+		return
+	}
+	s.logAdminAction(c, "update_token", "token", id, updates)
+	c.JSON(http.StatusOK, token)
 }
 
+// DeleteToken deactivates a token rather than removing its history.
 func (s *AdminService) DeleteToken(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	result := s.db.Model(&models.Token{}).Where("id = ?", id).Update("is_active", false)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate token"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
+		return
+	}
+
+	s.logAdminAction(c, "deactivate_token", "token", id, nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": id})
 }
 
+// CreatePool records a new pool definition.
 func (s *AdminService) CreatePool(c *gin.Context) {
-	c.JSON(201, gin.H{"success": true})
+	var pool models.Pool
+	if err := c.ShouldBindJSON(&pool); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := s.db.Create(&pool).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create pool"})
+		return
+	}
+	s.logAdminAction(c, "create_pool", "pool", pool.PoolAddress, nil)
+	c.JSON(http.StatusCreated, pool)
 }
 
+// UpdatePool applies admin-editable pool fields.
 func (s *AdminService) UpdatePool(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	var req struct {
+		FeeBps   *int     `json:"fee_bps"`
+		TVLUSD   *float64 `json:"tvl_usd"`
+		IsActive *bool    `json:"is_active"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	updates := map[string]interface{}{}
+	if req.FeeBps != nil {
+		if *req.FeeBps < 0 || *req.FeeBps > 10_000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "fee_bps must be between 0 and 10000"})
+			return
+		}
+		updates["fee"] = *req.FeeBps
+	}
+	if req.TVLUSD != nil {
+		updates["tvl_usd"] = *req.TVLUSD
+	}
+	if req.IsActive != nil {
+		updates["is_active"] = *req.IsActive
+	}
+	if len(updates) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "no updatable fields supplied"})
+		return
+	}
+
+	result := s.db.Model(&models.Pool{}).Where("id = ?", id).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update pool"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pool not found"})
+		return
+	}
+
+	var pool models.Pool
+	if err := s.db.Where("id = ?", id).First(&pool).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pool not found"})
+		return
+	}
+	s.logAdminAction(c, "update_pool", "pool", id, updates)
+	c.JSON(http.StatusOK, pool)
 }
 
+// DeletePool deactivates a pool.
 func (s *AdminService) DeletePool(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	id := c.Param("id")
+
+	result := s.db.Model(&models.Pool{}).Where("id = ?", id).Update("is_active", false)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to deactivate pool"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pool not found"})
+		return
+	}
+
+	s.logAdminAction(c, "deactivate_pool", "pool", id, nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": id})
 }
 
+// GetLogs returns the immutable admin audit trail.
 func (s *AdminService) GetLogs(c *gin.Context) {
-	c.JSON(200, gin.H{"logs": []interface{}{}})
+	limit, offset := paginationParams(c, 100)
+
+	var logs []models.AdminLog
+	if err := s.db.Order("created_at DESC").Limit(limit).Offset(offset).Find(&logs).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load logs"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": logs, "count": len(logs)})
 }
 
+// UpdateConfig persists platform-wide runtime switches.
 func (s *AdminService) UpdateConfig(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true})
+	var req struct {
+		TradingEnabled      *bool `json:"trading_enabled"`
+		WithdrawalEnabled   *bool `json:"withdrawal_enabled"`
+		DepositEnabled      *bool `json:"deposit_enabled"`
+		NewUserRegistration *bool `json:"new_user_registration_enabled"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	settings, err := s.systemSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load settings"})
+		return
+	}
+
+	if req.TradingEnabled != nil {
+		settings.TradingEnabled = *req.TradingEnabled
+	}
+	if req.WithdrawalEnabled != nil {
+		settings.WithdrawalEnabled = *req.WithdrawalEnabled
+	}
+	if req.DepositEnabled != nil {
+		settings.DepositEnabled = *req.DepositEnabled
+	}
+	if req.NewUserRegistration != nil {
+		settings.NewUserRegistration = *req.NewUserRegistration
+	}
+
+	if err := s.db.Save(settings).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist settings"})
+		return
+	}
+
+	s.logAdminAction(c, "update_config", "system", settings.Key, nil)
+	c.JSON(http.StatusOK, settings)
 }
 
+// EnableMaintenance switches the platform into maintenance mode.
 func (s *AdminService) EnableMaintenance(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true, "message": "Maintenance mode enabled"})
+	if err := s.setMaintenance(true); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to enable maintenance mode"})
+		return
+	}
+	s.logAdminAction(c, "enable_maintenance", "system", "default", nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "maintenance_mode": true})
 }
 
+// DisableMaintenance leaves maintenance mode.
 func (s *AdminService) DisableMaintenance(c *gin.Context) {
-	c.JSON(200, gin.H{"success": true, "message": "Maintenance mode disabled"})
+	if err := s.setMaintenance(false); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to disable maintenance mode"})
+		return
+	}
+	s.logAdminAction(c, "disable_maintenance", "system", "default", nil)
+	c.JSON(http.StatusOK, gin.H{"success": true, "maintenance_mode": false})
+}
+
+// systemSettings loads the singleton settings row, creating it on first use.
+func (s *AdminService) systemSettings() (*models.SystemSettings, error) {
+	var settings models.SystemSettings
+	err := s.db.Where("key = ?", "default").First(&settings).Error
+	if err == nil {
+		return &settings, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, err
+	}
+
+	settings = models.SystemSettings{
+		Key:                 "default",
+		TradingEnabled:      true,
+		WithdrawalEnabled:   true,
+		DepositEnabled:      true,
+		NewUserRegistration: true,
+	}
+	if err := s.db.Create(&settings).Error; err != nil {
+		return nil, err
+	}
+	return &settings, nil
+}
+
+func (s *AdminService) setMaintenance(enabled bool) error {
+	settings, err := s.systemSettings()
+	if err != nil {
+		return err
+	}
+	settings.MaintenanceMode = enabled
+	return s.db.Save(settings).Error
+}
+
+// logAdminAction records an immutable audit entry for a privileged action.
+func (s *AdminService) logAdminAction(c *gin.Context, action, resource, resourceID string, details interface{}) {
+	var encoded string
+	if details != nil {
+		if raw, err := json.Marshal(details); err == nil {
+			encoded = string(raw)
+		}
+	}
+
+	entry := models.AdminLog{
+		AdminID:    adminUUID(c.GetString("user_id")),
+		Action:     action,
+		EntityType: resource,
+		EntityID:   resourceID,
+		Details:    encoded,
+		IPAddress:  c.ClientIP(),
+		UserAgent:  c.Request.UserAgent(),
+	}
+	if err := s.db.Create(&entry).Error; err != nil {
+		log.Printf("failed to write admin audit log: %v", err)
+	}
+}
+
+// adminUUID parses an admin user id, returning the nil UUID when unavailable.
+func adminUUID(raw string) uuid.UUID {
+	parsed, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
+}
+
+// paginationParams reads limit/offset query parameters with sane bounds.
+func paginationParams(c *gin.Context, defaultLimit int) (int, int) {
+	limit := defaultLimit
+	if raw := c.Query("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+
+	offset := 0
+	if raw := c.Query("offset"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			offset = parsed
+		}
+	}
+	return limit, offset
 }
 
 // WebSocketHub fans out broadcast messages to every connected client.
 type WebSocketHub struct {
-clients    map[*websocketConn]bool
-broadcast  chan []byte
-register   chan *websocketConn
-unregister chan *websocketConn
-mu         sync.RWMutex
+	clients    map[*websocketConn]bool
+	broadcast  chan []byte
+	register   chan *websocketConn
+	unregister chan *websocketConn
+	mu         sync.RWMutex
 }
 
 type websocketConn struct {
-send   chan []byte
-client *gin.Context
-conn   *websocket.Conn
+	send   chan []byte
+	client *gin.Context
+	conn   *websocket.Conn
 }
 
 var wsHub = &WebSocketHub{
-clients:    make(map[*websocketConn]bool),
-broadcast:  make(chan []byte, 256),
-register:   make(chan *websocketConn),
-unregister: make(chan *websocketConn),
+	clients:    make(map[*websocketConn]bool),
+	broadcast:  make(chan []byte, 256),
+	register:   make(chan *websocketConn),
+	unregister: make(chan *websocketConn),
 }
 
 // upgrader upgrades HTTP requests to WebSocket connections.
 var upgrader = websocket.Upgrader{
-ReadBufferSize:  4096,
-WriteBufferSize: 4096,
-// Same-origin policy: the browser sends Origin; reject cross-site upgrades.
-CheckOrigin: func(r *http.Request) bool {
-origin := r.Header.Get("Origin")
-if origin == "" {
-return true // non-browser client
-}
-host := r.Host
-u, err := url.Parse(origin)
-if err != nil {
-return false
-}
-return u.Host == host
-},
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	// Same-origin policy: the browser sends Origin; reject cross-site upgrades.
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // non-browser client
+		}
+		host := r.Host
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		return u.Host == host
+	},
 }
 
 // Run drives the hub until ctx is cancelled.
 func (h *WebSocketHub) Run(ctx context.Context) {
-for {
-select {
-case <-ctx.Done():
-h.mu.Lock()
-for conn := range h.clients {
-close(conn.send)
-delete(h.clients, conn)
-}
-h.mu.Unlock()
-return
-case conn := <-h.register:
-h.mu.Lock()
-h.clients[conn] = true
-h.mu.Unlock()
-case conn := <-h.unregister:
-h.mu.Lock()
-if _, ok := h.clients[conn]; ok {
-delete(h.clients, conn)
-close(conn.send)
-}
-h.mu.Unlock()
-case message := <-h.broadcast:
-h.mu.RLock()
-for conn := range h.clients {
-select {
-case conn.send <- message:
-default:
-// Slow consumer: drop the connection instead of blocking the hub.
-close(conn.send)
-delete(h.clients, conn)
-}
-}
-h.mu.RUnlock()
-}
-}
+	for {
+		select {
+		case <-ctx.Done():
+			h.mu.Lock()
+			for conn := range h.clients {
+				close(conn.send)
+				delete(h.clients, conn)
+			}
+			h.mu.Unlock()
+			return
+		case conn := <-h.register:
+			h.mu.Lock()
+			h.clients[conn] = true
+			h.mu.Unlock()
+		case conn := <-h.unregister:
+			h.mu.Lock()
+			if _, ok := h.clients[conn]; ok {
+				delete(h.clients, conn)
+				close(conn.send)
+			}
+			h.mu.Unlock()
+		case message := <-h.broadcast:
+			h.mu.RLock()
+			for conn := range h.clients {
+				select {
+				case conn.send <- message:
+				default:
+					// Slow consumer: drop the connection instead of blocking the hub.
+					close(conn.send)
+					delete(h.clients, conn)
+				}
+			}
+			h.mu.RUnlock()
+		}
+	}
 }
 
 // StartWebSocketHub launches the hub goroutine.
 func StartWebSocketHub(ctx context.Context) {
-go wsHub.Run(ctx)
+	go wsHub.Run(ctx)
 }
 
 // HandleWebSocket upgrades the request and streams messages to/from the client.
 func HandleWebSocket(c *gin.Context) {
-conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-if err != nil {
-log.Println("WebSocket upgrade error:", err)
-return
-}
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Println("WebSocket upgrade error:", err)
+		return
+	}
 
-wsConn := &websocketConn{
-send:   make(chan []byte, 256),
-client: c,
-conn:   conn,
-}
-wsHub.register <- wsConn
+	wsConn := &websocketConn{
+		send:   make(chan []byte, 256),
+		client: c,
+		conn:   conn,
+	}
+	wsHub.register <- wsConn
 
-go func() {
-defer func() {
-wsHub.unregister <- wsConn
-conn.Close()
-}()
+	go func() {
+		defer func() {
+			wsHub.unregister <- wsConn
+			conn.Close()
+		}()
 
-for {
-_, message, err := conn.ReadMessage()
-if err != nil {
-break
-}
-wsHub.broadcast <- message
-}
-}()
+		for {
+			_, message, err := conn.ReadMessage()
+			if err != nil {
+				break
+			}
+			wsHub.broadcast <- message
+		}
+	}()
 
-go func() {
-for message := range wsConn.send {
-if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-return
+	go func() {
+		for message := range wsConn.send {
+			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
+		}
+		conn.WriteMessage(websocket.CloseMessage, []byte{})
+	}()
 }
-}
-conn.WriteMessage(websocket.CloseMessage, []byte{})
-}()
-}
-
 
 // BankDetailsHandler returns bank transfer details for fiat deposits
 type BankDetails struct {
@@ -980,7 +1725,7 @@ type BankDetails struct {
 func GetBankDetails(c *gin.Context) {
 	// Generate unique reference for this transaction
 	reference := fmt.Sprintf("TGR%d", time.Now().Unix())
-	
+
 	bankDetails := BankDetails{
 		BankName:      os.Getenv("BANK_NAME"),
 		AccountName:   os.Getenv("BANK_ACCOUNT_NAME"),
@@ -990,7 +1735,7 @@ func GetBankDetails(c *gin.Context) {
 		SWIFT:         os.Getenv("BANK_SWIFT"),
 		Reference:     reference,
 	}
-	
+
 	c.JSON(200, bankDetails)
 }
 

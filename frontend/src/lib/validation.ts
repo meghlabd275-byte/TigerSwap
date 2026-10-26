@@ -258,6 +258,64 @@ export function arrayLenient<T>(element: Validator<T>): Validator<T[]> {
   };
 }
 
+/**
+ * Parsers for values typed into admin forms.
+ *
+ * Form inputs arrive as strings, so these convert and range-check them before
+ * anything is sent to the server. They throw `ValidationError` on bad input,
+ * which the calling component shows to the operator.
+ */
+
+/** Parses a decimal number from a form field. */
+export function parseDecimal(raw: string, path = "value"): string {
+  const trimmed = raw.trim();
+  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) {
+    fail("expected a decimal number", path);
+  }
+  return trimmed;
+}
+
+/** Parses a base-10 integer from a form field, optionally range-checked. */
+export function parseInteger(raw: string, path = "value", bounds: { min?: number; max?: number } = {}): number {
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    fail("expected a whole number", path);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed)) {
+    fail("number is out of range", path);
+  }
+  if (bounds.min !== undefined && parsed < bounds.min) {
+    fail(`must be at least ${bounds.min}`, path);
+  }
+  if (bounds.max !== undefined && parsed > bounds.max) {
+    fail(`must be at most ${bounds.max}`, path);
+  }
+  return parsed;
+}
+
+/** Parses a ratio in [0, 1] from a form field, as used by fee and LTV inputs. */
+export function parseRatio(raw: string, path = "value"): number {
+  const trimmed = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    fail("expected a ratio between 0 and 1", path);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    fail("ratio must be between 0 and 1", path);
+  }
+  return parsed;
+}
+
+/** Parses a BASE/QUOTE market symbol from a form field. */
+export function parseSymbol(raw: string, path = "value"): string {
+  const trimmed = raw.trim().toUpperCase();
+  if (!/^[A-Z0-9._-]{1,20}\/[A-Z0-9._-]{1,20}$/.test(trimmed)) {
+    fail("symbol must have the form BASE/QUOTE", path);
+  }
+  return trimmed;
+}
+
 function describe(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "an array";
