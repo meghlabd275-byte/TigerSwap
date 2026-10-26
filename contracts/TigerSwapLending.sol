@@ -45,6 +45,20 @@ contract TigerSwapLending {
     address public owner;
     address public priceOracle;
 
+    /// @dev Flash-loan fee in WAD, taken from the repaid amount. 9 bps by default.
+    uint256 public flashLoanFee = 9e14;
+    /// @dev Maximum share of a market's idle liquidity a single flash loan may take.
+    uint256 public constant FLASH_LOAN_MAX_UTILISATION = 9e17;
+
+    uint256 private _locked = 1;
+
+    modifier nonReentrant() {
+        require(_locked == 1, "TigerSwap: REENTRANT");
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
+
     event MarketCreated(address indexed token, uint256 collateralFactor);
     event MarketUpdated(address indexed token);
     event Deposited(address indexed user, address indexed token, uint256 amount);
@@ -60,6 +74,8 @@ contract TigerSwapLending {
         uint256 collateralSeized
     );
     event ReservesWithdrawn(address indexed token, uint256 amount);
+    event FlashLoan(address indexed borrower, address indexed token, uint256 amount, uint256 fee);
+    event FlashLoanFeeUpdated(uint256 fee);
 
     modifier onlyOwner() {
         require(msg.sender == owner, "TigerSwap: NOT_OWNER");
@@ -151,7 +167,7 @@ contract TigerSwapLending {
 
     // ============ Supply ============
 
-    function deposit(address token, uint256 amount) external {
+    function deposit(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         Market storage m = markets[token];
         require(m.isActive, "TigerSwap: MARKET_NOT_ACTIVE");
@@ -166,7 +182,7 @@ contract TigerSwapLending {
         emit Deposited(msg.sender, token, amount);
     }
 
-    function withdraw(address token, uint256 amount) external {
+    function withdraw(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         Market storage m = markets[token];
         _accrue(m);
@@ -186,7 +202,7 @@ contract TigerSwapLending {
 
     // ============ Borrow ============
 
-    function borrow(address token, uint256 amount) external {
+    function borrow(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         Market storage m = markets[token];
         require(m.isActive, "TigerSwap: MARKET_NOT_ACTIVE");
@@ -205,7 +221,7 @@ contract TigerSwapLending {
         emit Borrowed(msg.sender, token, amount);
     }
 
-    function repay(address token, uint256 amount) external {
+    function repay(address token, uint256 amount) external nonReentrant {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         Market storage m = markets[token];
         _accrue(m);
@@ -232,7 +248,7 @@ contract TigerSwapLending {
         address debtToken,
         address collateralToken,
         uint256 repayAmount
-    ) external {
+    ) external nonReentrant {
         require(repayAmount > 0, "TigerSwap: ZERO_AMOUNT");
         require(user != msg.sender, "TigerSwap: SELF_LIQUIDATE");
         require(debtToken != collateralToken, "TigerSwap: SAME_TOKEN");
@@ -278,6 +294,59 @@ contract TigerSwapLending {
         require(IERC20(collateralToken).transfer(msg.sender, collateralSeized), "TigerSwap: TRANSFER_FAILED");
 
         emit Liquidated(msg.sender, user, debtToken, collateralToken, actualRepay, collateralSeized);
+    }
+
+    // ============ Flash loans ============
+
+    /// @notice Lend `amount` of `token` to `receiver` for the duration of one
+    ///         transaction. The receiver must transfer back `amount + fee`
+    ///         before returning, or the whole loan reverts.
+    /// @dev The check is the balance delta, not a return value: a borrower that
+    ///      simply keeps the funds cannot make the contract whole, so the
+    ///      transfer back is enforced by the balance check below.
+    function flashLoan(address receiver, address token, uint256 amount, bytes calldata data) external nonReentrant {
+        require(receiver != address(0), "TigerSwap: ZERO_RECEIVER");
+        require(amount > 0, "TigerSwap: ZERO_AMOUNT");
+
+        Market storage m = markets[token];
+        require(m.isActive, "TigerSwap: MARKET_NOT_ACTIVE");
+        _accrue(m);
+
+        uint256 available = m.totalDeposits * m.depositIndex / WAD - m.totalBorrows * m.borrowIndex / WAD;
+        require(amount <= available, "TigerSwap: INSUFFICIENT_LIQUIDITY");
+        // A single loan may not drain the market, which would leave suppliers
+        // unable to withdraw in the same block.
+        require(amount <= available * FLASH_LOAN_MAX_UTILISATION / WAD, "TigerSwap: FLASH_LOAN_TOO_LARGE");
+
+        uint256 fee = amount * flashLoanFee / WAD;
+        uint256 balanceBefore = IERC20(token).balanceOf(address(this));
+
+        require(IERC20(token).transfer(receiver, amount), "TigerSwap: TRANSFER_FAILED");
+        IFlashLoanReceiver(receiver).onFlashLoan(msg.sender, token, amount, fee, data);
+
+        uint256 balanceAfter = IERC20(token).balanceOf(address(this));
+        require(balanceAfter >= balanceBefore + fee, "TigerSwap: FLASH_LOAN_NOT_REPAID");
+
+        // The fee is interest earned by suppliers, split with reserves exactly
+        // as ordinary borrow interest is.
+        uint256 toReserves = fee * m.reserveFactor / WAD;
+        uint256 toSuppliers = fee - toReserves;
+        m.totalReserves += toReserves;
+        if (toSuppliers > 0) {
+            uint256 deposits = m.totalDeposits * m.depositIndex / WAD;
+            if (deposits > 0) {
+                m.depositIndex += m.depositIndex * toSuppliers / deposits;
+                m.totalDeposits = (deposits + toSuppliers) * WAD / m.depositIndex;
+            }
+        }
+
+        emit FlashLoan(msg.sender, token, amount, fee);
+    }
+
+    function setFlashLoanFee(uint256 fee) external onlyOwner {
+        require(fee <= 1e17, "TigerSwap: FEE_TOO_HIGH");
+        flashLoanFee = fee;
+        emit FlashLoanFeeUpdated(fee);
     }
 
     // ============ Views ============
@@ -458,4 +527,10 @@ contract TigerSwapLending {
 
 interface IPriceOracle {
     function getPrice(address token) external view returns (uint256);
+}
+
+/// @notice Implemented by flash-loan receivers.
+interface IFlashLoanReceiver {
+    function onFlashLoan(address initiator, address token, uint256 amount, uint256 fee, bytes calldata data)
+        external;
 }
