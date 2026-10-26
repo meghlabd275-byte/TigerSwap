@@ -74,6 +74,11 @@ func main() {
 		&models.FuturesMarket{},
 		&models.PerpsMarket{},
 		&models.MarginMarket{},
+		&models.VeLock{},
+		&models.Gauge{},
+		&models.GaugeVote{},
+		&models.Bribe{},
+		&models.BribeClaim{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -88,6 +93,7 @@ func main() {
 	authService := services.NewAuthService(db)
 	adminService := services.NewAdminService(db)
 	listingService := services.NewListingService(db)
+	governanceService := services.NewGovernanceService(db)
 
 	// Real on-chain and trading services. These share one blockchain client and
 	// one price aggregator; every handler reads live chain or market state.
@@ -262,6 +268,16 @@ func main() {
 				protected.POST("/wallet/copy-trade", walletService.CreateCopyTrade)
 				protected.GET("/wallet/copy-trades", walletService.GetCopyTrades)
 			}
+
+			// Governance routes: veTGR locks, gauge voting and the bribe market
+			protected.POST("/governance/locks", governanceService.CreateLock)
+			protected.GET("/governance/locks", governanceService.GetLocks)
+			protected.POST("/governance/locks/:id/withdraw", governanceService.WithdrawLock)
+			protected.GET("/governance/gauges", governanceService.GetGauges)
+			protected.POST("/governance/vote", governanceService.Vote)
+			protected.POST("/governance/bribes", governanceService.AddBribe)
+			protected.POST("/governance/bribes/:id/claim", governanceService.ClaimBribe)
+			protected.GET("/governance/boost", governanceService.GetBoost)
 		}
 
 		// Admin routes (protected by admin middleware)
@@ -317,6 +333,12 @@ func main() {
 			admin.POST("/fees/config", feeCollector.UpdateConfigHandler)
 			admin.POST("/fees/master-wallet", feeCollector.SetMasterWalletHandler)
 			admin.POST("/fees/distribute", feeCollector.DistributeFeesHandler)
+
+			// Governance: gauges and emission weights (admin only)
+			admin.POST("/gauges", governanceService.CreateGauge)
+			admin.GET("/gauges", governanceService.GetGauges)
+			admin.PUT("/gauges/:id/weight", governanceService.SetGaugeWeight)
+			admin.GET("/bribes", governanceService.GetBribes)
 		}
 
 		// Price aggregation (public)
