@@ -36,6 +36,35 @@ npx tsc --noEmit
 npx next build
 ```
 
+Contracts (Foundry, at `~/.foundry/bin`):
+
+```
+export PATH="$HOME/.foundry/bin:$PATH"
+cd contracts
+forge build
+forge test
+```
+
+The other language layers each have their own toolchain. All four suites must
+stay green:
+
+```
+# Rust workspace (backend/rust): security, fast, insurance
+export PATH="$HOME/.cargo/bin:$PATH"
+cd backend/rust && cargo test --workspace
+
+# C++ HFT engine (backend/cpp): needs cmake and libssl-dev
+cd backend/cpp && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+./build/tigerswap_tests
+
+# Python (backend/python): ml is stdlib-only, sdk needs web3
+cd backend/python/ml && python3 -m pytest tests -q
+cd backend/python/sdk && python3 -m pytest tests -q
+```
+
+`cargo`, `cmake` and `libssl-dev` are not preinstalled; install them (rustup,
+`apt-get install -y cmake libssl-dev`) before running those suites.
+
 The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
 
 ## Conventions
