@@ -404,6 +404,92 @@ contract TigerSwapOptionsTest is Test {
         options.addCollateral(seriesId, 1000e18);
     }
 
+    // ---- LP ownership ------------------------------------------------------
+
+    function testSecondLpCannotWithdrawFirstLpsPrincipal() public {
+        address lp2 = address(0x33);
+        rusd.mint(lp2, 5_000_000e18);
+        vm.prank(lp2);
+        rusd.approve(address(options), type(uint256).max);
+
+        // lp2 never deposited, so it owns nothing to withdraw.
+        vm.prank(lp2);
+        vm.expectRevert("exceeds your principal");
+        options.removeCollateral(seriesId, 1_000_000e18);
+    }
+
+    function testEachLpWithdrawsOnlyItsOwnPrincipal() public {
+        address lp2 = address(0x33);
+        rusd.mint(lp2, 5_000_000e18);
+        vm.prank(lp2);
+        rusd.approve(address(options), type(uint256).max);
+        vm.prank(lp2);
+        options.addCollateral(seriesId, 5_000_000e18);
+
+        // lp cannot take more than the 10M it deposited, even though the pool
+        // holds 15M.
+        vm.prank(lp);
+        vm.expectRevert("exceeds your principal");
+        options.removeCollateral(seriesId, 10_000_000e18 + 1);
+
+        vm.prank(lp);
+        options.removeCollateral(seriesId, 10_000_000e18);
+        vm.prank(lp2);
+        options.removeCollateral(seriesId, 5_000_000e18);
+
+        assertEq(rusd.balanceOf(address(options)), 0, "pool emptied by its own LPs");
+    }
+
+    function testSecondLpSharesAreNotDilutedByExistingPool() public {
+        address lp2 = address(0x33);
+        rusd.mint(lp2, 5_000_000e18);
+        vm.prank(lp2);
+        rusd.approve(address(options), type(uint256).max);
+        vm.prank(lp2);
+        options.addCollateral(seriesId, 5_000_000e18);
+
+        // The pool holds 15M free, so 5M buys exactly a third of the shares.
+        assertEq(options.totalLpShares(seriesId), 15_000_000e18, "shares match deposits");
+        assertEq(options.lpShares(seriesId, lp), 10_000_000e18, "first lp keeps two thirds");
+        assertEq(options.lpShares(seriesId, lp2), 5_000_000e18, "second lp gets one third");
+    }
+
+    function testNonLpCannotWithdrawAfterSettlement() public {
+        _buyAndExpire(1e18);
+        options.settleSeries(seriesId, 2500e18);
+        vm.prank(trader);
+        options.exercise(seriesId);
+
+        address outsider = address(0x44);
+        vm.prank(outsider);
+        vm.expectRevert("exceeds your share");
+        options.withdrawLp(seriesId, 1_000_000e18);
+    }
+
+    function testUnexercisedHoldersCollateralIsReserved() public {
+        _buyAndExpire(1e18);
+        options.settleSeries(seriesId, 2500e18);
+        // The holder has not exercised, so their payout is still owed.
+
+        uint256 claim = options.lpClaims(seriesId);
+        vm.prank(lp);
+        vm.expectRevert("collateral is reserved");
+        options.withdrawLp(seriesId, claim);
+
+        // Only the unencumbered remainder can leave the pool.
+        uint256 reserved = 2000e18; // size * spot locked by the open call
+        vm.prank(lp);
+        options.withdrawLp(seriesId, claim - reserved);
+        assertEq(rusd.balanceOf(address(options)), reserved, "reserved payout stays put");
+
+        // The holder can still be paid in full.
+        uint256 before = rusd.balanceOf(trader);
+        vm.prank(trader);
+        uint256 payout = options.exercise(seriesId);
+        assertEq(payout, 500e18, "intrinsic paid");
+        assertEq(rusd.balanceOf(trader), before + payout, "holder made whole");
+    }
+
     // ---- LP withdrawal -----------------------------------------------------
 
     function testLpWithdrawsRemainingCollateralAfterSettlement() public {

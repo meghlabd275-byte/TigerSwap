@@ -55,6 +55,12 @@ contract TigerSwapOptions {
     mapping(uint256 => mapping(address => uint256)) public longPositions;
     /// @dev Premium the pool has set aside for LPs of each series, withdrawable after settlement.
     mapping(uint256 => uint256) public lpClaims;
+    /// @dev Share of the claimable pool each LP owns, per series.
+    mapping(uint256 => mapping(address => uint256)) public lpShares;
+    /// @dev Total shares issued for a series.
+    mapping(uint256 => uint256) public totalLpShares;
+    /// @dev Principal each LP deposited and has not yet withdrawn, per series.
+    mapping(uint256 => mapping(address => uint256)) public lpPrincipal;
 
     event SeriesCreated(uint256 indexed seriesId, uint256 strike, uint256 expiry, bool isCall, uint256 baseIV);
     event MarkPriceUpdated(uint256 indexed seriesId, uint256 markPrice);
@@ -161,25 +167,51 @@ contract TigerSwapOptions {
     // ---- Liquidity ---------------------------------------------------------
 
     /// @notice Deposit settlement collateral to underwrite the series.
+    /// @dev Deposits are recorded per LP. Shares are priced against the pool's
+    ///      free collateral, so a new deposit cannot dilute the principal other
+    ///      LPs already have at risk, and an LP can only ever withdraw their own.
     function addCollateral(uint256 _seriesId, uint256 _amount) external nonReentrant {
         Series storage s = _requireSeries(_seriesId);
         require(!s.settled, "series already settled");
         require(_amount > 0, "amount required");
 
         require(collateralToken.transferFrom(msg.sender, address(this), _amount), "transfer in failed");
+
+        uint256 free = s.collateral > s.lockedCollateral ? s.collateral - s.lockedCollateral : 0;
+        // When the pool is fully committed every existing share is momentarily
+        // worth nothing, so a new deposit mints at par rather than at an
+        // unbounded ratio.
+        uint256 shares = (totalLpShares[_seriesId] == 0 || free == 0)
+            ? _amount
+            : _amount * totalLpShares[_seriesId] / free;
+        require(shares > 0, "amount too small");
+
         s.collateral += _amount;
+        totalLpShares[_seriesId] += shares;
+        lpShares[_seriesId][msg.sender] += shares;
+        lpPrincipal[_seriesId][msg.sender] += _amount;
 
         emit CollateralAdded(_seriesId, msg.sender, _amount);
     }
 
     /// @notice Withdraw collateral that is not backing open positions.
+    /// @dev Bounded by the caller's own principal and by the pool's free
+    ///      collateral, and it burns the matching shares.
     function removeCollateral(uint256 _seriesId, uint256 _amount) external nonReentrant {
         Series storage s = _requireSeries(_seriesId);
         require(!s.settled, "series already settled");
         require(_amount > 0, "amount required");
         require(_amount <= s.collateral - s.lockedCollateral, "collateral is locked");
+        require(_amount <= lpPrincipal[_seriesId][msg.sender], "exceeds your principal");
+
+        uint256 free = s.collateral - s.lockedCollateral;
+        uint256 burn = _amount * totalLpShares[_seriesId] / free;
+        require(burn <= lpShares[_seriesId][msg.sender], "exceeds your share");
 
         s.collateral -= _amount;
+        totalLpShares[_seriesId] -= burn;
+        lpShares[_seriesId][msg.sender] -= burn;
+        lpPrincipal[_seriesId][msg.sender] -= _amount;
         require(collateralToken.transfer(msg.sender, _amount), "transfer out failed");
 
         emit CollateralRemoved(_seriesId, msg.sender, _amount);
@@ -306,15 +338,27 @@ contract TigerSwapOptions {
         emit Exercised(_seriesId, msg.sender, size, payout);
     }
 
-    /// @notice Withdraw the pool's remaining collateral after settlement.
+    /// @notice Withdraw the caller's share of the pool's remaining collateral.
+    /// @dev Collateral still backing unexercised positions is reserved, so an
+    ///      LP cannot withdraw funds an option holder is owed.
     function withdrawLp(uint256 _seriesId, uint256 _amount) external nonReentrant {
         Series storage s = _requireSeries(_seriesId);
         require(s.settled, "series not settled");
         require(_amount > 0, "amount required");
         require(_amount <= lpClaims[_seriesId], "exceeds claimable collateral");
 
+        uint256 reserved = s.lockedCollateral > lpClaims[_seriesId] ? lpClaims[_seriesId] : s.lockedCollateral;
+        require(_amount <= lpClaims[_seriesId] - reserved, "collateral is reserved");
+
+        uint256 totalShares = totalLpShares[_seriesId];
+        require(totalShares > 0, "no liquidity providers");
+        uint256 burn = _amount * totalShares / lpClaims[_seriesId];
+        require(burn <= lpShares[_seriesId][msg.sender], "exceeds your share");
+
         lpClaims[_seriesId] -= _amount;
         s.collateral -= _amount;
+        totalLpShares[_seriesId] = totalShares - burn;
+        lpShares[_seriesId][msg.sender] -= burn;
         require(collateralToken.transfer(msg.sender, _amount), "transfer out failed");
 
         emit LpWithdrawn(_seriesId, msg.sender, _amount);
