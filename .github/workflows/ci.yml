@@ -10,40 +10,58 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      
+      - uses: actions/checkout@v4
+
       - name: Setup Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
-          
+          go-version: '1.23'
+
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
-          node-version: '18'
-          
+          node-version: '20'
+
       - name: Build Go packages
         run: |
-          cd backend/go/api_gateway && go build -o api_gateway .
-          cd backend/go/dex_aggregator && go build -o dex_aggregator .
-          cd backend/go/dex_connectors && go build -o dex_connectors .
-          
+          set -e
+          cd "$GITHUB_WORKSPACE/backend/go/api_gateway" && go build -o api_gateway .
+          cd "$GITHUB_WORKSPACE/backend/go/dex_aggregator" && go build -o dex_aggregator .
+          cd "$GITHUB_WORKSPACE/backend/go/dex_connectors" && go build -o dex_connectors .
+
       - name: Build Frontend
         run: |
-          cd frontend && npm install && npm run build
-          
-      - name: Run tests
+          cd "$GITHUB_WORKSPACE/frontend" && npm install && npm run build
+
+      - name: Run Go tests
         run: |
-          echo "Running tests..."
-          # Go tests
-          cd backend && go test ./...
-          # Frontend tests
-          cd frontend && npm test
-          
-      - name: Build Rust packages
+          set -e
+          cd "$GITHUB_WORKSPACE/backend" && go test ./...
+          # api_gateway is a separate Go module, so the command above does not
+          # reach it. Test it explicitly.
+          cd "$GITHUB_WORKSPACE/backend/go/api_gateway" && go test ./...
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and test Rust packages
         run: |
-          cd backend/rust && cargo build --release || true
-          
-      - name: Build C++ packages
+          set -e
+          cd "$GITHUB_WORKSPACE/backend/rust" && cargo build --release && cargo test --release
+
+      - name: Build and test C++ packages
         run: |
-          cd backend/cpp && mkdir -p build && cd build && cmake .. && make || true
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake libssl-dev
+          cd "$GITHUB_WORKSPACE/backend/cpp"
+          mkdir -p build && cd build
+          cmake .. && make && ctest --output-on-failure
+
+      - name: Build and test contracts
+        run: |
+          set -e
+          curl -L https://foundry.paradigm.xyz | bash
+          export PATH="$HOME/.foundry/bin:$PATH"
+          foundryup
+          cd "$GITHUB_WORKSPACE/contracts" && forge build && forge test
