@@ -90,9 +90,21 @@ class Perpetuals:
         engine = self._engine(chain_id)
         market_id = self.market_id(symbol)
 
-        token, max_leverage, liquidation_fee, maintenance_margin, initial_margin, active = (
-            engine.functions.getMarket(market_id).call()
-        )
+        # getMarket returns a MarketView struct as a tuple: token, maxLeverage,
+        # liquidationFee, maintenanceMargin, initialMargin, isActive, openFee,
+        # maxOpenInterest, openInterest.
+        market = engine.functions.getMarket(market_id).call()
+        (
+            token,
+            max_leverage,
+            liquidation_fee,
+            maintenance_margin,
+            initial_margin,
+            active,
+            open_fee,
+            max_open_interest,
+            open_interest,
+        ) = market
         funding_rate, last_update, mark_price, index_price = engine.functions.getFundingInfo(
             market_id
         ).call()
@@ -106,6 +118,9 @@ class Perpetuals:
             "maintenance_margin": maintenance_margin,
             "initial_margin": initial_margin,
             "is_active": active,
+            "open_fee": open_fee,
+            "max_open_interest": max_open_interest,
+            "open_interest": open_interest,
             "mark_price": mark_price,
             "index_price": index_price,
             "funding_rate": funding_rate,
