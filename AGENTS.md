@@ -133,3 +133,39 @@ Future, perps and margin listings are admin-managed and persisted in
 
 New listings are created with status `paused`; an operator activates them.
 `DELETE` moves a listing to `delisting` rather than removing the row.
+
+## Pool families and on-chain ABIs
+
+Every pool family is registered in `TigerSwapFactory.familyPools[family][t0][t1]`
+and read through `getPoolForFamily(tokenA, tokenB, uint8 family)`. Family codes:
+
+- `0` xyK, `1` concentrated, `2` stable, `3` weighted.
+
+Each family exposes different state, so a Go client must not assume one ABI fits
+all pools. The canonical getters are:
+
+- xyK: `getReserves()`, `token0()`, `token1()`
+- stable: `coins(i)`, `balances(i)`, `A()` (storage), `getDy(int128,int128,uint256)`, `exchange(int128,int128,uint256,uint256)`
+- weighted: `tokens(i)`, `tokenCount()`, `getBalances()`, `getWeights()`, `swap(uint256,uint256,uint256,uint256)`
+- concentrated: `token0()`, `token1()`, `liquidity()`, `sqrtPriceX96()`
+
+`TigerSwapRouter.addLiquidity`/`removeLiquidity` take a `family` argument.
+Stable and weighted pools pull from and pay out to `msg.sender`, so those two
+families require `to == msg.sender`; xyK supports an arbitrary `to`.
+
+Go clients live in `backend/go/tigerswap` (library), `backend/go/dex_connectors`
+and `backend/go/dex_aggregator` (binaries). They read real pool state via
+`loadState`; never reintroduce a single-shape ABI for all families.
+
+## Keepers and on-chain sourcing
+
+`backend/go/keeper` discovers work from chain events, not seeded data:
+positions come from `PositionOpened` logs on the perps contract and orders from
+`OrderCreated` logs on the orders contract. Liquidation health checks mirror
+`TigerSwapPerpetuals.liquidatePosition`, and order trigger/price conditions
+mirror `TigerSwapAdvancedOrders._checkPriceCondition`/`_checkTriggerCondition`.
+The keeper reads its price from the orders contract's own oracle
+(`priceOracle` + `priceAsset`), so a keeper can never assert a condition the
+contract would reject. Every executed action is a real signed transaction; a
+transaction hash is never synthesized. Required env: `TIGERSWAP_PERPS_ADDRESS`,
+`TIGERSWAP_ORDERS_ADDRESS`, `KEEPER_PRIVATE_KEY`, `RPC_URL`.

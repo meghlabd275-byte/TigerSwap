@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -242,7 +243,11 @@ func NewPriceHandler(cfg *config.Config, redisClient *redis.Client) *PriceHandle
 	return &PriceHandler{NewHandler(cfg), redisClient}
 }
 
-// GetPrices returns all prices
+// GetPrices returns all prices.
+//
+// The upstream is TigerSwap's own oracle service. Its response is forwarded only
+// after it is confirmed to be a JSON object, so a malformed or unexpected reply
+// cannot be cached or passed through to a client.
 func (h *PriceHandler) GetPrices(c *gin.Context) {
 	symbols := c.Query("symbols")
 
@@ -260,28 +265,35 @@ func (h *PriceHandler) GetPrices(c *gin.Context) {
 		}
 	}
 
-	// Fetch from upstream
-	url := fmt.Sprintf("%s/api/v1/prices?symbols=%s", h.config.Upstream.PriceOracle, symbols)
+	url := fmt.Sprintf("%s/api/v1/oracle/prices", h.config.Upstream.PriceOracle)
+	if symbols != "" {
+		url += "?symbols=" + url.QueryEscape(symbols)
+	}
 	resp, err := http.Get(url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
 		return
 	}
+	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle returned an error"})
 		return
 	}
-	defer resp.Body.Close()
 
 	var prices map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&prices)
+	if err := json.NewDecoder(resp.Body).Decode(&prices); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle returned a malformed response"})
+		return
+	}
 
 	// Cache results
 	if h.redis != nil {
 		cacheKey := fmt.Sprintf("prices:%s", symbols)
 		ctx := context.Background()
-		data, _ := json.Marshal(prices)
-		h.redis.Set(ctx, cacheKey, string(data), 30*time.Second)
+		if data, err := json.Marshal(prices); err == nil {
+			h.redis.Set(ctx, cacheKey, string(data), 30*time.Second)
+		}
 	}
 
 	c.JSON(http.StatusOK, prices)
@@ -305,7 +317,7 @@ func (h *PriceHandler) GetPrice(c *gin.Context) {
 		}
 	}
 
-	url := fmt.Sprintf("%s/api/v1/prices/%s", h.config.Upstream.PriceOracle, symbol)
+	url := fmt.Sprintf("%s/api/v1/oracle/price/%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol))
 	resp, err := http.Get(url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
@@ -320,7 +332,7 @@ func (h *PriceHandler) GetPrice(c *gin.Context) {
 
 	var price map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&price); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle returned a malformed response"})
 		return
 	}
 
@@ -340,7 +352,7 @@ func (h *PriceHandler) GetPriceHistory(c *gin.Context) {
 	symbol := c.Param("symbol")
 	days := c.DefaultQuery("days", "7")
 
-	url := fmt.Sprintf("%s/api/v1/prices/%s/history?days=%s", h.config.Upstream.PriceOracle, symbol, days)
+	url := fmt.Sprintf("%s/api/v1/oracle/price/%s/history?days=%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol), url.QueryEscape(days))
 	resp, err := http.Get(url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})

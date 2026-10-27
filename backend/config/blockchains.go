@@ -78,7 +78,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Ethereum",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://eth.llamarpc.com", "https://eth.public-rpc.com", "https://rpc.ankr.com/eth"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://etherscan.io",
 			ExplorerAPI:       "https://api.etherscan.io/api",
 			BlockTime:         12,
@@ -87,7 +87,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			NetworkID:         1,
 			GasStationURL:     "https://api.etherscan.io/api?module=gastracker&action=gasoracle",
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			MulticallAddress:  "0x5BA1e12693D8fE830872dEa0c463c2bEF5b55E0b",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -100,7 +100,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "BNB Chain",
 			Symbol:            "BNB",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://bsc-dataseed.binance.org", "https://bsc.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://bscscan.com",
 			ExplorerAPI:       "https://api.bscscan.com/api",
 			BlockTime:         3,
@@ -108,7 +108,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x38",
 			NetworkID:         56,
 			NativeToken:       &NativeToken{Name: "BNB", Symbol: "BNB", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png", CoingeckoID: "binancecoin"},
-			MulticallAddress:  "0xD5c32C9Cec2D6D8bC9D1D2cE3fF4A5B6C7D8E9F0",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -121,7 +121,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Polygon",
 			Symbol:            "MATIC",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://polygon-rpc.com", "https://polygon.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://polygonscan.com",
 			ExplorerAPI:       "https://api.polygonscan.com/api",
 			BlockTime:         2,
@@ -129,7 +129,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x89",
 			NetworkID:         137,
 			NativeToken:       &NativeToken{Name: "Polygon", Symbol: "MATIC", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/4713/small/polygon.png", CoingeckoID: "matic-network"},
-			MulticallAddress:  "0x275617327c958bD06bDb6F499046E2aA4d7E8d7C",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -142,7 +142,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Arbitrum One",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://arb1.arbitrum.io/rpc", "https://arbitrum.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://arbiscan.io",
 			ExplorerAPI:       "https://api.arbiscan.io/api",
 			BlockTime:         1,
@@ -150,7 +150,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xa4b1",
 			NetworkID:         42161,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			MulticallAddress:  "0x80C7DD92B6A8b6E6d5B5E3E4a2F1C0D9E8F7B6A5",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -163,7 +163,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Optimism",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://mainnet.optimism.io", "https://optimism.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://optimistic.etherscan.io",
 			ExplorerAPI:       "https://api-optimistic.etherscan.io/api",
 			BlockTime:         2,
@@ -171,7 +171,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xa",
 			NetworkID:         10,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			MulticallAddress:  "0x2DC5F50D9B8D88E3aF2b2F2E4E5A6B7C8D9E0F1A",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -184,7 +184,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Base",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://mainnet.base.org", "https://base.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://basescan.org",
 			ExplorerAPI:       "https://api.basescan.org/api",
 			BlockTime:         2,
@@ -192,7 +192,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0x2105",
 			NetworkID:         8453,
 			NativeToken:       &NativeToken{Name: "Ethereum", Symbol: "ETH", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/279/small/ethereum.png", CoingeckoID: "ethereum"},
-			MulticallAddress:  "0xE4cB7C243163f91F8b4e0b0d9E1dF5a3b7C8D9E0",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -205,7 +205,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Avalanche C-Chain",
 			Symbol:            "AVAX",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://api.avax.network/ext/bc/C/rpc", "https://avax.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://snowtrace.io",
 			ExplorerAPI:       "https://api.snowtrace.io/api",
 			BlockTime:         1,
@@ -213,7 +213,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xa86a",
 			NetworkID:         43114,
 			NativeToken:       &NativeToken{Name: "Avalanche", Symbol: "AVAX", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/12559/small/Avalanche_Circle_RedWhite_Trans.png", CoingeckoID: "avalanche-2"},
-			MulticallAddress:  "0xC3D5795d9D16a56A9D8eC4d7F1E2C3A4B5C6D7E8",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   true,
 			SupportsWebSocket: true,
@@ -226,7 +226,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Fantom",
 			Symbol:            "FTM",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.ftm.tools", "https://fantom.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://ftmscan.com",
 			ExplorerAPI:       "https://api.ftmscan.com/api",
 			BlockTime:         1,
@@ -234,7 +234,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			ChainIDHex:        "0xfa",
 			NetworkID:         250,
 			NativeToken:       &NativeToken{Name: "Fantom", Symbol: "FTM", Decimals: 18, Address: "0x0000000000000000000000000000000000000000", LogoURL: "https://assets.coingecko.com/coins/images/4001/small/Fantom_round.png", CoingeckoID: "fantom"},
-			MulticallAddress:  "0xC9D2D4aB4D5E6F7A8B9C0D1E2F3A4B5C6D7E8F9A",
+			MulticallAddress:  "", // deployed per chain by the operator
 			IsTestnet:         false,
 			SupportsEIP1559:   false,
 			SupportsWebSocket: true,
@@ -247,7 +247,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Harmony",
 			Symbol:            "ONE",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://api.harmony.one", "https://harmony.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.harmony.one",
 			BlockTime:         2,
 			Decimals:          18,
@@ -266,7 +266,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Gnosis Chain",
 			Symbol:            "xDAI",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.gnosischain.com", "https://gnosis.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://gnosisscan.io",
 			ExplorerAPI:       "https://api.gnosisscan.io/api",
 			BlockTime:         5,
@@ -286,7 +286,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Cronos",
 			Symbol:            "CRO",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://evm.cronos.org", "https://cronos.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://cronoscan.com",
 			ExplorerAPI:       "https://api.cronoscan.com/api",
 			BlockTime:         6,
@@ -306,7 +306,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Moonriver",
 			Symbol:            "MOVR",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.api.moonriver.moonbeam.network", "https://moonriver.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://moonriver.moonscan.io",
 			ExplorerAPI:       "https://api-moonriver.moonscan.io/api",
 			BlockTime:         12,
@@ -326,7 +326,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Celo",
 			Symbol:            "CELO",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://forno.celo.org", "https://celo.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.celo.org",
 			BlockTime:         5,
 			Decimals:          18,
@@ -345,7 +345,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Aurora",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://mainnet.aurora.dev", "https://aurora.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.aurora.dev",
 			ExplorerAPI:       "https://api.aurorascan.dev/api",
 			BlockTime:         1,
@@ -365,7 +365,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Klaytn",
 			Symbol:            "KLAY",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://klaytn-mainnet-rpc.allthatnode.com:8551", "https://klaytn.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://scope.klaytn.com",
 			BlockTime:         1,
 			Decimals:          18,
@@ -384,7 +384,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Astar",
 			Symbol:            "ASTR",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.astar.network:8545", "https://astar.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://blockscout.com/astar",
 			BlockTime:         12,
 			Decimals:          18,
@@ -403,7 +403,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "zkSync Era",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://mainnet.era.zksync.io", "https://zksync-era.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.zksync.io",
 			ExplorerAPI:       "https://api.zksync.io/api/v0.1",
 			BlockTime:         1,
@@ -423,7 +423,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Linea",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.linea.build", "https://linea.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.linea.build",
 			BlockTime:         2,
 			Decimals:          18,
@@ -442,7 +442,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Mantle",
 			Symbol:            "MNT",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.mantle.xyz", "https://mantle.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.mantle.xyz",
 			BlockTime:         2,
 			Decimals:          18,
@@ -461,7 +461,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Scroll",
 			Symbol:            "ETH",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.scroll.io", "https://scroll.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://scrollscan.com",
 			BlockTime:         3,
 			Decimals:          18,
@@ -480,7 +480,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "PulseChain",
 			Symbol:            "PLS",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://rpc.pulsechain.com", "https://pulsechain.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://scan.pulsechain.com",
 			BlockTime:         12,
 			Decimals:          18,
@@ -499,7 +499,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Dogecoin",
 			Symbol:            "DOGE",
 			Type:              ChainTypeEVM,
-			RPCURLs:           []string{"https://dogechain.ricardocabral.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.dogechain.dog",
 			BlockTime:         3,
 			Decimals:          18,
@@ -518,7 +518,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Solana",
 			Symbol:            "SOL",
 			Type:              ChainTypeSolana,
-			RPCURLs:           []string{"https://api.mainnet-beta.solana.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.solana.com",
 			BlockTime:         1,
 			Decimals:          9,
@@ -536,7 +536,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Cosmos Hub",
 			Symbol:            "ATOM",
 			Type:              ChainTypeCosmos,
-			RPCURLs:           []string{"https://rpc.cosmoshub.network"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://mintscan.io/cosmos",
 			BlockTime:         6,
 			Decimals:          6,
@@ -554,7 +554,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Bitcoin",
 			Symbol:            "BTC",
 			Type:              ChainTypeBitcoin,
-			RPCURLs:           []string{"https://bitcoin-rpc.publicnode.com"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://mempool.space",
 			BlockTime:         600,
 			Decimals:          8,
@@ -572,7 +572,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "Aptos",
 			Symbol:            "APT",
 			Type:              ChainTypeAptos,
-			RPCURLs:           []string{"https://fullnode.mainnet.aptoslabs.com/v1"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://explorer.aptoslabs.com",
 			BlockTime:         4,
 			Decimals:          8,
@@ -590,7 +590,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "NEAR",
 			Symbol:            "NEAR",
 			Type:              ChainTypeNear,
-			RPCURLs:           []string{"https://rpc.mainnet.near.org"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://nearblocks.io",
 			BlockTime:         1,
 			Decimals:          24,
@@ -608,7 +608,7 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			Name:              "TON",
 			Symbol:            "TON",
 			Type:              ChainTypeTON,
-			RPCURLs:           []string{"https://toncenter.com/api/v2/jsonRPC"},
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_<chainID>
 			ExplorerURL:       "https://tonviewer.com",
 			BlockTime:         5,
 			Decimals:          9,
@@ -711,6 +711,58 @@ func GetTokenConfigs() map[int64][]*TokenConfig {
 			{Address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6", ChainID: 137, Name: "Wrapped Bitcoin", Symbol: "WBTC", Decimals: 8, LogoURI: "https://assets.coingecko.com/coins/images/7598/small/wrapped_bitcoin_wbtc.png", CoingeckoID: "wrapped-bitcoin", IsVerified: true, IsNative: false},
 		},
 	}
+}
+
+// TokenAddress returns the contract address for a token symbol on a chain.
+// The chain's native asset maps to the zero address, which is how EVM
+// contracts and the router refer to it.
+func TokenAddress(chainID int64, symbol string) (string, bool) {
+	want := strings.ToUpper(strings.TrimSpace(symbol))
+	if want == "" {
+		return "", false
+	}
+
+	if chain, ok := GetBlockchainConfigs()[chainID]; ok && chain.NativeToken != nil {
+		if strings.ToUpper(chain.NativeToken.Symbol) == want {
+			if chain.NativeToken.Address != "" {
+				return chain.NativeToken.Address, true
+			}
+			return "0x0000000000000000000000000000000000000000", true
+		}
+	}
+
+	for _, t := range GetTokenConfigs()[chainID] {
+		if strings.ToUpper(t.Symbol) == want {
+			return t.Address, true
+		}
+	}
+	return "", false
+}
+
+// TokenSymbol returns the symbol for a token address on a chain. The zero
+// address resolves to the chain's native asset.
+func TokenSymbol(chainID int64, tokenAddress string) (string, bool) {
+	addr := strings.TrimSpace(tokenAddress)
+	if addr == "" {
+		return "", false
+	}
+
+	chain, known := GetBlockchainConfigs()[chainID]
+
+	isZero := strings.EqualFold(addr, "0x0000000000000000000000000000000000000000") || addr == "0"
+	if isZero {
+		if known && chain.NativeToken != nil {
+			return strings.ToUpper(chain.NativeToken.Symbol), true
+		}
+		return "", false
+	}
+
+	for _, t := range GetTokenConfigs()[chainID] {
+		if strings.EqualFold(t.Address, addr) {
+			return strings.ToUpper(t.Symbol), true
+		}
+	}
+	return "", false
 }
 
 // BigIntFromHex converts a hex string to big.Int

@@ -25,25 +25,37 @@ import (
 )
 
 const factoryABIJSON = `[
- {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPool","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPoolForFamily","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
 ]`
 
 const poolABIJSON = `[
  {"inputs":[],"name":"getReserves","outputs":[{"internalType":"uint256","name":"reserve0","type":"uint256"},{"internalType":"uint256","name":"reserve1","type":"uint256"},{"internalType":"uint32","name":"blockTimestampLast","type":"uint32"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
- {"inputs":[],"name":"amplification","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
- {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256","name":"weight0","type":"uint256"},{"internalType":"uint256","name":"weight1","type":"uint256"}],"stateMutability":"view","type":"function"}
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"coins","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"balances","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"A","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"tokens","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getBalances","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"}
 ]`
 
 const routerABIJSON = `[
  {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
 ]`
 
+// oracleABIJSON is TigerSwap's own median-of-N price oracle. Prices are
+// WAD-scaled (1e18 = 1 unit of the quote currency).
+const oracleABIJSON = `[
+ {"inputs":[{"internalType":"address","name":"asset","type":"address"}],"name":"getPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"address","name":"asset","type":"address"}],"name":"liveReportCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}
+]`
+
 var (
 	factoryABI = mustABI(factoryABIJSON)
 	poolABI    = mustABI(poolABIJSON)
 	routerABI  = mustABI(routerABIJSON)
+	oracleABI  = mustABI(oracleABIJSON)
 )
 
 func mustABI(s string) abi.ABI {
@@ -75,6 +87,7 @@ type Deployment struct {
 	Factory common.Address
 	Router  common.Address
 	Quoter  common.Address
+	Oracle  common.Address
 	RPCURL  string
 }
 
@@ -137,7 +150,7 @@ func (c *Client) ResolvePool(ctx context.Context, tokenA, tokenB common.Address,
 		return cached, nil
 	}
 
-	data, err := factoryABI.Pack("getPool", tokenA, tokenB, FamilyCode(family))
+	data, err := factoryABI.Pack("getPoolForFamily", tokenA, tokenB, FamilyCode(family))
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -145,7 +158,7 @@ func (c *Client) ResolvePool(ctx context.Context, tokenA, tokenB common.Address,
 	if err != nil {
 		return common.Address{}, fmt.Errorf("factory.getPool: %w", err)
 	}
-	vals, err := factoryABI.Unpack("getPool", out)
+	vals, err := factoryABI.Unpack("getPoolForFamily", out)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("unpack getPool: %w", err)
 	}
@@ -164,51 +177,127 @@ func (c *Client) ResolvePool(ctx context.Context, tokenA, tokenB common.Address,
 func (c *Client) loadState(ctx context.Context, pool common.Address, family amm.Family) (*poolState, error) {
 	st := &poolState{amp: big.NewInt(0), weight0: big.NewInt(0), weight1: big.NewInt(0)}
 
-	resOut, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("pool.getReserves: %w", err)
-	}
-	res, err := poolABI.Unpack("getReserves", resOut)
-	if err != nil || len(res) < 2 {
-		return nil, fmt.Errorf("unpack getReserves: %w", err)
-	}
-	st.reserve0, _ = res[0].(*big.Int)
-	st.reserve1, _ = res[1].(*big.Int)
-
-	t0Out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "token0")}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("pool.token0: %w", err)
-	}
-	t0, err := poolABI.Unpack("token0", t0Out)
-	if err != nil {
-		return nil, fmt.Errorf("unpack token0: %w", err)
-	}
-	st.token0, _ = t0[0].(common.Address)
-
 	switch family {
 	case amm.FamilyStable:
-		out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "amplification")}, nil)
-		if err != nil {
-			return nil, fmt.Errorf("pool.amplification: %w", err)
+		// StableSwap pools expose coins(i), balances(i) and A.
+		for i := 0; i < 2; i++ {
+			coin, err := c.callAddress(ctx, pool, "coins", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			bal, err := c.callUint(ctx, pool, "balances", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			if i == 0 {
+				st.token0, st.reserve0 = coin, bal
+			} else {
+				st.reserve1 = bal
+			}
 		}
-		vals, err := poolABI.Unpack("amplification", out)
+		amp, err := c.callUint(ctx, pool, "A")
 		if err != nil {
-			return nil, fmt.Errorf("unpack amplification: %w", err)
+			return nil, err
 		}
-		st.amp, _ = vals[0].(*big.Int)
+		st.amp = amp
 	case amm.FamilyWeighted:
-		out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getWeights")}, nil)
+		// Weighted pools expose tokens(i), getBalances() and getWeights().
+		for i := 0; i < 2; i++ {
+			token, err := c.callAddress(ctx, pool, "tokens", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			if i == 0 {
+				st.token0 = token
+			}
+		}
+		balances, err := c.callUintArray(ctx, pool, "getBalances")
 		if err != nil {
-			return nil, fmt.Errorf("pool.getWeights: %w", err)
+			return nil, err
 		}
-		vals, err := poolABI.Unpack("getWeights", out)
-		if err != nil || len(vals) < 2 {
-			return nil, fmt.Errorf("unpack getWeights: %w", err)
+		weights, err := c.callUintArray(ctx, pool, "getWeights")
+		if err != nil {
+			return nil, err
 		}
-		st.weight0, _ = vals[0].(*big.Int)
-		st.weight1, _ = vals[1].(*big.Int)
+		if len(balances) < 2 || len(weights) < 2 {
+			return nil, fmt.Errorf("weighted pool %s returned %d balances / %d weights", pool.Hex(), len(balances), len(weights))
+		}
+		st.reserve0, st.reserve1 = balances[0], balances[1]
+		st.weight0, st.weight1 = weights[0], weights[1]
+	default:
+		// xyK pools expose getReserves() and token0().
+		resOut, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("pool.getReserves: %w", err)
+		}
+		res, err := poolABI.Unpack("getReserves", resOut)
+		if err != nil || len(res) < 2 {
+			return nil, fmt.Errorf("unpack getReserves: %w", err)
+		}
+		st.reserve0, _ = res[0].(*big.Int)
+		st.reserve1, _ = res[1].(*big.Int)
+		t0, err := c.callAddress(ctx, pool, "token0")
+		if err != nil {
+			return nil, err
+		}
+		st.token0 = t0
+	}
+
+	if st.reserve0 == nil || st.reserve1 == nil || st.reserve0.Sign() == 0 || st.reserve1.Sign() == 0 {
+		return nil, fmt.Errorf("pool %s has no usable liquidity", pool.Hex())
 	}
 	return st, nil
+}
+
+// callAddress reads a single address-returning view function.
+func (c *Client) callAddress(ctx context.Context, pool common.Address, method string, args ...interface{}) (common.Address, error) {
+	out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("pool.%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return common.Address{}, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	addr, ok := vals[0].(common.Address)
+	if !ok {
+		return common.Address{}, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return addr, nil
+}
+
+// callUint reads a single uint256-returning view function.
+func (c *Client) callUint(ctx context.Context, pool common.Address, method string, args ...interface{}) (*big.Int, error) {
+	out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pool.%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return nil, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	v, ok := vals[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return v, nil
+}
+
+// callUintArray reads a uint256[]-returning view function.
+func (c *Client) callUintArray(ctx context.Context, pool common.Address, method string, args ...interface{}) ([]*big.Int, error) {
+	out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("pool.%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return nil, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	arr, ok := vals[0].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return arr, nil
 }
 
 func mustPack(a abi.ABI, name string, args ...interface{}) []byte {
@@ -317,6 +406,70 @@ func (c *Client) BuildSwapCalldata(family amm.Family, path []common.Address, amo
 // RouterAddress returns the configured TigerSwap router for the chain.
 func (c *Client) RouterAddress() common.Address { return c.deployment.Router }
 
+// TokenPriceWAD reads a token's raw WAD-scaled (1e18) price from TigerSwap's own
+// on-chain oracle. Callers that need an exact value should use this rather than
+// the float form, which necessarily rounds.
+func (c *Client) TokenPriceWAD(ctx context.Context, token common.Address) (*big.Int, error) {
+	if c.deployment.Oracle == (common.Address{}) {
+		return nil, fmt.Errorf("no TigerSwap oracle configured for chain %d", c.deployment.ChainID)
+	}
+
+	data, err := oracleABI.Pack("getPrice", token)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.client.CallContract(ctx, ethereum.CallMsg{To: &c.deployment.Oracle, Data: data}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("oracle.getPrice(%s): %w", token.Hex(), err)
+	}
+	vals, err := oracleABI.Unpack("getPrice", out)
+	if err != nil {
+		return nil, fmt.Errorf("unpack getPrice: %w", err)
+	}
+	price, ok := vals[0].(*big.Int)
+	if !ok || price.Sign() <= 0 {
+		return nil, fmt.Errorf("oracle returned no usable price for %s", token.Hex())
+	}
+	return price, nil
+}
+
+// TokenPriceUSD reads a token's price from TigerSwap's own on-chain oracle and
+// returns it as a decimal float. It fails closed when no oracle is configured
+// or the oracle cannot answer, so a caller never falls back to a guessed price.
+func (c *Client) TokenPriceUSD(ctx context.Context, token common.Address) (float64, error) {
+	wad, err := c.TokenPriceWAD(ctx, token)
+	if err != nil {
+		return 0, err
+	}
+	scaled, _ := new(big.Float).SetInt(wad).Float64()
+	return scaled / 1e18, nil
+}
+
+// LiveOracleReports returns how many independent reporters are currently fresh
+// for a token, so a caller can judge how much to trust the price.
+func (c *Client) LiveOracleReports(ctx context.Context, token common.Address) (uint64, error) {
+	if c.deployment.Oracle == (common.Address{}) {
+		return 0, fmt.Errorf("no TigerSwap oracle configured for chain %d", c.deployment.ChainID)
+	}
+
+	out, err := c.client.CallContract(ctx, ethereum.CallMsg{
+		To:   &c.deployment.Oracle,
+		Data: mustPack(oracleABI, "liveReportCount", token),
+	}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("oracle.liveReportCount(%s): %w", token.Hex(), err)
+	}
+	vals, err := oracleABI.Unpack("liveReportCount", out)
+	if err != nil {
+		return 0, fmt.Errorf("unpack liveReportCount: %w", err)
+	}
+	count, _ := vals[0].(*big.Int)
+	if count == nil {
+		return 0, nil
+	}
+	return count.Uint64(), nil
+}
+
 // LoadSigner reads the TigerSwap signer key from the environment.
 func LoadSigner() (*ecdsa.PrivateKey, error) {
 	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")
@@ -328,8 +481,9 @@ func LoadSigner() (*ecdsa.PrivateKey, error) {
 
 // LoadDeployments reads the TigerSwap deployment set from the environment.
 // TIGERSWAP_CHAINS is a comma-separated chain list; each chain uses
-// TIGERSWAP_FACTORY_<id>, TIGERSWAP_ROUTER_<id>, TIGERSWAP_QUOTER_<id> and
-// TIGERSWAP_RPC_<id>.
+// TIGERSWAP_FACTORY_<id>, TIGERSWAP_ROUTER_<id>, TIGERSWAP_QUOTER_<id>,
+// TIGERSWAP_ORACLE_<id> and TIGERSWAP_RPC_<id>. The RPC must be a TigerSwap
+// node; no third-party RPC provider is used.
 func LoadDeployments() []Deployment {
 	raw := os.Getenv("TIGERSWAP_CHAINS")
 	if raw == "" {
@@ -347,6 +501,7 @@ func LoadDeployments() []Deployment {
 			Factory: common.HexToAddress(os.Getenv("TIGERSWAP_FACTORY_" + suffix)),
 			Router:  common.HexToAddress(os.Getenv("TIGERSWAP_ROUTER_" + suffix)),
 			Quoter:  common.HexToAddress(os.Getenv("TIGERSWAP_QUOTER_" + suffix)),
+			Oracle:  common.HexToAddress(os.Getenv("TIGERSWAP_ORACLE_" + suffix)),
 			RPCURL:  os.Getenv("TIGERSWAP_RPC_" + suffix),
 		})
 	}
