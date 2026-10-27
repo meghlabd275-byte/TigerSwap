@@ -265,11 +265,11 @@ func (h *PriceHandler) GetPrices(c *gin.Context) {
 		}
 	}
 
-	url := fmt.Sprintf("%s/api/v1/oracle/prices", h.config.Upstream.PriceOracle)
+	endpoint := fmt.Sprintf("%s/api/v1/oracle/prices", h.config.Upstream.PriceOracle)
 	if symbols != "" {
-		url += "?symbols=" + url.QueryEscape(symbols)
+		endpoint += "?symbols=" + url.QueryEscape(symbols)
 	}
-	resp, err := http.Get(url)
+	resp, err := http.Get(endpoint)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
 		return
