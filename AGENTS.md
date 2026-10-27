@@ -81,6 +81,26 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   changes, update the matching validator in `src/lib/types.ts` and the
   corresponding test (e.g. `services/perp_market_view_test.go`).
 
+## Contracts
+
+- Every contract has a matching `contracts/test/<Name>.t.sol`. A contract with
+  no test has never been executed; treat that as a defect, not a gap.
+- Owner admin uses two-step transfer where it exists (`commitTransferOwnership`
+  then `acceptTransferOwnership`) and single-step `transferOwnership` elsewhere.
+  Either way the new owner is checked for the zero address.
+- `TigerSwapPriceOracle` is the price source. Contracts that act on a price take
+  it from the oracle and never from a caller-supplied argument, so a keeper or
+  relayer cannot assert that a limit or stop condition was met.
+- Contracts that hold user funds track them per account (`TigerSwapCopyTrading`
+  `balances`, `TigerSwapPerpetuals` `poolShares`). Never pay one user out of the
+  contract's aggregate balance; a shared balance lets one user's deposit settle
+  another's payout.
+- `TigerSwapFactory` charges `swapFee` to LPs and, when `feeTo` is set, mints
+  the protocol's share of swap fees as new LP tokens at `mint`/`burn` time from
+  the growth in `sqrt(k)`. While `feeTo` is unset the protocol fee is inert.
+- Liquidity and accounting math rounds in the protocol's favour: fee and share
+  calculations divide last, and losses are clamped to the escrowed amount.
+
 ## Ledger and funds
 
 - `services/ledger_service.go` owns all balance mutations. Credit and debit run
