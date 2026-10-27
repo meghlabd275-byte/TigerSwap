@@ -58,10 +58,16 @@ jobs:
           mkdir -p build && cd build
           cmake .. && make && ctest --output-on-failure
 
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
       - name: Build and test contracts
         run: |
           set -e
-          curl -L https://foundry.paradigm.xyz | bash
-          export PATH="$HOME/.foundry/bin:$PATH"
-          foundryup
-          cd "$GITHUB_WORKSPACE/contracts" && forge build && forge test
+          cd "$GITHUB_WORKSPACE/contracts"
+          # contracts/lib is gitignored, so the test framework is fetched here.
+          # Only the test suite needs forge-std; the contracts themselves have no
+          # external Solidity dependencies.
+          mkdir -p lib
+          git clone --depth 1 --quiet https://github.com/foundry-rs/forge-std.git lib/forge-std
+          forge build && forge test
