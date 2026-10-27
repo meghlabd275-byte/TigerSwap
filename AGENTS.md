@@ -169,3 +169,39 @@ The keeper reads its price from the orders contract's own oracle
 contract would reject. Every executed action is a real signed transaction; a
 transaction hash is never synthesized. Required env: `TIGERSWAP_PERPS_ADDRESS`,
 `TIGERSWAP_ORDERS_ADDRESS`, `KEEPER_PRIVATE_KEY`, `RPC_URL`.
+
+## Building and testing
+
+Each language lives in its own tree, and two Go modules exist, so a plain
+`go build ./...` from `backend/` does **not** compile everything:
+
+| Tree | Build | Test |
+| --- | --- | --- |
+| `contracts/` | `forge build` | `forge test` |
+| `backend/` | `go build ./...` | `go test ./...` |
+| `backend/go/api_gateway/` | `go build ./...` | `go test ./...` |
+| `backend/rust/` | `cargo build --release` | `cargo test --release` |
+| `backend/cpp/` | `cmake -S . -B build && cmake --build build` | `ctest --output-on-failure` |
+| `frontend/` | `npm run build` | `npx tsc --noEmit` |
+
+`backend/go/api_gateway` is a **separate module** (its own `go.mod`). Go commands
+run in `backend/` skip it entirely. Always build and test it explicitly; a
+compile error there is invisible from the parent module.
+
+`contracts/lib/` is gitignored, so `forge-std` is not in the repository. On a
+clean checkout, clone it before running `forge test`:
+
+```sh
+mkdir -p contracts/lib
+git clone --depth 1 https://github.com/foundry-rs/forge-std.git contracts/lib/forge-std
+```
+
+The Solidity contracts themselves have no external dependencies; only the test
+suite imports `forge-std`.
+
+`foundryup` installs to `~/.config/.foundry/bin`, not `~/.foundry/bin`. Prefer the
+`foundry-rs/foundry-toolchain` action in CI over a manual `curl | bash` install.
+
+There is no `go.mod` at the repository root, so `actions/setup-go` needs an
+explicit `cache-dependency-path` listing `backend/go.sum` and
+`backend/go/api_gateway/go.sum`, or the cache restore fails.
