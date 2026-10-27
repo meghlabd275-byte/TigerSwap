@@ -85,6 +85,8 @@ contract TigerSwapAdvancedOrders {
     mapping(address => bool) public executors;
 
     address public priceOracle;
+    /// @notice Asset the oracle is queried for when evaluating conditions.
+    address public priceAsset;
     address public router;
     uint256 public limitOrderFee = 30; // 0.3% of the input, taken at fill time
     mapping(address => uint256) public feesCollected;
@@ -108,6 +110,15 @@ contract TigerSwapAdvancedOrders {
     event FeesWithdrawn(address indexed token, address indexed to, uint256 amount);
 
     address public owner;
+
+    uint256 private _locked = 1;
+
+    modifier nonReentrant() {
+        require(_locked == 1, "TigerSwap: REENTRANT");
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
 
     modifier onlyOwner() {
         require(msg.sender == owner, "TigerSwap: NOT_OWNER");
@@ -138,6 +149,11 @@ contract TigerSwapAdvancedOrders {
     function setPriceOracle(address oracle) external onlyOwner {
         require(oracle != address(0), "TigerSwap: ZERO_ORACLE");
         priceOracle = oracle;
+    }
+
+    function setPriceAsset(address asset) external onlyOwner {
+        require(asset != address(0), "TigerSwap: ZERO_ADDRESS");
+        priceAsset = asset;
     }
 
     function setRouter(address _router) external onlyOwner {
@@ -309,11 +325,12 @@ contract TigerSwapAdvancedOrders {
 
     // ============ Execution ============
 
-    /// @notice Fill an open order through the AMM. `currentPrice` is the keeper's
-    ///         view of the oracle price and gates limit/stop conditions; the
-    ///         actual output is whatever the pool returns.
-    function executeOrder(uint256 orderId, uint256 currentPrice, uint256 fillAmount)
+    /// @notice Fill an open order through the AMM. The trigger price is read
+    ///         from the oracle, never taken from the caller, so a keeper cannot
+    ///         decide for itself that a limit or stop condition is met.
+    function executeOrder(uint256 orderId, uint256 fillAmount)
         external
+        nonReentrant
         onlyExecutor
         returns (uint256 amountOut)
     {
@@ -321,7 +338,7 @@ contract TigerSwapAdvancedOrders {
         require(order.status == OrderStatus.OPEN || order.status == OrderStatus.PARTIALLY_FILLED,
             "TigerSwap: ORDER_NOT_OPEN");
         require(block.timestamp <= order.expiresAt, "TigerSwap: ORDER_EXPIRED");
-        require(_checkPriceCondition(order, currentPrice), "TigerSwap: PRICE_NOT_MET");
+        require(_checkPriceCondition(order, _oraclePrice()), "TigerSwap: PRICE_NOT_MET");
 
         uint256 remaining = order.amountIn - order.filledAmount;
         require(remaining > 0, "TigerSwap: ORDER_FILLED");
@@ -330,14 +347,22 @@ contract TigerSwapAdvancedOrders {
         if (order.orderType == OrderType.TWAP) {
             uint256 part = order.amountIn / order.twapParts;
             if (actualFill > part) actualFill = part;
-            require(block.timestamp >= order.lastFillAt + order.twapInterval, "TigerSwap: TWAP_TOO_SOON");
+            // The first part may fill immediately; later parts must wait out
+            // the interval since the previous fill.
+            if (order.lastFillAt != 0) {
+                require(block.timestamp >= order.lastFillAt + order.twapInterval, "TigerSwap: TWAP_TOO_SOON");
+            }
         }
 
         uint256 fee = actualFill * limitOrderFee / BPS;
         uint256 swapAmount = actualFill - fee;
 
-        amountOut = _swapThroughRouter(order.tokenIn, order.tokenOut, swapAmount, order.amountOutMin);
-        require(amountOut >= order.amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT");
+        // amountOutMin is a floor for the whole order, so a partial fill must
+        // use its proportional share of that floor or every part would revert.
+        uint256 minOut = order.amountOutMin * actualFill / order.amountIn;
+
+        amountOut = _swapThroughRouter(order.tokenIn, order.tokenOut, swapAmount, minOut);
+        require(amountOut >= minOut, "TigerSwap: INSUFFICIENT_OUTPUT");
 
         order.filledAmount += actualFill;
         order.amountOutReceived += amountOut;
@@ -360,14 +385,16 @@ contract TigerSwapAdvancedOrders {
         emit OrderFilled(orderId, actualFill, amountOut, msg.sender);
     }
 
-    /// @notice Trigger a stop-loss or take-profit order.
-    function triggerOrder(uint256 orderId, uint256 currentPrice) external onlyExecutor {
+    /// @notice Trigger a stop-loss or take-profit order at the oracle price.
+    function triggerOrder(uint256 orderId) external nonReentrant onlyExecutor {
         Order storage order = orders[orderId];
         require(
             order.orderType == OrderType.STOP_LOSS || order.orderType == OrderType.TAKE_PROFIT,
             "TigerSwap: NOT_TRIGGERABLE"
         );
         require(order.status == OrderStatus.OPEN, "TigerSwap: ORDER_NOT_OPEN");
+
+        uint256 currentPrice = _oraclePrice();
         require(_checkTriggerCondition(order, currentPrice), "TigerSwap: TRIGGER_NOT_MET");
 
         order.status = OrderStatus.TRIGGERED;
@@ -388,7 +415,7 @@ contract TigerSwapAdvancedOrders {
     }
 
     /// @notice Cancel an open order and return escrowed input.
-    function cancelOrder(uint256 orderId) external {
+    function cancelOrder(uint256 orderId) external nonReentrant {
         Order storage order = orders[orderId];
         require(order.owner == msg.sender, "TigerSwap: NOT_OWNER");
         require(
@@ -406,7 +433,7 @@ contract TigerSwapAdvancedOrders {
     }
 
     /// @notice Expire an order past its deadline and return escrowed input.
-    function expireOrder(uint256 orderId) external {
+    function expireOrder(uint256 orderId) external nonReentrant {
         Order storage order = orders[orderId];
         require(
             order.status == OrderStatus.OPEN || order.status == OrderStatus.PARTIALLY_FILLED,
@@ -424,7 +451,7 @@ contract TigerSwapAdvancedOrders {
     }
 
     /// @notice Cancel an IOC order that could not be filled in its block.
-    function cancelIOC(uint256 orderId) external onlyExecutor {
+    function cancelIOC(uint256 orderId) external nonReentrant onlyExecutor {
         Order storage order = orders[orderId];
         require(order.orderType == OrderType.IOC, "TigerSwap: NOT_IOC");
         require(order.status == OrderStatus.OPEN, "TigerSwap: ORDER_NOT_OPEN");
@@ -488,7 +515,10 @@ contract TigerSwapAdvancedOrders {
         }
 
         if (order.orderType == OrderType.TAKE_PROFIT) {
-            return order.side == OrderSide.BUY
+            // A take-profit exits on a favourable move, so it is the mirror of a
+            // stop: a sell triggers as the price rises to the target, a buy as
+            // it falls to it.
+            return order.side == OrderSide.SELL
                 ? currentPrice >= order.price
                 : currentPrice <= order.price;
         }
@@ -539,4 +569,17 @@ contract TigerSwapAdvancedOrders {
         require(newOwner != address(0), "TigerSwap: ZERO_ADDRESS");
         owner = newOwner;
     }
+
+    /// @dev Reads the trigger price from the oracle. Order conditions are
+    ///      always evaluated against this, never against a caller-supplied
+    ///      value, so a keeper cannot assert that a limit or stop has been hit.
+    function _oraclePrice() private view returns (uint256 price) {
+        price = ITigerSwapPriceOracle(priceOracle).getPrice(priceAsset);
+        require(price > 0, "TigerSwap: INVALID_PRICE");
+    }
+}
+
+/// @dev Median price oracle used to evaluate order conditions.
+interface ITigerSwapPriceOracle {
+    function getPrice(address asset) external view returns (uint256);
 }

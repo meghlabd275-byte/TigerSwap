@@ -47,6 +47,7 @@ contract TigerSwapPriceOracle {
 
     constructor(uint256 _maxStaleness, uint256 _minReports) {
         require(_minReports >= 1, "TigerSwap: MIN_REPORTS");
+        require(_maxStaleness > 0, "TigerSwap: ZERO_STALENESS");
         owner = msg.sender;
         maxStaleness = _maxStaleness;
         minReports = _minReports;
@@ -58,6 +59,15 @@ contract TigerSwapPriceOracle {
         require(reporter != address(0), "TigerSwap: ZERO_ADDRESS");
         if (allowed && !isReporter[reporter]) {
             reporters.push(reporter);
+        } else if (!allowed && isReporter[reporter]) {
+            // Remove the entry so a later re-enable does not add a duplicate.
+            for (uint256 i = 0; i < reporters.length; i++) {
+                if (reporters[i] == reporter) {
+                    reporters[i] = reporters[reporters.length - 1];
+                    reporters.pop();
+                    break;
+                }
+            }
         }
         isReporter[reporter] = allowed;
         emit ReporterUpdated(reporter, allowed);

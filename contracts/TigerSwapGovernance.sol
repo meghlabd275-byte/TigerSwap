@@ -141,7 +141,12 @@ contract TigerSwapGovernance {
     function castVoteWithReason(uint256 proposalId, bool support, string memory reason) public {
         Proposal storage proposal = proposals[proposalId];
         require(state(proposalId) == ProposalState.Active, "TigerSwap: NOT_ACTIVE");
-        
+
+        // One vote per holder. Without this the tallies could be inflated by
+        // simply calling again, so the outcome would reward transaction spam
+        // rather than token weight.
+        require(!hasVoted[proposalId][msg.sender], "TigerSwap: ALREADY_VOTED");
+
         uint256 weight = governanceToken.balanceOf(msg.sender);
         require(weight > 0, "TigerSwap: NO_VOTING_POWER");
         
@@ -273,6 +278,7 @@ contract TigerSwapGovernance {
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "TigerSwap: ZERO_ADDRESS");
         owner = newOwner;
     }
 }

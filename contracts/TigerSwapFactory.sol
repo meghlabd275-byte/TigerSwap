@@ -9,9 +9,15 @@ import "./TigerSwapInterfaces.sol";
  * @dev Implements Uniswap V2 style factory with additional features
  */
 contract TigerSwapFactory {
-    /// @notice Fee to set for protocol
+    /// @notice Denominator for the protocol fee, expressed in basis points.
     uint256 public constant PROTOCOL_FEE_DENOMINATOR = 10000;
+    /// @notice Protocol's cut of swap fees, in basis points. It is minted as
+    ///         new LP tokens to `feeTo` when a pool is first touched, so it
+    ///         comes out of LP growth rather than the reserves.
     uint256 public protocolFee = 2; // 0.02%
+    /// @notice Recipient of the protocol's LP share. While unset the protocol
+    ///         fee is not charged and LPs keep the whole swap fee.
+    address public feeTo;
 
     /// @notice Fee for swapping
     uint256 public swapFee = 30; // 0.3%
@@ -44,6 +50,7 @@ contract TigerSwapFactory {
     /// @notice Events
     event PoolCreated(address indexed token0, address indexed token1, address pool, uint256);
     event FeeUpdated(uint256 swapFee, uint256 protocolFee);
+    event FeeToUpdated(address indexed feeTo);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
     event Paused(address account);
     event Unpaused(address account);
@@ -138,6 +145,16 @@ contract TigerSwapFactory {
     }
 
     /**
+     * @notice Set the recipient of the protocol's LP share. Setting it to the
+     *         zero address stops the protocol fee from being charged.
+     * @param _feeTo New recipient
+     */
+    function setFeeTo(address _feeTo) external onlyOwner {
+        feeTo = _feeTo;
+        emit FeeToUpdated(_feeTo);
+    }
+
+    /**
      * @notice Pause the factory
      */
     function pause() external onlyOwner {
@@ -186,6 +203,9 @@ contract TigerSwapPool {
     uint256 public price0CumulativeLast;
     uint256 public price1CumulativeLast;
 
+    /// @dev Reserves product at the last fee accrual; zero means none yet.
+    uint256 public kLastStored;
+
     bytes32 public DOMAIN_SEPARATOR;
     bytes32 public constant PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
 
@@ -210,9 +230,13 @@ contract TigerSwapPool {
         unlocked = 1;
     }
 
+    /// @notice The factory that deployed this pool, used for the fee settings.
+    address public factory;
+
     constructor(address _token0, address _token1) {
         token0 = _token0;
         token1 = _token1;
+        factory = msg.sender;
 
         uint256 chainId;
         assembly {
@@ -262,6 +286,8 @@ contract TigerSwapPool {
      * @dev Called by factory when liquidity is added
      */
     function mint(address to) external lock returns (uint256 liquidity) {
+        _mintFee();
+
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
         uint256 amount0 = balance0 - reserve0;
@@ -282,6 +308,9 @@ contract TigerSwapPool {
         require(liquidity > 0, "TigerSwap: INSUFFICIENT_LIQUIDITY");
         _mint(to, liquidity);
         _update(balance0, balance1);
+
+        // Liquidity changes are not swap fees, so the fee baseline restarts.
+        kLastStored = reserve0 * reserve1;
     }
 
     /**
@@ -291,6 +320,8 @@ contract TigerSwapPool {
      * @return amount1 Amount of token1 received
      */
     function burn(address to) external lock returns (uint256 amount0, uint256 amount1) {
+        _mintFee();
+
         uint256 balance0 = IERC20(token0).balanceOf(address(this));
         uint256 balance1 = IERC20(token1).balanceOf(address(this));
         uint256 liquidity = balanceOf[address(this)];
@@ -308,6 +339,8 @@ contract TigerSwapPool {
         balance0 = IERC20(token0).balanceOf(address(this));
         balance1 = IERC20(token1).balanceOf(address(this));
         _update(balance0, balance1);
+
+        kLastStored = reserve0 * reserve1;
 
         emit Burn(msg.sender, amount0, amount1, to);
     }
@@ -423,6 +456,48 @@ contract TigerSwapPool {
     function min(uint256 a, uint256 b) internal pure returns (uint256) {
         return a < b ? a : b;
     }
+
+    /**
+     * @notice Mint the protocol's share of the fees accrued since the last call.
+     * @dev The share is proportional to the growth in sqrt(k). It is minted as
+     *      new LP tokens to the factory's `feeTo`, so it dilutes LPs rather
+     *      than draining the reserves.
+     * @return liquidity LP tokens minted to the fee recipient
+     */
+    function mintFee() external lock returns (uint256 liquidity) {
+        return _mintFee();
+    }
+
+    /// @dev Accrues the protocol's share and restarts the fee baseline. Called
+    ///      at the start of mint and burn so fees are settled before the
+    ///      reserves move for a reason other than swapping.
+    function _mintFee() internal returns (uint256 liquidity) {
+        address feeToRecipient = ITigerSwapFactory(factory).feeTo();
+        uint256 kLast = kLastStored;
+
+        if (feeToRecipient != address(0) && kLast != 0) {
+            uint256 rootK = sqrt(reserve0 * reserve1);
+            uint256 rootKLast = sqrt(kLast);
+
+            if (rootK > rootKLast) {
+                uint256 protocolFeeBps = ITigerSwapFactory(factory).protocolFee();
+                if (protocolFeeBps > 0) {
+                    uint256 numerator = totalSupply * (rootK - rootKLast);
+                    uint256 denominator = rootK * (PROTOCOL_FEE_DENOMINATOR / protocolFeeBps) + rootK;
+                    liquidity = numerator / denominator;
+                    if (liquidity > 0) {
+                        _mint(feeToRecipient, liquidity);
+                    }
+                }
+            }
+        }
+
+        kLastStored = reserve0 * reserve1;
+    }
+
+    /// @dev Denominator used to split the protocol's share; must match the
+    ///      factory constant so the two cannot drift apart.
+    uint256 private constant PROTOCOL_FEE_DENOMINATOR = 10_000;
 
     function sqrt(uint256 x) internal pure returns (uint256 z) {
         if (x == 0) return 0;

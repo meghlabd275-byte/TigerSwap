@@ -25,6 +25,8 @@ interface ITigerSwapFactory {
     function getPoolAddress(address tokenA, address tokenB) external view returns (address);
     function createPool(address tokenA, address tokenB) external returns (address pool);
     function swapFee() external view returns (uint256);
+    function protocolFee() external view returns (uint256);
+    function feeTo() external view returns (address);
 }
 
 interface ITigerSwapPool {
@@ -34,4 +36,6 @@ interface ITigerSwapPool {
     function mint(address to) external returns (uint256 liquidity);
     function burn(address to) external returns (uint256 amount0, uint256 amount1);
     function swap(uint256 amount0Out, uint256 amount1Out, address to, bytes calldata data) external;
+    /// @notice Settle the protocol's share of accrued swap fees.
+    function mintFee() external returns (uint256 liquidity);
 }
