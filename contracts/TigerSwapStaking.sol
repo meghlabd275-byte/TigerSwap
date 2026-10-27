@@ -36,12 +36,33 @@ contract TigerSwapStaking {
     
     // User address => staked amount
     mapping(address => uint256) public balanceOf;
+
+    /// @notice Administrator allowed to fund rewards and set the duration.
+    address public owner;
+    address public futureOwner;
+
+    /// @dev Reward funding is the only privileged action; everything else is
+    ///      open, so anyone may stake, withdraw or claim their own funds.
+    modifier onlyOwner() {
+        require(msg.sender == owner, "TigerSwap: NOT_OWNER");
+        _;
+    }
+
+    uint256 private _locked = 1;
+
+    modifier nonReentrant() {
+        require(_locked == 1, "TigerSwap: REENTRANT");
+        _locked = 2;
+        _;
+        _locked = 1;
+    }
     
     // Events
     event Staked(address indexed user, uint256 amount);
     event Withdrawn(address indexed user, uint256 amount);
     event RewardClaimed(address indexed user, uint256 reward);
     event RewardAdded(uint256 reward);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     modifier updateReward(address _account) {
         rewardPerTokenStored = rewardPerToken();
@@ -55,15 +76,32 @@ contract TigerSwapStaking {
     }
 
     constructor(address _stakingToken, address _rewardToken) {
+        require(_stakingToken != address(0) && _rewardToken != address(0), "TigerSwap: ZERO_ADDRESS");
         stakingToken = IERC20(_stakingToken);
         rewardToken = IERC20(_rewardToken);
+        owner = msg.sender;
+        emit OwnershipTransferred(address(0), msg.sender);
+    }
+
+    /// @notice Begin a two-step ownership transfer.
+    function commitTransferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "TigerSwap: ZERO_ADDRESS");
+        futureOwner = newOwner;
+    }
+
+    /// @notice Complete a two-step ownership transfer.
+    function acceptTransferOwnership() external {
+        require(msg.sender == futureOwner, "TigerSwap: NOT_FUTURE_OWNER");
+        emit OwnershipTransferred(owner, futureOwner);
+        owner = futureOwner;
+        futureOwner = address(0);
     }
 
     /**
      * @notice Stake tokens
      * @param _amount Amount to stake
      */
-    function stake(uint256 _amount) external updateReward(msg.sender) {
+    function stake(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         require(_amount > 0, "TigerSwap: CANNOT_STAKE_ZERO");
         
         stakingToken.transferFrom(msg.sender, address(this), _amount);
@@ -77,7 +115,7 @@ contract TigerSwapStaking {
      * @notice Withdraw staked tokens
      * @param _amount Amount to withdraw
      */
-    function withdraw(uint256 _amount) external updateReward(msg.sender) {
+    function withdraw(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         require(_amount > 0, "TigerSwap: CANNOT_WITHDRAW_ZERO");
         require(balanceOf[msg.sender] >= _amount, "TigerSwap: INSUFFICIENT_BALANCE");
         
@@ -91,7 +129,7 @@ contract TigerSwapStaking {
     /**
      * @notice Claim earned rewards
      */
-    function getReward() external updateReward(msg.sender) {
+    function getReward() external nonReentrant updateReward(msg.sender) {
         uint256 reward = rewards[msg.sender];
         require(reward > 0, "TigerSwap: NO_REWARD");
         
@@ -105,8 +143,9 @@ contract TigerSwapStaking {
      * @notice Set rewards duration
      * @param _duration Duration in seconds
      */
-    function setRewardsDuration(uint256 _duration) external {
+    function setRewardsDuration(uint256 _duration) external onlyOwner {
         require(finishAt < block.timestamp, "TigerSwap: REWARD_NOT_FINISHED");
+        require(_duration > 0, "TigerSwap: ZERO_DURATION");
         duration = _duration;
     }
 
@@ -114,7 +153,9 @@ contract TigerSwapStaking {
      * @notice Notify about new reward
      * @param _reward Reward amount
      */
-    function notifyRewardAmount(uint256 _reward) external updateReward(address(0)) {
+    function notifyRewardAmount(uint256 _reward) external onlyOwner nonReentrant updateReward(address(0)) {
+        require(_reward > 0, "TigerSwap: ZERO_REWARD");
+        require(duration > 0, "TigerSwap: DURATION_NOT_SET");
         if (block.timestamp >= finishAt) {
             rewardRate = _reward / duration;
         } else {
