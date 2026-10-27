@@ -36,7 +36,7 @@ import (
 
 // factoryABIJSON resolves TigerSwap pools by token pair and family.
 const factoryABIJSON = `[
- {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPool","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
+ {"inputs":[{"internalType":"address","name":"tokenA","type":"address"},{"internalType":"address","name":"tokenB","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"}],"name":"getPoolForFamily","outputs":[{"internalType":"address","name":"pool","type":"address"}],"stateMutability":"view","type":"function"}
 ]`
 
 // poolABIJSON reads the state needed to quote a TigerSwap pool.
@@ -44,8 +44,12 @@ const poolABIJSON = `[
  {"inputs":[],"name":"getReserves","outputs":[{"internalType":"uint256","name":"reserve0","type":"uint256"},{"internalType":"uint256","name":"reserve1","type":"uint256"},{"internalType":"uint32","name":"blockTimestampLast","type":"uint32"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"token0","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
  {"inputs":[],"name":"token1","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
- {"inputs":[],"name":"amplification","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
- {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256","name":"weight0","type":"uint256"},{"internalType":"uint256","name":"weight1","type":"uint256"}],"stateMutability":"view","type":"function"}
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"coins","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"balances","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"A","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"tokens","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getBalances","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},
+ {"inputs":[],"name":"getWeights","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"}
 ]`
 
 // routerABIJSON executes a TigerSwap swap.
@@ -234,7 +238,7 @@ func (d *chainDeployment) resolvePool(ctx context.Context, tokenA, tokenB common
 		return cached, nil
 	}
 
-	data, err := factoryABI.Pack("getPool", tokenA, tokenB, familyCode(family))
+	data, err := factoryABI.Pack("getPoolForFamily", tokenA, tokenB, familyCode(family))
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -242,7 +246,7 @@ func (d *chainDeployment) resolvePool(ctx context.Context, tokenA, tokenB common
 	if err != nil {
 		return common.Address{}, fmt.Errorf("factory.getPool: %w", err)
 	}
-	vals, err := factoryABI.Unpack("getPool", out)
+	vals, err := factoryABI.Unpack("getPoolForFamily", out)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("unpack getPool: %w", err)
 	}
@@ -261,51 +265,127 @@ func (d *chainDeployment) resolvePool(ctx context.Context, tokenA, tokenB common
 func (d *chainDeployment) loadState(ctx context.Context, pool common.Address, family amm.Family) (*poolState, error) {
 	st := &poolState{amp: big.NewInt(0), weight0: big.NewInt(0), weight1: big.NewInt(0)}
 
-	resOut, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("getReserves: %w", err)
-	}
-	res, err := poolABI.Unpack("getReserves", resOut)
-	if err != nil || len(res) < 2 {
-		return nil, fmt.Errorf("unpack getReserves: %w", err)
-	}
-	st.reserve0, _ = res[0].(*big.Int)
-	st.reserve1, _ = res[1].(*big.Int)
-
-	t0Out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "token0")}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("token0: %w", err)
-	}
-	t0, err := poolABI.Unpack("token0", t0Out)
-	if err != nil {
-		return nil, fmt.Errorf("unpack token0: %w", err)
-	}
-	st.token0, _ = t0[0].(common.Address)
-
 	switch family {
 	case amm.FamilyStable:
-		out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "amplification")}, nil)
-		if err != nil {
-			return nil, fmt.Errorf("amplification: %w", err)
+		// StableSwap pools expose coins(i), balances(i) and A.
+		for i := 0; i < 2; i++ {
+			coin, err := aggCallAddress(ctx, d.client, pool, "coins", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			bal, err := aggCallUint(ctx, d.client, pool, "balances", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			if i == 0 {
+				st.token0, st.reserve0 = coin, bal
+			} else {
+				st.reserve1 = bal
+			}
 		}
-		vals, err := poolABI.Unpack("amplification", out)
+		amp, err := aggCallUint(ctx, d.client, pool, "A")
 		if err != nil {
-			return nil, fmt.Errorf("unpack amplification: %w", err)
+			return nil, err
 		}
-		st.amp, _ = vals[0].(*big.Int)
+		st.amp = amp
 	case amm.FamilyWeighted:
-		out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getWeights")}, nil)
+		// Weighted pools expose tokens(i), getBalances() and getWeights().
+		for i := 0; i < 2; i++ {
+			token, err := aggCallAddress(ctx, d.client, pool, "tokens", big.NewInt(int64(i)))
+			if err != nil {
+				return nil, err
+			}
+			if i == 0 {
+				st.token0 = token
+			}
+		}
+		balances, err := aggCallUintArray(ctx, d.client, pool, "getBalances")
 		if err != nil {
-			return nil, fmt.Errorf("getWeights: %w", err)
+			return nil, err
 		}
-		vals, err := poolABI.Unpack("getWeights", out)
-		if err != nil || len(vals) < 2 {
-			return nil, fmt.Errorf("unpack getWeights: %w", err)
+		weights, err := aggCallUintArray(ctx, d.client, pool, "getWeights")
+		if err != nil {
+			return nil, err
 		}
-		st.weight0, _ = vals[0].(*big.Int)
-		st.weight1, _ = vals[1].(*big.Int)
+		if len(balances) < 2 || len(weights) < 2 {
+			return nil, fmt.Errorf("weighted pool %s returned %d balances / %d weights", pool.Hex(), len(balances), len(weights))
+		}
+		st.reserve0, st.reserve1 = balances[0], balances[1]
+		st.weight0, st.weight1 = weights[0], weights[1]
+	default:
+		// xyK pools expose getReserves() and token0().
+		resOut, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, "getReserves")}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("getReserves: %w", err)
+		}
+		res, err := poolABI.Unpack("getReserves", resOut)
+		if err != nil || len(res) < 2 {
+			return nil, fmt.Errorf("unpack getReserves: %w", err)
+		}
+		st.reserve0, _ = res[0].(*big.Int)
+		st.reserve1, _ = res[1].(*big.Int)
+		t0, err := aggCallAddress(ctx, d.client, pool, "token0")
+		if err != nil {
+			return nil, err
+		}
+		st.token0 = t0
+	}
+
+	if st.reserve0 == nil || st.reserve1 == nil || st.reserve0.Sign() == 0 || st.reserve1.Sign() == 0 {
+		return nil, fmt.Errorf("pool %s has no usable liquidity", pool.Hex())
 	}
 	return st, nil
+}
+
+// aggCallAddress reads a single address-returning view function.
+func aggCallAddress(ctx context.Context, client *ethclient.Client, pool common.Address, method string, args ...interface{}) (common.Address, error) {
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return common.Address{}, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	addr, ok := vals[0].(common.Address)
+	if !ok {
+		return common.Address{}, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return addr, nil
+}
+
+// aggCallUint reads a single uint256-returning view function.
+func aggCallUint(ctx context.Context, client *ethclient.Client, pool common.Address, method string, args ...interface{}) (*big.Int, error) {
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return nil, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	v, ok := vals[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return v, nil
+}
+
+// aggCallUintArray reads a uint256[]-returning view function.
+func aggCallUintArray(ctx context.Context, client *ethclient.Client, pool common.Address, method string, args ...interface{}) ([]*big.Int, error) {
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &pool, Data: mustPack(poolABI, method, args...)}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", method, err)
+	}
+	vals, err := poolABI.Unpack(method, out)
+	if err != nil || len(vals) < 1 {
+		return nil, fmt.Errorf("unpack %s: %w", method, err)
+	}
+	arr, ok := vals[0].([]*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])
+	}
+	return arr, nil
 }
 
 func mustPack(a abi.ABI, name string, args ...interface{}) []byte {

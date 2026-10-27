@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+
+	"tigerswap/backend/config"
 )
 
 // LiquidityPoolService manages real on-chain liquidity pools
@@ -146,8 +149,8 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	}
 
 	// Get token prices
-	token0Symbol := s.getSymbolFromAddress(token0.Hex())
-	token1Symbol := s.getSymbolFromAddress(token1.Hex())
+	token0Symbol := s.getSymbolFromAddress(chainID, token0.Hex())
+	token1Symbol := s.getSymbolFromAddress(chainID, token1.Hex())
 
 	token0Price, _ := s.priceAgg.GetRealPrice(ctx, token0Symbol)
 	token1Price, _ := s.priceAgg.GetRealPrice(ctx, token1Symbol)
@@ -169,10 +172,12 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	return pool, nil
 }
 
-// GetAllPools returns all tracked pools
+// GetAllPools returns every pool registered in TigerSwap's own factory.
 func (s *LiquidityPoolService) GetAllPools(ctx context.Context, chainID int64) ([]*PoolData, error) {
-	// Known pool addresses for major DEXes
-	poolAddresses := s.getKnownPoolAddresses(chainID)
+	poolAddresses, err := s.getKnownPoolAddresses(ctx, chainID)
+	if err != nil {
+		return nil, err
+	}
 
 	var pools []*PoolData
 	var wg sync.WaitGroup
@@ -209,28 +214,81 @@ func (s *LiquidityPoolService) RemoveLiquidity(ctx context.Context, chainID int6
 	return "", fmt.Errorf("use swap executor for liquidity removal")
 }
 
-func (s *LiquidityPoolService) getKnownPoolAddresses(chainID int64) []string {
-	// Major DEX pool addresses per chain
-	pools := map[int64][]string{
-		1: { // Ethereum
-			"0x88e6A0c2d26E5B7E6944928D8c744e67F4C5E9d3", // USDC/WETH Uniswap V3
-			"0x4e68Ccc3aE2D6D2E2e7C1f9F6C3A3D2E1F4B5C6",  // USDT/WETH
-			"0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D", // Uniswap V2 Router
-		},
-		56: { // BSC
-			"0x16b9a82891338f9bA80E2D69f82156963999A6ED", // BUSD/WBNB
-			"0x58F876857a02D6762E0100bbC5c1ea58eEb3a400", // USDT/WBNB
-		},
-		137: { // Polygon
-			"0xA374094527E1673A86dE625aa59517c5d2993EE",  // USDC/WETH
-			"0x53E0bca35eC356BD5ddDFEbdD1Fc0fD03FaBad39", // WETH/WSOL
-		},
+// factoryABIJSON is the subset of TigerSwap's own factory needed to enumerate
+// the pools it has created.
+const factoryABIJSON = `[
+ {"inputs":[],"name":"allPoolsLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"allPools","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"}
+]`
+
+// getKnownPoolAddresses enumerates the pools registered in TigerSwap's own
+// factory for the chain. No third-party pool addresses are baked in: only pools
+// the operator deployed through the configured TigerSwap factory are returned.
+func (s *LiquidityPoolService) getKnownPoolAddresses(ctx context.Context, chainID int64) ([]string, error) {
+	factoryHex := os.Getenv(fmt.Sprintf("TIGERSWAP_FACTORY_%d", chainID))
+	if factoryHex == "" {
+		return nil, fmt.Errorf("no TigerSwap factory configured for chain %d; set TIGERSWAP_FACTORY_%d", chainID, chainID)
+	}
+	factory := common.HexToAddress(factoryHex)
+	if factory == (common.Address{}) {
+		return nil, fmt.Errorf("TIGERSWAP_FACTORY_%d is not a valid address", chainID)
 	}
 
-	if addresses, ok := pools[chainID]; ok {
-		return addresses
+	client, err := s.blockchain.GetClient(chainID)
+	if err != nil {
+		return nil, err
 	}
-	return []string{}
+	parsedABI, err := abi.JSON(strings.NewReader(factoryABIJSON))
+	if err != nil {
+		return nil, err
+	}
+
+	lenOut, err := client.CallContract(ctx, ethereum.CallMsg{
+		To:   &factory,
+		Data: mustPackABI(parsedABI, "allPoolsLength"),
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("factory.allPoolsLength: %w", err)
+	}
+	lenVals, err := parsedABI.Unpack("allPoolsLength", lenOut)
+	if err != nil || len(lenVals) != 1 {
+		return nil, fmt.Errorf("decode allPoolsLength: %w", err)
+	}
+	count, ok := lenVals[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected allPoolsLength type %T", lenVals[0])
+	}
+
+	addresses := make([]string, 0, count.Uint64())
+	for i := big.NewInt(0); i.Cmp(count) < 0; i.Add(i, big.NewInt(1)) {
+		out, err := client.CallContract(ctx, ethereum.CallMsg{
+			To:   &factory,
+			Data: mustPackABI(parsedABI, "allPools", i),
+		}, nil)
+		if err != nil {
+			return nil, fmt.Errorf("factory.allPools(%s): %w", i, err)
+		}
+		vals, err := parsedABI.Unpack("allPools", out)
+		if err != nil || len(vals) != 1 {
+			return nil, fmt.Errorf("decode allPools(%s): %w", i, err)
+		}
+		pool, ok := vals[0].(common.Address)
+		if !ok {
+			return nil, fmt.Errorf("unexpected allPools type %T", vals[0])
+		}
+		if pool != (common.Address{}) {
+			addresses = append(addresses, pool.Hex())
+		}
+	}
+	return addresses, nil
+}
+
+func mustPackABI(a abi.ABI, name string, args ...interface{}) []byte {
+	data, err := a.Pack(name, args...)
+	if err != nil {
+		panic(fmt.Sprintf("pack %s: %v", name, err))
+	}
+	return data
 }
 
 func (s *LiquidityPoolService) calculateAPY(pool *PoolData) float64 {
@@ -246,21 +304,9 @@ func (s *LiquidityPoolService) calculateAPY(pool *PoolData) float64 {
 	return 0
 }
 
-func (s *LiquidityPoolService) getSymbolFromAddress(address string) string {
-	symbols := map[string]string{
-		"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": "USDC",
-		"0xdAC17F958D2ee523a2206206994597C13D831ec7": "USDT",
-		"0x0000000000000000000000000000000000000000": "ETH",
-		"0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599": "WBTC",
-		"0x514910771AF9Ca656af840dff83E8264EcF986CA": "LINK",
-		"0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984": "UNI",
-		"0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9": "AAVE",
-	}
-
-	for addr, symbol := range symbols {
-		if strings.EqualFold(addr, address) {
-			return symbol
-		}
+func (s *LiquidityPoolService) getSymbolFromAddress(chainID int64, address string) string {
+	if symbol, ok := config.TokenSymbol(chainID, address); ok {
+		return symbol
 	}
 	return "UNKNOWN"
 }

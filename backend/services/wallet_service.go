@@ -1089,27 +1089,11 @@ func (s *WalletService) GetAllTokens(c *gin.Context) {
 	})
 }
 
+// getRPCForChain resolves the chain's RPC endpoint from operator configuration.
+// TigerSwap dials its own nodes; there is no third-party fallback, so an
+// unconfigured chain yields an empty string and the caller must fail closed.
 func (s *WalletService) getRPCForChain(chainID int64) string {
-	rpcURLs := map[int64]string{
-		1:     "https://eth.llamarpc.com",
-		137:   "https://polygon.llamarpc.com",
-		42161: "https://arb1.arbitrum.io/rpc",
-		10:    "https://mainnet.optimism.io",
-		8453:  "https://mainnet.base.org",
-		56:    "https://bsc-dataseed.binance.org",
-		43114: "https://api.avax.network/ext/bc/C/rpc",
-		250:   "https://rpc.fantom.network",
-		324:   "https://mainnet.era.zksync.io",
-		59144: "https://rpc.linea.build",
-		5000:  "https://rpc.mantle.xyz",
-		81457: "https://rpc.blast.io",
-	}
-
-	if url, ok := rpcURLs[chainID]; ok {
-		return url
-	}
-
-	return "https://eth.llamarpc.com"
+	return rpcFromEnv(chainID)
 }
 
 // --- HD derivation, key encryption and persistence helpers ---

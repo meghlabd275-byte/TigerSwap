@@ -1,13 +1,20 @@
-// Package oracle provides price oracle integration for TigerSwap
-// Supports Chainlink, Pyth, Uniswap V3 TWAP, and custom oracles
+// Package main runs TigerSwap's price oracle service.
+//
+// The service reads prices from TigerSwap's own on-chain median oracle
+// (TigerSwapPriceOracle) and exposes them over HTTP. It does not call any
+// third-party price API, and it does not carry a table of hardcoded feed
+// addresses: every price it serves is read from a contract that TigerSwap
+// deploys and controls, on an RPC endpoint TigerSwap runs.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -16,113 +23,98 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
+
+	"tigerswap/backend/config"
+	"tigerswap/backend/go/tigerswap"
 )
 
-// OracleConfig holds oracle configuration
-type OracleConfig struct {
-	Name      string
-	Address   string
-	ChainID   int64
-	Heartbeat time.Duration
-	Deviation float64
-}
+// priceCacheTTL bounds how long an oracle read is reused.
+const priceCacheTTL = 15 * time.Second
 
-// PriceFeed represents a price feed
+// historyRetention is how long observed prices are kept for 24h-change maths.
+const historyRetention = 48 * time.Hour
+
+// PriceFeed is a price read from TigerSwap's on-chain oracle.
 type PriceFeed struct {
-	Token      string    `json:"token"`
-	Price      *big.Int  `json:"price"`
-	Confidence *big.Int  `json:"confidence"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Oracle     string    `json:"oracle"`
+	Token     string    `json:"token"`
+	ChainID   int64     `json:"chain_id"`
+	Price     string    `json:"price"`     // WAD-scaled (1e18) integer string
+	PriceUSD  float64   `json:"price_usd"` // decimal form, for display only
+	Change24h float64   `json:"change_24h"`
+	Reports   uint64    `json:"reports"` // live reporter count behind the median
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// OracleService provides price oracle aggregation
+// OracleService reads prices from TigerSwap's own oracle contracts.
 type OracleService struct {
-	redis          *redis.Client
-	ethClients     map[int64]*ethclient.Client
-	oracles        map[string]*OracleConfig
-	priceFeeds     map[string]*PriceFeed
-	mu             sync.RWMutex
-	chainlinkFeeds map[int64]map[string]common.Address
-	pythFeeds      map[int64]map[string][]byte
+	redis *redis.Client
+	mu    sync.Mutex
+	// clients caches one TigerSwap client per chain so RPC connections are reused.
+	clients map[int64]*tigerswap.Client
 }
 
-// NewOracleService creates a new oracle service
+// NewOracleService builds the service. Redis is optional: without it the service
+// still answers, it just does not cache.
 func NewOracleService(redisURL string) (*OracleService, error) {
+	svc := &OracleService{clients: make(map[int64]*tigerswap.Client)}
+
+	if strings.TrimSpace(redisURL) == "" {
+		return svc, nil
+	}
 	redisOpts, err := redis.ParseURL(redisURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse redis url: %w", err)
 	}
-
-	redisClient := redis.NewClient(redisOpts)
+	client := redis.NewClient(redisOpts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		log.Printf("Warning: Redis connection failed: %v", err)
+	if err := client.Ping(ctx).Err(); err != nil {
+		// A missing cache degrades throughput, not correctness, so keep serving.
+		log.Printf("price cache unavailable, continuing without it: %v", err)
+		return svc, nil
 	}
-
-	return &OracleService{
-		redis:          redisClient,
-		ethClients:     make(map[int64]*ethclient.Client),
-		oracles:        make(map[string]*OracleConfig),
-		priceFeeds:     make(map[string]*PriceFeed),
-		chainlinkFeeds: initChainlinkFeeds(),
-		pythFeeds:      initPythFeeds(),
-	}, nil
+	svc.redis = client
+	return svc, nil
 }
 
-func initChainlinkFeeds() map[int64]map[string]common.Address {
-	return map[int64]map[string]common.Address{
-		1: {
-			"ETH":  common.HexToAddress("0x5f4eC3Df9c8bA5D6d5f4eC3Df9c8bA5D6d5f4eC3"),
-			"BTC":  common.HexToAddress("0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"),
-			"USDC": common.HexToAddress("0x8fFfFfd4AfB6115b954bd326cbe7B4BA576818f6"),
-			"USDT": common.HexToAddress("0x3E7d1eAB13ad0104d1610D0989f0aE51986d43A6"),
-			"LINK": common.HexToAddress("0x2c1d072e956AFFfEc098dfb0Ca2F05aE40210594"),
-			"UNI":  common.HexToAddress("0x1134B7896691d0d7a3b5e4d6d7C8E9F0a1B2C3D4"),
-			"AAVE": common.HexToAddress("0x547a5140b70e1b45E05D6Bf1a5f2011E1D0d0eAb"),
-		},
-		137: {
-			"ETH":  common.HexToAddress("0xF9680D99D6C9589e2a93a78A04A79e995E3C2A27"),
-			"BTC":  common.HexToAddress("0xF4030086522a5bEEa4988F8cA5B36dbC97BeE88c"),
-			"USDC": common.HexToAddress("0xfE4A8cc370b15A9882C531fEDbC6BBd6aF204C99"),
-		},
-		42161: {
-			"ETH":  common.HexToAddress("0xA4fF1bca110064E3D9748a2Ea77fD21bae2c4C"),
-			"BTC":  common.HexToAddress("0x02C40D27b3e5a80F18d0fB38bD7E70a9bA9Eb8"),
-			"USDC": common.HexToAddress("0xFaA99f7E6b8a5b7E8C2d4F6a8B9C0D1E2F3A4"),
-		},
-	}
-}
-
-func initPythFeeds() map[int64]map[string][]byte {
-	return map[int64]map[string][]byte{
-		1: {
-			"ETH":  []byte("0x0000000000000000000000000000000000000000"),
-			"BTC":  []byte("0x0000000000000000000000000000000000000001"),
-			"USDC": []byte("0x0000000000000000000000000000000000000002"),
-		},
-	}
-}
-
-// RegisterOracle registers a new oracle
-func (o *OracleService) RegisterOracle(config *OracleConfig) {
+// clientFor returns the TigerSwap client for a chain, creating it on first use.
+func (o *OracleService) clientFor(chainID int64) (*tigerswap.Client, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.oracles[config.Name] = config
+
+	if c, ok := o.clients[chainID]; ok {
+		return c, nil
+	}
+
+	for _, d := range tigerswap.LoadDeployments() {
+		if d.ChainID != chainID {
+			continue
+		}
+		if d.Oracle == (common.Address{}) {
+			return nil, fmt.Errorf("chain %d has no TigerSwap oracle configured", chainID)
+		}
+		c, err := tigerswap.NewClient(d, nil)
+		if err != nil {
+			return nil, err
+		}
+		o.clients[chainID] = c
+		return c, nil
+	}
+	return nil, fmt.Errorf("no TigerSwap deployment configured for chain %d", chainID)
 }
 
-// GetPrice returns the price for a token
+// GetPrice returns the price for a token from TigerSwap's on-chain oracle.
 func (o *OracleService) GetPrice(ctx context.Context, token string, chainID int64) (*PriceFeed, error) {
-	cacheKey := fmt.Sprintf("price:%d:%s", chainID, token)
+	sym := strings.ToUpper(strings.TrimSpace(token))
+	if sym == "" {
+		return nil, errors.New("token is required")
+	}
 
+	cacheKey := fmt.Sprintf("oracle:%d:%s", chainID, sym)
 	if o.redis != nil {
 		if cached, err := o.redis.Get(ctx, cacheKey).Result(); err == nil {
 			var feed PriceFeed
@@ -132,163 +124,148 @@ func (o *OracleService) GetPrice(ctx context.Context, token string, chainID int6
 		}
 	}
 
-	feed, err := o.fetchPrice(ctx, token, chainID)
+	asset, ok := config.TokenAddress(chainID, sym)
+	if !ok {
+		return nil, fmt.Errorf("unknown token %s on chain %d", sym, chainID)
+	}
+
+	client, err := o.clientFor(chainID)
 	if err != nil {
 		return nil, err
 	}
 
-	if o.redis != nil {
-		data, _ := json.Marshal(feed)
-		o.redis.Set(ctx, cacheKey, string(data), 30*time.Second)
+	wad, err := client.TokenPriceWAD(ctx, common.HexToAddress(asset))
+	if err != nil {
+		return nil, err
+	}
+	reports, err := client.LiveOracleReports(ctx, common.HexToAddress(asset))
+	if err != nil {
+		return nil, err
 	}
 
-	return feed, nil
-}
+	asFloat, _ := new(big.Float).SetInt(wad).Float64()
+	priceUSD := asFloat / 1e18
 
-// fetchPrice fetches price from multiple oracles
-func (o *OracleService) fetchPrice(ctx context.Context, token string, chainID int64) (*PriceFeed, error) {
-	var prices []*big.Int
-
-	if _, ok := o.chainlinkFeeds[chainID][token]; ok {
-		price, _, _ := o.fetchChainlinkPrice(ctx, chainID, o.chainlinkFeeds[chainID][token])
-		if price != nil {
-			prices = append(prices, price)
-		}
-	}
-
-	if len(prices) == 0 {
-		return nil, fmt.Errorf("no oracle price available for %s on chain %d", token, chainID)
-	}
-
-	aggregatedPrice := o.medianBigInt(prices)
+	change := o.recordAndComputeChange(ctx, chainID, sym, priceUSD)
 
 	feed := &PriceFeed{
-		Token:      token,
-		Price:      aggregatedPrice,
-		Confidence: big.NewInt(0),
-		UpdatedAt:  time.Now(),
-		Oracle:     "aggregated",
+		Token:     sym,
+		ChainID:   chainID,
+		Price:     wad.String(),
+		PriceUSD:  priceUSD,
+		Change24h: change,
+		Reports:   reports,
+		UpdatedAt: time.Now(),
 	}
 
-	o.mu.Lock()
-	o.priceFeeds[fmt.Sprintf("%d:%s", chainID, token)] = feed
-	o.mu.Unlock()
-
+	if o.redis != nil {
+		if data, err := json.Marshal(feed); err == nil {
+			o.redis.Set(ctx, cacheKey, string(data), priceCacheTTL)
+		}
+	}
 	return feed, nil
 }
 
-const aggregatorV3ABI = `[{"inputs":[],"name":"latestRoundData","outputs":[{"internalType":"uint80","name":"roundId","type":"uint80"},{"internalType":"int256","name":"answer","type":"int256"},{"internalType":"uint256","name":"startedAt","type":"uint256"},{"internalType":"uint256","name":"updatedAt","type":"uint256"},{"internalType":"uint80","name":"answeredInRound","type":"uint80"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"}]`
+// recordAndComputeChange appends the observation to the symbol's series and
+// returns the change against the newest sample that is at least 24h old. With
+// no such sample it returns 0, which means "not yet known" rather than a
+// fabricated move.
+func (o *OracleService) recordAndComputeChange(ctx context.Context, chainID int64, symbol string, price float64) float64 {
+	if o.redis == nil || price <= 0 {
+		return 0
+	}
 
-var (
-	aggregatorABI     abi.ABI
-	aggregatorABIOnce sync.Once
-	aggregatorABIErr  error
-)
+	key := fmt.Sprintf("oracle:history:%d:%s", chainID, symbol)
+	now := time.Now()
+	payload, err := json.Marshal(struct {
+		Price     float64 `json:"price"`
+		Timestamp int64   `json:"timestamp"`
+	}{Price: price, Timestamp: now.Unix()})
+	if err != nil {
+		return 0
+	}
 
-func getAggregatorABI() (abi.ABI, error) {
-	aggregatorABIOnce.Do(func() {
-		aggregatorABI, aggregatorABIErr = abi.JSON(strings.NewReader(aggregatorV3ABI))
-	})
-	return aggregatorABI, aggregatorABIErr
+	if err := o.redis.ZAdd(ctx, key, redis.Z{Score: float64(now.Unix()), Member: string(payload)}).Err(); err != nil {
+		return 0
+	}
+
+	// The reference is the newest sample at or before the 24h-ago mark.
+	cutoff := now.Add(-24 * time.Hour).Unix()
+	refs, err := o.redis.ZRevRangeByScore(ctx, key, &redis.ZRangeBy{
+		Min:    "-inf",
+		Max:    strconv.FormatInt(cutoff, 10),
+		Offset: 0,
+		Count:  1,
+	}).Result()
+	if err != nil || len(refs) == 0 {
+		return 0
+	}
+
+	var ref struct {
+		Price float64 `json:"price"`
+	}
+	if err := json.Unmarshal([]byte(refs[0]), &ref); err != nil || ref.Price <= 0 {
+		return 0
+	}
+
+	// Bound the retained window so the series cannot grow without limit.
+	o.redis.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(now.Add(-historyRetention).Unix(), 10))
+
+	return ((price - ref.Price) / ref.Price) * 100
 }
 
-// fetchChainlinkPrice reads the latest answer from a Chainlink aggregator on-chain
-// and normalises it to 18 decimals. No price is fabricated locally.
-func (o *OracleService) fetchChainlinkPrice(ctx context.Context, chainID int64, addr common.Address) (*big.Int, *big.Int, error) {
-	client, ok := o.ethClients[chainID]
-	if !ok {
-		rpcURL := os.Getenv("TIGERSWAP_RPC_" + strconv.FormatInt(chainID, 10))
-		if rpcURL == "" {
-			return nil, nil, fmt.Errorf("no RPC endpoint configured for chain %d", chainID)
-		}
-		c, err := ethclient.DialContext(ctx, rpcURL)
-		if err != nil {
-			return nil, nil, fmt.Errorf("dial chain %d: %w", chainID, err)
-		}
-		o.mu.Lock()
-		o.ethClients[chainID] = c
-		o.mu.Unlock()
-		client = c
-	}
-
-	contractABI, err := getAggregatorABI()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	decimalsData, err := contractABI.Pack("decimals")
-	if err != nil {
-		return nil, nil, err
-	}
-	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &addr, Data: decimalsData}, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read decimals: %w", err)
-	}
-	var decimals uint8
-	if err := contractABI.UnpackIntoInterface(&decimals, "decimals", out); err != nil {
-		return nil, nil, fmt.Errorf("decode decimals: %w", err)
-	}
-
-	roundData, err := contractABI.Pack("latestRoundData")
-	if err != nil {
-		return nil, nil, err
-	}
-	out, err = client.CallContract(ctx, ethereum.CallMsg{To: &addr, Data: roundData}, nil)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read latestRoundData: %w", err)
-	}
-	values, err := contractABI.Unpack("latestRoundData", out)
-	if err != nil || len(values) < 5 {
-		return nil, nil, fmt.Errorf("decode latestRoundData: %w", err)
-	}
-	answer, ok := values[1].(*big.Int)
-	if !ok {
-		return nil, nil, fmt.Errorf("unexpected answer type %T", values[1])
-	}
-	updatedAt, ok := values[3].(*big.Int)
-	if !ok {
-		return nil, nil, fmt.Errorf("unexpected updatedAt type %T", values[3])
-	}
-	if answer.Sign() <= 0 {
-		return nil, nil, fmt.Errorf("oracle returned non-positive price")
-	}
-
-	normalised := new(big.Int).Set(answer)
-	if decimals < 18 {
-		normalised.Mul(normalised, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(18-decimals)), nil))
-	} else if decimals > 18 {
-		normalised.Div(normalised, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals-18)), nil))
-	}
-	return normalised, updatedAt, nil
+// PricePoint is one sampled price observation.
+type PricePoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Price     float64   `json:"price"`
 }
 
-func (o *OracleService) medianBigInt(values []*big.Int) *big.Int {
-	if len(values) == 0 {
-		return big.NewInt(0)
+// GetHistory returns the price series TigerSwap itself sampled for a token. The
+// series is the one recordAndComputeChange writes, so a caller only ever sees
+// prices read from TigerSwap's own oracle. With no samples it returns an empty
+// series rather than inventing points.
+func (o *OracleService) GetHistory(ctx context.Context, token string, chainID int64, days int) ([]PricePoint, error) {
+	sym := strings.ToUpper(strings.TrimSpace(token))
+	if sym == "" {
+		return nil, errors.New("token is required")
 	}
-	if len(values) == 1 {
-		return new(big.Int).Set(values[0])
+	if days <= 0 {
+		return nil, errors.New("days must be positive")
+	}
+	if o.redis == nil {
+		return nil, errors.New("price history is unavailable: cache not configured")
 	}
 
-	sorted := make([]*big.Int, len(values))
-	copy(sorted, values)
+	key := fmt.Sprintf("oracle:history:%d:%s", chainID, sym)
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix()
 
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[i].Cmp(sorted[j]) > 0 {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
+	members, err := o.redis.ZRangeByScore(ctx, key, &redis.ZRangeBy{
+		Min: strconv.FormatInt(cutoff, 10),
+		Max: "+inf",
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read price history for %s: %w", sym, err)
+	}
+
+	points := make([]PricePoint, 0, len(members))
+	for _, member := range members {
+		var sample struct {
+			Price     float64 `json:"price"`
+			Timestamp int64   `json:"timestamp"`
 		}
+		if err := json.Unmarshal([]byte(member), &sample); err != nil {
+			continue
+		}
+		points = append(points, PricePoint{
+			Timestamp: time.Unix(sample.Timestamp, 0),
+			Price:     sample.Price,
+		})
 	}
-
-	mid := len(sorted) / 2
-	if len(sorted)%2 == 0 {
-		return new(big.Int).Add(sorted[mid-1], sorted[mid]).Div(new(big.Int).Add(sorted[mid-1], sorted[mid]), big.NewInt(2))
-	}
-	return new(big.Int).Set(sorted[mid])
+	return points, nil
 }
 
-// HTTP Handlers
+// HTTP handlers
+
 type Handler struct {
 	service *OracleService
 }
@@ -297,42 +274,98 @@ func NewHandler(service *OracleService) *Handler {
 	return &Handler{service: service}
 }
 
-func (h *Handler) GetPrice(c *gin.Context) {
-	token := c.Param("token")
-	chainID, _ := c.GetQuery("chainId")
-
-	chainIDInt := int64(1)
-	if chainID != "" {
-		fmt.Sscanf(chainID, "%d", &chainIDInt)
+// chainIDFromQuery reads ?chainId=, defaulting to the first configured chain so
+// the answer is deterministic when the caller does not specify one.
+func chainIDFromQuery(c *gin.Context) (int64, error) {
+	raw := strings.TrimSpace(c.Query("chainId"))
+	if raw != "" {
+		id, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid chainId %q", raw)
+		}
+		return id, nil
 	}
+	for _, d := range tigerswap.LoadDeployments() {
+		return d.ChainID, nil
+	}
+	return 0, errors.New("no TigerSwap chain configured; set TIGERSWAP_CHAINS")
+}
 
-	price, err := h.service.GetPrice(c.Request.Context(), token, chainIDInt)
+func (h *Handler) GetPrice(c *gin.Context) {
+	chainID, err := chainIDFromQuery(c)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, price)
+	feed, err := h.service.GetPrice(c.Request.Context(), c.Param("token"), chainID)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price unavailable", "details": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, feed)
 }
 
 func (h *Handler) GetAllPrices(c *gin.Context) {
-	chainID, _ := c.GetQuery("chainId")
-
-	chainIDInt := int64(1)
-	if chainID != "" {
-		fmt.Sscanf(chainID, "%d", &chainIDInt)
+	chainID, err := chainIDFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
-	tokens := []string{"ETH", "BTC", "USDC", "USDT", "LINK", "UNI", "AAVE"}
-	prices := make(map[string]interface{})
+	// Price every token the registry knows for this chain, so the set of answers
+	// is driven by configuration rather than a hardcoded shortlist.
+	chain, ok := config.GetBlockchainConfigs()[chainID]
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("unsupported chain %d", chainID)})
+		return
+	}
 
-	for _, token := range tokens {
-		if price, err := h.service.GetPrice(c.Request.Context(), token, chainIDInt); err == nil {
-			prices[token] = price
+	symbols := make([]string, 0, 8)
+	if chain.NativeToken != nil {
+		symbols = append(symbols, strings.ToUpper(chain.NativeToken.Symbol))
+	}
+	for _, t := range config.GetTokenConfigs()[chainID] {
+		symbols = append(symbols, strings.ToUpper(t.Symbol))
+	}
+
+	prices := make(map[string]*PriceFeed, len(symbols))
+	for _, sym := range symbols {
+		feed, err := h.service.GetPrice(c.Request.Context(), sym, chainID)
+		if err != nil {
+			// A token without a fresh oracle answer is simply omitted; the caller
+			// must not receive a placeholder price.
+			continue
 		}
+		prices[sym] = feed
+	}
+	c.JSON(http.StatusOK, prices)
+}
+
+func (h *Handler) GetPriceHistory(c *gin.Context) {
+	chainID, err := chainIDFromQuery(c)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 
-	c.JSON(200, prices)
+	days := 7
+	if raw := c.Query("days"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "days must be a positive integer"})
+			return
+		}
+		days = parsed
+	}
+
+	token := c.Param("token")
+	history, err := h.service.GetHistory(c.Request.Context(), token, chainID, days)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price history unavailable", "details": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"token": strings.ToUpper(token), "chain_id": chainID, "history": history})
 }
 
 func getEnv(key, defaultValue string) string {
@@ -343,34 +376,34 @@ func getEnv(key, defaultValue string) string {
 }
 
 func main() {
-	redisURL := getEnv("REDIS_URL", "redis://localhost:6379")
-	service, err := NewOracleService(redisURL)
+	service, err := NewOracleService(getEnv("REDIS_URL", "redis://localhost:6379"))
 	if err != nil {
 		log.Fatalf("Failed to create oracle service: %v", err)
 	}
 
-	service.RegisterOracle(&OracleConfig{
-		Name:      "chainlink",
-		ChainID:   1,
-		Heartbeat: 30 * time.Second,
-		Deviation: 0.5,
-	})
-
 	handler := NewHandler(service)
 
 	r := gin.Default()
-
 	r.GET("/api/v1/oracle/price/:token", handler.GetPrice)
 	r.GET("/api/v1/oracle/prices", handler.GetAllPrices)
+	r.GET("/api/v1/oracle/price/:token/history", handler.GetPriceHistory)
+	r.GET("/api/v1/prices/:token", handler.GetPrice)
+	r.GET("/api/v1/prices", handler.GetAllPrices)
+	r.GET("/api/v1/prices/:token/history", handler.GetPriceHistory)
 
 	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok", "service": "oracle"})
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "oracle"})
 	})
 
+	server := &http.Server{
+		Addr:              ":" + getEnv("PORT", "8092"),
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
 	go func() {
-		port := getEnv("PORT", "8092")
-		log.Printf("Starting Oracle Service on :%s", port)
-		if err := r.Run(":" + port); err != nil {
+		log.Printf("Starting Oracle Service on %s", server.Addr)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
@@ -380,4 +413,9 @@ func main() {
 	<-quit
 
 	log.Println("Shutting down Oracle Service...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		log.Printf("graceful shutdown failed: %v", err)
+	}
 }

@@ -31,6 +31,12 @@ contract TigerSwapFactory {
     /// @notice Mapping of pool to its existence
     mapping(address => bool) public isPool;
 
+    /// @notice Registry of deployed pools per family (0 xyK, 1 concentrated,
+    ///         2 stable, 3 weighted). Family pools (concentrated, stable,
+    ///         weighted) are deployed by the operator and registered here so a
+    ///         single factory can resolve every TigerSwap pool family.
+    mapping(uint8 => mapping(address => mapping(address => address))) public getFamilyPool;
+
     /// @notice Owner of the factory
     address public owner;
     
@@ -114,6 +120,52 @@ contract TigerSwapFactory {
     function getPoolAddress(address tokenA, address tokenB) external view returns (address) {
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
         return getPool[token0][token1];
+    }
+
+    /**
+     * @notice Register a family pool (concentrated, stable or weighted) that the
+     *         operator has deployed, so it can be resolved by family.
+     * @dev The xyK family is created through createPool and is already indexed.
+     * @param tokenA First token address
+     * @param tokenB Second token address
+     * @param family Family id: 0 xyK, 1 concentrated, 2 stable, 3 weighted
+     * @param pool Address of the deployed pool contract
+     */
+    function registerFamilyPool(address tokenA, address tokenB, uint8 family, address pool) external onlyOwner {
+        require(tokenA != tokenB, "TigerSwap: IDENTICAL_ADDRESSES");
+        require(tokenA != address(0) && tokenB != address(0), "TigerSwap: ZERO_ADDRESS");
+        require(pool != address(0), "TigerSwap: ZERO_ADDRESS");
+
+        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+
+        if (family == 0) {
+            getPool[token0][token1] = pool;
+            getPool[token1][token0] = pool;
+        } else {
+            getFamilyPool[family][token0][token1] = pool;
+            getFamilyPool[family][token1][token0] = pool;
+        }
+        if (!isPool[pool]) {
+            allPools.push(pool);
+            isPool[pool] = true;
+        }
+
+        emit PoolCreated(token0, token1, pool, allPools.length);
+    }
+
+    /**
+     * @notice Resolve a pool by token pair and family.
+     * @param tokenA First token address
+     * @param tokenB Second token address
+     * @param family Family id: 0 xyK, 1 concentrated, 2 stable, 3 weighted
+     * @return pool Address of the pool, or the zero address if none is registered
+     */
+    function getPoolForFamily(address tokenA, address tokenB, uint8 family) external view returns (address pool) {
+        (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        if (family == 0) {
+            return getPool[token0][token1];
+        }
+        return getFamilyPool[family][token0][token1];
     }
 
     /**

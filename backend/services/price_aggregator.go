@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
-	"net/http"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,17 +17,16 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/go/amm"
 	"tigerswap/backend/go/tigerswap"
 )
 
-// PriceAggregator aggregates prices from multiple sources
+// PriceAggregator reads prices from TigerSwap's own on-chain oracle and quotes
+// swaps against TigerSwap's own pool families. It never contacts a third-party
+// exchange or price API, and it fails closed rather than inventing a price.
 type PriceAggregator struct {
 	redis        *redis.Client
-	coingeckoAPI string
-	coinbaseAPI  string
-	binanceAPI   string
-	chainlink    map[int64]string // chainID -> contract address
 	signer       *ecdsa.PrivateKey
 	tigerClients map[int64]*tigerswap.Client
 	mu           sync.RWMutex
@@ -86,290 +86,126 @@ func NewPriceAggregator(redisClient *redis.Client) *PriceAggregator {
 		redis:        redisClient,
 		signer:       signer,
 		tigerClients: make(map[int64]*tigerswap.Client),
-		coingeckoAPI: "https://api.coingecko.com/api/v3",
-		coinbaseAPI:  "https://api.coinbase.com/v2",
-		binanceAPI:   "https://api.binance.com/api/v3",
-		chainlink: map[int64]string{
-			1:     "0x5f4eC3Df9c8bD3B48BE9A2E29bE4B7c4E5rT8Y",   // Chainlink ETH/USD
-			137:   "0xAB594600376Ec9fD91F8e885dADF0CE036862dE0", // Chainlink MATIC/USD
-			56:    "0x0567F2323251f0A73B2bf8E3f7f8D4Cf8dB9E8F",  // Chainlink BNB/USD
-			43114: "0x31eF83a530Fde1B38ee9A181065E6e6A4eC3d3E5", // Chainlink AVAX/USD
-		},
-		prices: make(map[string]*PriceData),
+		prices:       make(map[string]*PriceData),
 	}
 }
 
-// GetRealPrice fetches real price from multiple sources
+// GetRealPrice reads a symbol's price from TigerSwap's own on-chain oracle.
+//
+// There is deliberately no external price API here: the price either comes from
+// the oracle TigerSwap itself runs, or the call fails. A caller that cannot get
+// a price must not trade, so returning an error is the safe outcome.
 func (p *PriceAggregator) GetRealPrice(ctx context.Context, symbol string) (*PriceData, error) {
-	// Try multiple sources in parallel
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	var coinGeckoPrice, coinbasePrice, binancePrice float64
-	var cgErr, cbErr, binErr error
-
-	// CoinGecko
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		price, err := p.getCoinGeckoPrice(symbol)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			cgErr = err
-		} else {
-			coinGeckoPrice = price
-		}
-	}()
-
-	// Coinbase
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		price, err := p.getCoinbasePrice(symbol)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			cbErr = err
-		} else {
-			coinbasePrice = price
-		}
-	}()
-
-	// Binance
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		price, err := p.getBinancePrice(symbol)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			binErr = err
-		} else {
-			binancePrice = price
-		}
-	}()
-
-	wg.Wait()
-
-	// Calculate weighted average based on reliability
-	sources := []string{}
-	prices := []float64{}
-	weights := []float64{}
-
-	if coinGeckoPrice > 0 {
-		sources = append(sources, "coingecko")
-		prices = append(prices, coinGeckoPrice)
-		weights = append(weights, 0.4) // 40% weight
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		return nil, fmt.Errorf("symbol is required")
 	}
 
-	if coinbasePrice > 0 {
-		sources = append(sources, "coinbase")
-		prices = append(prices, coinbasePrice)
-		weights = append(weights, 0.35) // 35% weight
+	chainID, ok := p.defaultChainID()
+	if !ok {
+		return nil, fmt.Errorf("no TigerSwap chain configured; set TIGERSWAP_CHAINS")
 	}
 
-	if binancePrice > 0 {
-		sources = append(sources, "binance")
-		prices = append(prices, binancePrice)
-		weights = append(weights, 0.25) // 25% weight
-	}
-
-	if len(prices) == 0 {
-		// No live source responded: fall back to cache, otherwise fail closed
-		// with the underlying source errors so callers never act on a stale guess.
-		if cached, err := p.getCachedPrice(ctx, symbol); err == nil {
+	price, err := p.PriceOnChain(ctx, chainID, sym)
+	if err != nil {
+		// Serve a recent cached price only when the oracle itself is
+		// unreachable, and never for longer than the cache TTL.
+		if cached, cerr := p.getCachedPrice(ctx, sym); cerr == nil {
 			return cached, nil
 		}
-		return nil, fmt.Errorf("no live price for %s (coingecko: %v, coinbase: %v, binance: %v)", symbol, cgErr, cbErr, binErr)
+		return nil, err
 	}
 
-	// Calculate weighted average
-	var totalWeight float64
-	var weightedSum float64
-	for i := range prices {
-		weightedSum += prices[i] * weights[i]
-		totalWeight += weights[i]
-	}
-
-	avgPrice := weightedSum / totalWeight
-
-	// Calculate confidence based on price spread
-	var spread float64
-	if len(prices) > 1 {
-		minPrice := prices[0]
-		maxPrice := prices[0]
-		for _, price := range prices {
-			if price < minPrice {
-				minPrice = price
-			}
-			if price > maxPrice {
-				maxPrice = price
-			}
-		}
-		spread = (maxPrice - minPrice) / avgPrice
-	}
-
-	confidence := 1.0 - spread // Higher confidence if prices are close
-
-	priceData := &PriceData{
-		Symbol:      symbol,
-		USD:         avgPrice,
-		Sources:     sources,
-		Confidence:  confidence,
-		LastUpdated: time.Now(),
-	}
-
-	// Cache the price
-	p.cachePrice(ctx, symbol, priceData)
-
-	return priceData, nil
-}
-
-func (p *PriceAggregator) getCoinGeckoPrice(symbol string) (float64, error) {
-	// Map common symbols to CoinGecko IDs
-	coingeckoIDs := map[string]string{
-		"ETH":   "ethereum",
-		"BTC":   "bitcoin",
-		"USDC":  "usd-coin",
-		"USDT":  "tether",
-		"BNB":   "binancecoin",
-		"MATIC": "matic-network",
-		"SOL":   "solana",
-		"AVAX":  "avalanche-2",
-		"LINK":  "chainlink",
-		"UNI":   "uniswap",
-		"AAVE":  "aave",
-		"DOT":   "polkadot",
-		"ATOM":  "cosmos",
-		"LTC":   "litecoin",
-		"XRP":   "ripple",
-		"DOGE":  "dogecoin",
-		"TRX":   "tron",
-		"APT":   "aptos",
-		"ARB":   "arbitrum",
-		"OP":    "optimism",
-		"FTM":   "fantom",
-		"NEAR":  "near",
-		"INJ":   "injective-protocol",
-		"SUI":   "sui",
-		"SEI":   "sei-protocol",
-		"TIA":   "celestia",
-		"SHIB":  "shiba-inu",
-		"PEPE":  "pepe",
-	}
-
-	id, ok := coingeckoIDs[symbol]
-	if !ok {
-		id = symbol
-	}
-
-	url := fmt.Sprintf("%s/simple/price?ids=%s&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true",
-		p.coingeckoAPI, id)
-
-	req, err := http.NewRequestWithContext(context.Background(), "GET", url, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("coingecko API error: %d", resp.StatusCode)
-	}
-
-	var result map[string]struct {
-		USD          float64 `json:"usd"`
-		USDChange    float64 `json:"usd_24h_change"`
-		USDVolume    float64 `json:"usd_24h_vol"`
-		USDMarketCap float64 `json:"usd_market_cap"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	if data, ok := result[id]; ok {
-		return data.USD, nil
-	}
-
-	return 0, fmt.Errorf("symbol not found: %s", symbol)
-}
-
-func (p *PriceAggregator) getCoinbasePrice(symbol string) (float64, error) {
-	url := fmt.Sprintf("%s/prices/%s/spot", p.coinbaseAPI, symbol+"-USD")
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("coinbase API error: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Data struct {
-			Base     string `json:"base"`
-			Currency string `json:"currency"`
-			Amount   string `json:"amount"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	var amount float64
-	fmt.Sscanf(result.Data.Amount, "%f", &amount)
-
-	return amount, nil
-}
-
-func (p *PriceAggregator) getBinancePrice(symbol string) (float64, error) {
-	url := fmt.Sprintf("%s/ticker/price?symbol=%sUSDT", p.binanceAPI, symbol)
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return 0, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return 0, fmt.Errorf("binance API error: %d", resp.StatusCode)
-	}
-
-	var result struct {
-		Symbol string `json:"symbol"`
-		Price  string `json:"price"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, err
-	}
-
-	var price float64
-	fmt.Sscanf(result.Price, "%f", &price)
-
+	p.cachePrice(ctx, sym, price)
 	return price, nil
 }
 
+// PriceOnChain reads a symbol's price from the TigerSwap oracle on one chain.
+func (p *PriceAggregator) PriceOnChain(ctx context.Context, chainID int64, symbol string) (*PriceData, error) {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	addr, ok := config.TokenAddress(chainID, sym)
+	if !ok {
+		return nil, fmt.Errorf("unknown token %s on chain %d", sym, chainID)
+	}
+
+	client, err := p.tigerClient(chainID)
+	if err != nil {
+		return nil, err
+	}
+
+	usd, err := client.TokenPriceUSD(ctx, common.HexToAddress(addr))
+	if err != nil {
+		return nil, err
+	}
+	if usd <= 0 {
+		return nil, fmt.Errorf("oracle returned a non-positive price for %s", sym)
+	}
+
+	reports, err := client.LiveOracleReports(ctx, common.HexToAddress(addr))
+	if err != nil {
+		return nil, err
+	}
+
+	return &PriceData{
+		Symbol:      sym,
+		USD:         usd,
+		Sources:     []string{"tigerswap_oracle"},
+		Confidence:  oracleConfidence(reports),
+		LastUpdated: time.Now(),
+	}, nil
+}
+
+// defaultChainID picks the chain used for symbol lookups when the caller does
+// not specify one. TIGERSWAP_DEFAULT_CHAIN wins; otherwise the first configured
+// chain is used, so behaviour is deterministic rather than map-order dependent.
+func (p *PriceAggregator) defaultChainID() (int64, bool) {
+	if raw := os.Getenv("TIGERSWAP_DEFAULT_CHAIN"); raw != "" {
+		if id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil {
+			return id, true
+		}
+	}
+	for _, d := range tigerswap.LoadDeployments() {
+		return d.ChainID, true
+	}
+	return 0, false
+}
+
+// oracleConfidence maps the number of live oracle reports to a confidence in
+// [0,1]. One report is a single source; three or more is a fully independent
+// median.
+func oracleConfidence(reports uint64) float64 {
+	switch {
+	case reports >= 3:
+		return 1.0
+	case reports == 2:
+		return 0.8
+	case reports == 1:
+		return 0.5
+	default:
+		return 0
+	}
+}
+
 func (p *PriceAggregator) cachePrice(ctx context.Context, symbol string, data *PriceData) {
+	if p.redis == nil {
+		return
+	}
 	key := fmt.Sprintf("price:%s", symbol)
-	jsonData, _ := json.Marshal(data)
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return
+	}
 	p.redis.Set(ctx, key, jsonData, 5*time.Minute)
 }
 
 func (p *PriceAggregator) getCachedPrice(ctx context.Context, symbol string) (*PriceData, error) {
+	if p.redis == nil {
+		return nil, fmt.Errorf("price cache not configured")
+	}
 	key := fmt.Sprintf("price:%s", symbol)
 	data, err := p.redis.Get(ctx, key).Result()
 	if err != nil {
-		return nil, fmt.Errorf("price not found and no sources available")
+		return nil, fmt.Errorf("no cached price for %s", symbol)
 	}
 
 	var priceData PriceData
@@ -435,10 +271,15 @@ func (p *PriceAggregator) GetAggregatedQuote(ctx context.Context, chainID int64,
 		sourceQuotes[string(q.family)] = q.out.String()
 	}
 
-	// Price impact from the token USD prices when available.
+	// Price impact from the oracle's own USD prices, when both tokens are
+	// known on this chain.
 	var priceImpact float64
-	if priceFrom, err := p.GetRealPrice(ctx, p.getSymbolFromAddress(fromToken)); err == nil && priceFrom.USD > 0 {
-		if priceTo, err := p.GetRealPrice(ctx, p.getSymbolFromAddress(toToken)); err == nil && priceTo.USD > 0 {
+	fromSym, fromOK := config.TokenSymbol(chainID, fromToken)
+	toSym, toOK := config.TokenSymbol(chainID, toToken)
+	if fromOK && toOK {
+		priceFrom, fromErr := p.PriceOnChain(ctx, chainID, fromSym)
+		priceTo, toErr := p.PriceOnChain(ctx, chainID, toSym)
+		if fromErr == nil && toErr == nil && priceFrom.USD > 0 && priceTo.USD > 0 {
 			inputValue := weiToFloat(amountIn, 18) * priceFrom.USD
 			outputValue := weiToFloat(best.out, 18) * priceTo.USD
 			if inputValue > 0 {
@@ -517,18 +358,10 @@ func (p *PriceAggregator) CloseTigerClients() {
 	p.tigerClients = nil
 }
 
-// getSymbolFromAddress maps a well-known token address to its symbol.
-func (p *PriceAggregator) getSymbolFromAddress(address string) string {
-	symbols := map[string]string{
-		"0x0000000000000000000000000000000000000000": "ETH",
-		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
-		"0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
-		"0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC",
-		"0x514910771af9ca656af840dff83e8264ecf986ca": "LINK",
-		"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "UNI",
-		"0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9": "AAVE",
-	}
-	if symbol, ok := symbols[strings.ToLower(address)]; ok {
+// getSymbolFromAddress resolves a token address to its symbol using the
+// shared chain registry, so there is one source of truth for token metadata.
+func (p *PriceAggregator) getSymbolFromAddress(chainID int64, address string) string {
+	if symbol, ok := config.TokenSymbol(chainID, address); ok {
 		return symbol
 	}
 	return ""
@@ -574,74 +407,89 @@ func (p *PriceAggregator) GetMultiChainPrices(ctx context.Context, symbols []str
 	return results, nil
 }
 
-// GetHistoricalPrices gets historical price data
-func (p *PriceAggregator) GetHistoricalPrices(ctx context.Context, symbol string, days int) ([]struct {
-	Timestamp time.Time
-	Price     float64
-	Volume    float64
-}, error) {
-	// In production, fetch from CoinGecko
-	// For now, return empty
+// PricePoint is one sampled price observation.
+type PricePoint struct {
+	Timestamp time.Time `json:"timestamp"`
+	Price     float64   `json:"price"`
+	Volume    float64   `json:"volume"`
+}
 
-	coingeckoIDs := map[string]string{
-		"ETH":  "ethereum",
-		"BTC":  "bitcoin",
-		"USDC": "usd-coin",
-		"USDT": "tether",
+// priceSample is the stored form of a price observation.
+type priceSample struct {
+	Price     float64 `json:"price"`
+	Volume    float64 `json:"volume"`
+	Timestamp int64   `json:"timestamp"`
+}
+
+func historyKey(symbol string) string { return "price:history:" + symbol }
+
+// GetHistoricalPrices returns the price series TigerSwap has sampled for a
+// symbol. There is no third-party history API: the series is built from the
+// samples the oracle poller stored, so a caller sees only prices TigerSwap
+// itself observed. With no samples it returns an empty series rather than
+// fabricating one.
+func (p *PriceAggregator) GetHistoricalPrices(ctx context.Context, symbol string, days int) ([]PricePoint, error) {
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		return nil, fmt.Errorf("symbol is required")
+	}
+	if days <= 0 {
+		return nil, fmt.Errorf("days must be positive")
+	}
+	if p.redis == nil {
+		return nil, fmt.Errorf("price history is unavailable: cache not configured")
 	}
 
-	id, ok := coingeckoIDs[symbol]
-	if !ok {
-		id = symbol
-	}
-
-	url := fmt.Sprintf("%s/coins/%s/market_chart?vs_currency=usd&days=%d", p.coingeckoAPI, id, days)
-
-	resp, err := http.Get(url)
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+	raw, err := p.redis.ZRangeByScore(ctx, historyKey(sym), &redis.ZRangeBy{
+		Min: strconv.FormatInt(cutoff, 10),
+		Max: "+inf",
+	}).Result()
 	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("API error: %d", resp.StatusCode)
+		return nil, fmt.Errorf("read price history for %s: %w", sym, err)
 	}
 
-	var result struct {
-		Prices  [][2]float64 `json:"prices"`
-		Volumes [][2]float64 `json:"total_volumes"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	history := make([]struct {
-		Timestamp time.Time
-		Price     float64
-		Volume    float64
-	}, len(result.Prices))
-
-	for i, p := range result.Prices {
-		history[i] = struct {
-			Timestamp time.Time
-			Price     float64
-			Volume    float64
-		}{
-			Timestamp: time.Unix(int64(p[0]/1000), 0),
-			Price:     p[1],
+	points := make([]PricePoint, 0, len(raw))
+	for _, member := range raw {
+		var sample priceSample
+		if err := json.Unmarshal([]byte(member), &sample); err != nil {
+			continue
 		}
+		points = append(points, PricePoint{
+			Timestamp: time.Unix(sample.Timestamp, 0),
+			Price:     sample.Price,
+			Volume:    sample.Volume,
+		})
+	}
+	return points, nil
+}
+
+// RecordPriceSample appends an observed price to the symbol's history. The
+// oracle poller is the only caller; it is the sole writer of price history.
+func (p *PriceAggregator) RecordPriceSample(ctx context.Context, symbol string, price, volume float64) error {
+	if p.redis == nil {
+		return fmt.Errorf("price history is unavailable: cache not configured")
+	}
+	sym := strings.ToUpper(strings.TrimSpace(symbol))
+	if sym == "" {
+		return fmt.Errorf("symbol is required")
+	}
+	if price <= 0 {
+		return fmt.Errorf("price must be positive")
 	}
 
-	if len(result.Volumes) > 0 {
-		for i, v := range result.Volumes {
-			if i < len(history) {
-				history[i].Volume = v[1]
-			}
-		}
+	now := time.Now()
+	payload, err := json.Marshal(priceSample{Price: price, Volume: volume, Timestamp: now.Unix()})
+	if err != nil {
+		return err
 	}
-
-	return history, nil
+	key := historyKey(sym)
+	if err := p.redis.ZAdd(ctx, key, redis.Z{Score: float64(now.Unix()), Member: string(payload)}).Err(); err != nil {
+		return err
+	}
+	// Bound the window so history cannot grow without limit.
+	cutoff := now.Add(-90 * 24 * time.Hour).Unix()
+	return p.redis.ZRemRangeByScore(ctx, key, "-inf", strconv.FormatInt(cutoff, 10)).Err()
 }
 
 // API Handlers

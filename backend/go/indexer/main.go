@@ -566,8 +566,19 @@ func getEnvUint64(key string, defaultValue uint64) uint64 {
 }
 
 func main() {
+	rpcURL := os.Getenv("RPC_URL")
+	if rpcURL == "" {
+		// TigerSwap runs its own nodes; there is no third-party RPC fallback.
+		log.Fatal("RPC_URL is required: point it at a TigerSwap node")
+	}
+
+	routerAddress := os.Getenv("TIGERSWAP_ROUTER_ADDRESS")
+	if !common.IsHexAddress(routerAddress) {
+		log.Fatal("TIGERSWAP_ROUTER_ADDRESS is required: set it to the deployed TigerSwap router")
+	}
+
 	config := &IndexerConfig{
-		RPCURLs:           []string{getEnv("RPC_URL", "https://eth.llamarpc.com")},
+		RPCURLs:           []string{rpcURL},
 		StartBlock:        getEnvUint64("START_BLOCK", 18000000),
 		RedisURL:          getEnv("REDIS_URL", "redis://localhost:6379"),
 		HealthCheckPort:   8096,
@@ -575,7 +586,7 @@ func main() {
 		Contracts: []ContractConfig{
 			{
 				Name:    "TigerSwapRouter",
-				Address: common.HexToAddress("0x000000000000000000000000000000000000000001"),
+				Address: common.HexToAddress(routerAddress),
 				ABI:     `[{"anonymous":false,"name":"Swap","inputs":[{"indexed":false,"name":"sender","type":"address"},{"indexed":false,"name":"amount0In","type":"uint256"},{"indexed":false,"name":"amount1In","type":"uint256"},{"indexed":false,"name":"amount0Out","type":"uint256"},{"indexed":false,"name":"amount1Out","type":"uint256"},{"indexed":true,"name":"to","type":"address"}]}]`,
 				Events:  []string{"Swap"},
 			},

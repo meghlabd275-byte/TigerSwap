@@ -44,19 +44,21 @@ func NewBlockchainService(db *gorm.DB) *BlockchainService {
 }
 
 func seedChains(db *gorm.DB) {
+	// RPC endpoints are left unset: TigerSwap dials its own nodes, resolved at
+	// runtime from TIGERSWAP_RPC_<chainID>. Only metadata is seeded here.
 	chains := []models.Blockchain{
-		{ChainID: 1, Name: "Ethereum", Symbol: "ETH", Icon: "🦄", RPCURL: "https://eth.llamarpc.com", ExplorerURL: "https://etherscan.io", Type: "evm", IsActive: true},
-		{ChainID: 137, Name: "Polygon", Symbol: "MATIC", Icon: "🔷", RPCURL: "https://polygon.llamarpc.com", ExplorerURL: "https://polygonscan.com", Type: "evm", IsActive: true},
-		{ChainID: 42161, Name: "Arbitrum One", Symbol: "ETH", Icon: "🔵", RPCURL: "https://arb1.arbitrum.io/rpc", ExplorerURL: "https://arbiscan.io", Type: "evm", IsActive: true},
-		{ChainID: 10, Name: "Optimism", Symbol: "ETH", Icon: "🔴", RPCURL: "https://mainnet.optimism.io", ExplorerURL: "https://optimistic.etherscan.io", Type: "evm", IsActive: true},
-		{ChainID: 8453, Name: "Base", Symbol: "ETH", Icon: "🔵", RPCURL: "https://mainnet.base.org", ExplorerURL: "https://basescan.org", Type: "evm", IsActive: true},
-		{ChainID: 56, Name: "BNB Smart Chain", Symbol: "BNB", Icon: "🟡", RPCURL: "https://bsc-dataseed.binance.org", ExplorerURL: "https://bscscan.com", Type: "evm", IsActive: true},
-		{ChainID: 43114, Name: "Avalanche", Symbol: "AVAX", Icon: "🔺", RPCURL: "https://api.avax.network/ext/bc/C/rpc", ExplorerURL: "https://snowtrace.io", Type: "evm", IsActive: true},
-		{ChainID: 250, Name: "Fantom", Symbol: "FTM", Icon: "👻", RPCURL: "https://rpc.fantom.network", ExplorerURL: "https://ftmscan.com", Type: "evm", IsActive: true},
-		{ChainID: 101, Name: "Solana", Symbol: "SOL", Icon: "☀️", RPCURL: "https://api.mainnet-beta.solana.com", ExplorerURL: "https://solscan.io", Type: "solana", IsActive: true},
-		{ChainID: 1, Name: "Aptos", Symbol: "APT", Icon: "🔷", RPCURL: "https://fullnode.mainnet.aptoslabs.com", ExplorerURL: "https://aptoscan.com", Type: "aptos", IsActive: true},
-		{ChainID: 1, Name: "Cosmos", Symbol: "ATOM", Icon: "🌌", RPCURL: "https://rpc.cosmos.network", ExplorerURL: "https://mintscan.io/cosmos", Type: "cosmos", IsActive: true},
-		{ChainID: 1, Name: "TON", Symbol: "TON", Icon: "📱", RPCURL: "https://toncenter.com/api/v2/jsonRPC", ExplorerURL: "https://tonscan.org", Type: "ton", IsActive: true},
+		{ChainID: 1, Name: "Ethereum", Symbol: "ETH", Icon: "🦄", ExplorerURL: "https://etherscan.io", Type: "evm", IsActive: true},
+		{ChainID: 137, Name: "Polygon", Symbol: "MATIC", Icon: "🔷", ExplorerURL: "https://polygonscan.com", Type: "evm", IsActive: true},
+		{ChainID: 42161, Name: "Arbitrum One", Symbol: "ETH", Icon: "🔵", ExplorerURL: "https://arbiscan.io", Type: "evm", IsActive: true},
+		{ChainID: 10, Name: "Optimism", Symbol: "ETH", Icon: "🔴", ExplorerURL: "https://optimistic.etherscan.io", Type: "evm", IsActive: true},
+		{ChainID: 8453, Name: "Base", Symbol: "ETH", Icon: "🔵", ExplorerURL: "https://basescan.org", Type: "evm", IsActive: true},
+		{ChainID: 56, Name: "BNB Smart Chain", Symbol: "BNB", Icon: "🟡", ExplorerURL: "https://bscscan.com", Type: "evm", IsActive: true},
+		{ChainID: 43114, Name: "Avalanche", Symbol: "AVAX", Icon: "🔺", ExplorerURL: "https://snowtrace.io", Type: "evm", IsActive: true},
+		{ChainID: 250, Name: "Fantom", Symbol: "FTM", Icon: "👻", ExplorerURL: "https://ftmscan.com", Type: "evm", IsActive: true},
+		{ChainID: 101, Name: "Solana", Symbol: "SOL", Icon: "☀️", ExplorerURL: "https://solscan.io", Type: "solana", IsActive: true},
+		{ChainID: 1, Name: "Aptos", Symbol: "APT", Icon: "🔷", ExplorerURL: "https://aptoscan.com", Type: "aptos", IsActive: true},
+		{ChainID: 1, Name: "Cosmos", Symbol: "ATOM", Icon: "🌌", ExplorerURL: "https://mintscan.io/cosmos", Type: "cosmos", IsActive: true},
+		{ChainID: 1, Name: "TON", Symbol: "TON", Icon: "📱", ExplorerURL: "https://tonscan.org", Type: "ton", IsActive: true},
 	}
 	for _, chain := range chains {
 		db.Create(&chain)
@@ -298,30 +300,28 @@ func (s *SwapService) GetPool(c *gin.Context) {
 }
 
 func (s *SwapService) GetPrices(c *gin.Context) {
-	// Get real prices from price aggregator
-	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "SHIB", "PEPE", "FIL", "ATOM", "XTZ", "ADA", "VET", "ALGO", "XLM", "HBAR", "FTM", "NEAR", "EGLD", "FTG", "CAKE", "GRT", "CRO", "KCS", "HT", "ONE", "AR", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "1INCH", "COMP", "MIM", "FEI", "RAI", "USDP", "TUSD", "BUSD", "FRAX", "DAI", "MNT", "BLUR"}
+	// Only symbols TigerSwap actually prices are reported. The response is an
+	// array of {symbol, priceUSD, change24h} entries, which is the shape the
+	// frontend validator requires.
+	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "FIL", "ATOM", "XTZ", "ADA", "ALGO", "XLM", "HBAR", "FTM", "EGLD", "GRT", "CRO", "ONE", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "COMP", "DAI"}
 
-	prices := make(map[string]interface{})
+	entries := make([]gin.H, 0, len(symbols))
 
 	if globalPriceAggregator != nil {
 		for _, symbol := range symbols {
-			if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol); err == nil {
-				prices[symbol] = map[string]interface{}{
-					"usd":            pd.USD,
-					"usd_24h_change": pd.USDChange24h,
-					"usd_24h_vol":    pd.USDVolume24h,
-					"usd_market_cap": pd.USDMarketCap,
-				}
+			pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol)
+			if err != nil || pd.USD <= 0 {
+				continue
 			}
+			entries = append(entries, gin.H{
+				"symbol":    pd.Symbol,
+				"priceUSD":  pd.USD,
+				"change24h": pd.USDChange24h,
+			})
 		}
 	}
 
-	if len(prices) == 0 {
-		// Fallback to empty if no prices available
-		prices = map[string]interface{}{}
-	}
-
-	c.JSON(200, prices)
+	c.JSON(200, entries)
 }
 
 func (s *SwapService) GetPrice(c *gin.Context) {
@@ -338,13 +338,9 @@ func (s *SwapService) GetPrice(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"symbol":       symbol,
-		"usd":          priceData.USD,
-		"change_24h":   priceData.USDChange24h,
-		"volume_24h":   priceData.USDVolume24h,
-		"market_cap":   priceData.USDMarketCap,
-		"last_updated": priceData.LastUpdated,
-		"sources":      priceData.Sources,
+		"symbol":    priceData.Symbol,
+		"priceUSD":  priceData.USD,
+		"change24h": priceData.USDChange24h,
 	})
 }
 

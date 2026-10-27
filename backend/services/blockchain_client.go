@@ -87,35 +87,34 @@ type BlockData struct {
 	Miner        string   `json:"miner"`
 }
 
+// rpcFromEnv resolves a chain's RPC endpoint from operator configuration.
+//
+// TigerSwap runs its own nodes, so no third-party endpoint is baked in. An empty
+// result means the operator has not configured a node for that chain.
+func rpcFromEnv(chainID int64) string {
+	if url := os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_%d", chainID)); url != "" {
+		return url
+	}
+	return os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_URL_%d", chainID))
+}
+
+// NewBlockchainClient returns a client with no RPC endpoints preconfigured.
+//
+// TigerSwap runs its own nodes, so endpoints are supplied by the operator via
+// TIGERSWAP_RPC_<chainID> or SetRPCURL rather than defaulting to a third-party
+// public endpoint.
 func NewBlockchainClient() *BlockchainClient {
 	return &BlockchainClient{
 		clients: make(map[int64]*ethclient.Client),
-		rpcURLs: map[int64]string{
-			1:      "https://eth.llamarpc.com",
-			137:    "https://polygon.llamarpc.com",
-			42161:  "https://arb1.arbitrum.io/rpc",
-			10:     "https://mainnet.optimism.io",
-			8453:   "https://mainnet.base.org",
-			56:     "https://bsc-dataseed.binance.org",
-			43114:  "https://api.avax.network/ext/bc/C/rpc",
-			250:    "https://rpc.fantom.network",
-			324:    "https://mainnet.era.zksync.io",
-			59144:  "https://rpc.linea.build",
-			5000:   "https://rpc.mantle.xyz",
-			81457:  "https://rpc.blast.io",
-			534352: "https://rpc.scroll.io",
-		},
+		rpcURLs: make(map[int64]string),
 	}
 }
 
-// RPCURLForChain resolves the RPC endpoint for a chain. A self-hosted node is
-// preferred: TIGERSWAP_RPC_<chainID> (or TIGERSWAP_RPC_URL_<chainID>) overrides
-// the bundled public fallback.
+// RPCURLForChain resolves the RPC endpoint for a chain. TigerSwap only dials
+// its own nodes: TIGERSWAP_RPC_<chainID> (or TIGERSWAP_RPC_URL_<chainID>), or an
+// endpoint registered with SetRPCURL. There is no third-party fallback.
 func (b *BlockchainClient) RPCURLForChain(chainID int64) (string, error) {
-	if url := os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_%d", chainID)); url != "" {
-		return url, nil
-	}
-	if url := os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_URL_%d", chainID)); url != "" {
+	if url := rpcFromEnv(chainID); url != "" {
 		return url, nil
 	}
 
@@ -539,16 +538,18 @@ func (b *BlockchainClient) GetGasPrice(ctx context.Context, chainID int64) (*big
 	return client.SuggestGasPrice(ctx)
 }
 
-// GetChainConfig returns the chain configuration
+// getChainConfig returns static chain metadata. It deliberately carries no RPC
+// endpoint: TigerSwap dials its own nodes, resolved by RPCURLForChain from
+// operator configuration.
 func (b *BlockchainClient) getChainConfig(chainID int64) *ChainConfig {
 	configs := map[int64]*ChainConfig{
-		1:     {ChainID: 1, Name: "Ethereum", Symbol: "ETH", RPCURL: "https://eth.llamarpc.com", ExplorerURL: "https://etherscan.io", BlockTime: 12},
-		137:   {ChainID: 137, Name: "Polygon", Symbol: "MATIC", RPCURL: "https://polygon.llamarpc.com", ExplorerURL: "https://polygonscan.com", BlockTime: 2},
-		42161: {ChainID: 42161, Name: "Arbitrum One", Symbol: "ETH", RPCURL: "https://arb1.arbitrum.io/rpc", ExplorerURL: "https://arbiscan.io", BlockTime: 1},
-		10:    {ChainID: 10, Name: "Optimism", Symbol: "ETH", RPCURL: "https://mainnet.optimism.io", ExplorerURL: "https://optimistic.etherscan.io", BlockTime: 2},
-		8453:  {ChainID: 8453, Name: "Base", Symbol: "ETH", RPCURL: "https://mainnet.base.org", ExplorerURL: "https://basescan.org", BlockTime: 2},
-		56:    {ChainID: 56, Name: "BNB Smart Chain", Symbol: "BNB", RPCURL: "https://bsc-dataseed.binance.org", ExplorerURL: "https://bscscan.com", BlockTime: 3},
-		43114: {ChainID: 43114, Name: "Avalanche", Symbol: "AVAX", RPCURL: "https://api.avax.network/ext/bc/C/rpc", ExplorerURL: "https://snowtrace.io", BlockTime: 1},
+		1:     {ChainID: 1, Name: "Ethereum", Symbol: "ETH", ExplorerURL: "https://etherscan.io", BlockTime: 12},
+		137:   {ChainID: 137, Name: "Polygon", Symbol: "MATIC", ExplorerURL: "https://polygonscan.com", BlockTime: 2},
+		42161: {ChainID: 42161, Name: "Arbitrum One", Symbol: "ETH", ExplorerURL: "https://arbiscan.io", BlockTime: 1},
+		10:    {ChainID: 10, Name: "Optimism", Symbol: "ETH", ExplorerURL: "https://optimistic.etherscan.io", BlockTime: 2},
+		8453:  {ChainID: 8453, Name: "Base", Symbol: "ETH", ExplorerURL: "https://basescan.org", BlockTime: 2},
+		56:    {ChainID: 56, Name: "BNB Smart Chain", Symbol: "BNB", ExplorerURL: "https://bscscan.com", BlockTime: 3},
+		43114: {ChainID: 43114, Name: "Avalanche", Symbol: "AVAX", ExplorerURL: "https://snowtrace.io", BlockTime: 1},
 	}
 
 	if config, ok := configs[chainID]; ok {

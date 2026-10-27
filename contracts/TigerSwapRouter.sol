@@ -146,64 +146,203 @@ contract TigerSwapRouter {
     }
 
     /**
-     * @notice Swap tokens for exact tokens
+     * @notice Swap exact tokens for tokens through a specific pool family.
+     * @dev Supports the xyK (0), stable (2) and weighted (3) families, which are
+     *      all pull-based and need no callback. Concentrated liquidity (1) is
+     *      not supported here because it settles in a callback.
+     * @param tokenIn Input token
+     * @param tokenOut Output token
+     * @param family Family id: 0 xyK, 2 stable, 3 weighted
+     * @param amountIn Amount of input tokens
+     * @param amountOutMin Minimum output tokens
+     * @param to Recipient address
+     * @param deadline Deadline timestamp
+     * @return amountOut Amount of output tokens
      */
-    function swapTokensForExactTokens(
-        uint256 amountOut,
-        uint256 amountInMax,
-        address[] calldata path,
+    function swapExactTokensForTokens(
+        address tokenIn,
+        address tokenOut,
+        uint8 family,
+        uint256 amountIn,
+        uint256 amountOutMin,
         address to,
         uint256 deadline
-    ) external ensure(deadline) returns (uint256[] memory amounts) {
-        amounts = getAmountsIn(amountOut, path);
-        require(amounts[0] <= amountInMax, "TigerSwap: EXCESSIVE_INPUT_AMOUNT");
-        
-        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+    ) external ensure(deadline) returns (uint256 amountOut) {
+        require(amountIn > 0, "TigerSwap: INSUFFICIENT_INPUT_AMOUNT");
+        require(to != address(0), "TigerSwap: ZERO_ADDRESS");
+        require(tokenIn != tokenOut, "TigerSwap: IDENTICAL_ADDRESSES");
+
+        address pool = ITigerSwapFactory(factory).getPoolForFamily(tokenIn, tokenOut, family);
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
-        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
-        _swap(amounts, path, to);
+
+        if (family == 0) {
+            uint256[] memory amounts = getAmountsOut(amountIn, _pairPath(tokenIn, tokenOut));
+            amountOut = amounts[1];
+            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            (address token0,) = sortTokens(tokenIn, tokenOut);
+            (uint256 amount0Out, uint256 amount1Out) =
+                tokenIn == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
+            ITigerSwapPool(pool).swap(amount0Out, amount1Out, to, new bytes(0));
+        } else if (family == 2) {
+            (int128 i, int128 j) = _stableIndices(pool, tokenIn, tokenOut);
+            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            amountOut = ITigerSwapStablePool(pool).exchange(i, j, amountIn, amountOutMin);
+        } else if (family == 3) {
+            (uint256 i, uint256 j) = _weightedIndices(pool, tokenIn, tokenOut);
+            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            amountOut = ITigerSwapWeightedPool(pool).swap(i, j, amountIn, amountOutMin);
+        } else {
+            revert("TigerSwap: UNSUPPORTED_FAMILY");
+        }
+
+        require(amountOut >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
+        emit Swap(msg.sender, tokenIn, tokenOut, amountIn, amountOut);
+    }
+
+    function _pairPath(address tokenIn, address tokenOut) private pure returns (address[] memory path) {
+        path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+    }
+
+    function _stableIndices(address pool, address tokenIn, address tokenOut)
+        private
+        view
+        returns (int128 i, int128 j)
+    {
+        address coin0 = ITigerSwapStablePool(pool).coins(0);
+        address coin1 = ITigerSwapStablePool(pool).coins(1);
+        if (tokenIn == coin0 && tokenOut == coin1) return (0, 1);
+        if (tokenIn == coin1 && tokenOut == coin0) return (1, 0);
+        revert("TigerSwap: TOKEN_NOT_IN_POOL");
+    }
+
+    function _weightedIndices(address pool, address tokenIn, address tokenOut)
+        private
+        view
+        returns (uint256 i, uint256 j)
+    {
+        uint256 count = ITigerSwapWeightedPool(pool).tokenCount();
+        bool foundIn;
+        bool foundOut;
+        for (uint256 k = 0; k < count; k++) {
+            address t = ITigerSwapWeightedPool(pool).tokens(k);
+            if (t == tokenIn) {
+                i = k;
+                foundIn = true;
+            }
+            if (t == tokenOut) {
+                j = k;
+                foundOut = true;
+            }
+        }
+        require(foundIn && foundOut, "TigerSwap: TOKEN_NOT_IN_POOL");
     }
 
     /**
-     * @notice Swap exact ETH for tokens
+     * @notice Add liquidity to a pool family. Supports xyK (0), stable (2) and
+     *         weighted (3). Concentrated liquidity (1) is not handled here.
+     * @dev Stable and weighted pools pull their tokens from msg.sender and mint
+     *      LP to msg.sender, so the router cannot intermediate for them. This
+     *      path is therefore restricted to the caller's own liquidity.
+     * @return amountA Amount of tokenA used
+     * @return amountB Amount of tokenB used
+     * @return liquidity LP tokens minted
      */
-    function swapExactETHForTokens(uint256 amountOutMin, address[] calldata path, address to, uint256 deadline)
-        external
-        payable
-        ensure(deadline)
-        returns (uint256[] memory amounts)
-    {
-        require(path[0] == WETH, "TigerSwap: INVALID_PATH");
-        amounts = getAmountsOut(msg.value, path);
-        require(amounts[amounts.length - 1] >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
-        
-        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        uint8 family,
+        uint256 amountADesired,
+        uint256 amountBDesired,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external ensure(deadline) returns (uint256 amountA, uint256 amountB, uint256 liquidity) {
+        address pool = ITigerSwapFactory(factory).getPoolForFamily(tokenA, tokenB, family);
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
-        IWETH(WETH).deposit{value: amounts[0]}();
-        IERC20(WETH).transfer(pool, amounts[0]);
-        _swap(amounts, path, to);
+
+        if (family == 0) {
+            require(to != address(0), "TigerSwap: ZERO_ADDRESS");
+            (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
+            IERC20(tokenA).transferFrom(msg.sender, pool, amountA);
+            IERC20(tokenB).transferFrom(msg.sender, pool, amountB);
+            liquidity = ITigerSwapPool(pool).mint(to);
+        } else if (family == 2) {
+            require(to == msg.sender, "TigerSwap: SELF_ONLY");
+            (int128 i, int128 j) = _stableIndices(pool, tokenA, tokenB);
+            uint256[2] memory amounts;
+            amounts[uint256(uint128(i))] = amountADesired;
+            amounts[uint256(uint128(j))] = amountBDesired;
+            liquidity = ITigerSwapStablePool(pool).addLiquidity(amounts, 0);
+            amountA = amountADesired;
+            amountB = amountBDesired;
+        } else if (family == 3) {
+            require(to == msg.sender, "TigerSwap: SELF_ONLY");
+            (uint256 i, uint256 j) = _weightedIndices(pool, tokenA, tokenB);
+            uint256 count = ITigerSwapWeightedPool(pool).tokenCount();
+            uint256[] memory amounts = new uint256[](count);
+            amounts[i] = amountADesired;
+            amounts[j] = amountBDesired;
+            liquidity = ITigerSwapWeightedPool(pool).addLiquidity(amounts, 0);
+            amountA = amountADesired;
+            amountB = amountBDesired;
+        } else {
+            revert("TigerSwap: UNSUPPORTED_FAMILY");
+        }
+
+        emit LiquidityAdded(to, amountA, amountB);
     }
 
     /**
-     * @notice Swap tokens for exact ETH
+     * @notice Remove liquidity from a pool family. Supports xyK (0), stable (2)
+     *         and weighted (3). Family pools burn LP from and pay out to
+     *         msg.sender.
      */
-    function swapTokensForExactETH(uint256 amountOut, uint256 amountInMax, address[] calldata path, address to, uint256 deadline)
-        external
-        ensure(deadline)
-        returns (uint256[] memory amounts)
-    {
-        require(path[path.length - 1] == WETH, "TigerSwap: INVALID_PATH");
-        amounts = getAmountsIn(amountOut, path);
-        require(amounts[0] <= amountInMax, "TigerSwap: EXCESSIVE_INPUT_AMOUNT");
-        
-        address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
+    function removeLiquidity(
+        address tokenA,
+        address tokenB,
+        uint8 family,
+        uint256 liquidity,
+        uint256 amountAMin,
+        uint256 amountBMin,
+        address to,
+        uint256 deadline
+    ) external ensure(deadline) returns (uint256 amountA, uint256 amountB) {
+        address pool = ITigerSwapFactory(factory).getPoolForFamily(tokenA, tokenB, family);
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
-        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
-        _swap(amounts, path, address(this));
-        
-        IWETH(WETH).withdraw(amounts[amounts.length - 1]);
-        (bool sent, ) = payable(to).call{value: amounts[amounts.length - 1]}("");
-        require(sent, "TigerSwap: ETH_TRANSFER_FAILED");
+
+        if (family == 0) {
+            require(to != address(0), "TigerSwap: ZERO_ADDRESS");
+            IERC20(pool).transferFrom(msg.sender, pool, liquidity);
+            (amountA, amountB) = ITigerSwapPool(pool).burn(to);
+        } else if (family == 2) {
+            require(to == msg.sender, "TigerSwap: SELF_ONLY");
+            (int128 i, int128 j) = _stableIndices(pool, tokenA, tokenB);
+            uint256[2] memory mins;
+            mins[uint256(uint128(i))] = amountAMin;
+            mins[uint256(uint128(j))] = amountBMin;
+            uint256[2] memory amounts = ITigerSwapStablePool(pool).removeLiquidity(liquidity, mins);
+            amountA = amounts[uint256(uint128(i))];
+            amountB = amounts[uint256(uint128(j))];
+        } else if (family == 3) {
+            require(to == msg.sender, "TigerSwap: SELF_ONLY");
+            (uint256 i, uint256 j) = _weightedIndices(pool, tokenA, tokenB);
+            uint256 count = ITigerSwapWeightedPool(pool).tokenCount();
+            uint256[] memory mins = new uint256[](count);
+            mins[i] = amountAMin;
+            mins[j] = amountBMin;
+            uint256[] memory amounts = ITigerSwapWeightedPool(pool).removeLiquidity(liquidity, mins);
+            amountA = amounts[i];
+            amountB = amounts[j];
+        } else {
+            revert("TigerSwap: UNSUPPORTED_FAMILY");
+        }
+
+        require(amountA >= amountAMin, "TigerSwap: INSUFFICIENT_A");
+        require(amountB >= amountBMin, "TigerSwap: INSUFFICIENT_B");
+        emit LiquidityRemoved(to, amountA, amountB);
     }
 
     /**
