@@ -13,6 +13,7 @@ import {
   displayText,
   hex,
   integer,
+  literalTrue,
   nonNegative,
   nullable,
   number,
@@ -251,6 +252,94 @@ export const perpMarketValidator = object<PerpMarket>({
 });
 
 export const perpMarketListValidator = listingArray(perpMarketValidator);
+
+/**
+ * An open perpetual position owned by the authenticated caller, as returned by
+ * `/wallet/perpetual/positions`. Numeric fields arrive as decimal strings so no
+ * precision is lost in transit.
+ */
+export interface PerpPosition {
+  id: string;
+  pair: string;
+  side: 'long' | 'short';
+  size: string;
+  collateral: string;
+  entry_price: string;
+  mark_price: string;
+  leverage: number;
+  status: string;
+  pnl: string;
+  opened_at: string;
+}
+
+export const perpPositionValidator = object<PerpPosition>({
+  id: string,
+  pair: string,
+  side: oneOf(['long', 'short'] as const),
+  size: string,
+  collateral: string,
+  entry_price: string,
+  mark_price: string,
+  leverage: integer,
+  status: string,
+  pnl: withDefault(string, '0'),
+  opened_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const perpPositionListValidator = listingArray(perpPositionValidator);
+
+/** Result of opening a perpetual position. */
+export interface PerpOpenResult {
+  success: boolean;
+  position: PerpPosition;
+}
+
+export const perpOpenResultValidator = object<PerpOpenResult>({
+  success: literalTrue,
+  position: perpPositionValidator,
+});
+
+/** A margin account, as returned when one is opened. */
+export interface MarginAccount {
+  id: string;
+  user_id: string;
+  margin_mode: string;
+  pair: string;
+  status: string;
+}
+
+export const marginAccountValidator = object<MarginAccount>({
+  id: string,
+  user_id: string,
+  margin_mode: string,
+  pair: string,
+  status: string,
+});
+
+/** The risk view of a margin account: collateral, debt and health factor. */
+export interface MarginAccountView {
+  id: string;
+  margin_mode: string;
+  pair: string;
+  status: string;
+  collateral_value_usd: number;
+  debt_value_usd: number;
+  equity_usd: number;
+  health_factor: number;
+  liquidation_value_usd: number;
+}
+
+export const marginAccountViewValidator = object<MarginAccountView>({
+  id: string,
+  margin_mode: string,
+  pair: string,
+  status: string,
+  collateral_value_usd: nonNegative,
+  debt_value_usd: nonNegative,
+  equity_usd: number,
+  health_factor: number,
+  liquidation_value_usd: nonNegative,
+});
 
 /** The authenticated user's profile. */
 export interface UserProfile {

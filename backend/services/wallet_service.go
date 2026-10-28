@@ -429,13 +429,20 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 		return
 	}
 
-	position, err := s.perpetuals.OpenPosition(c.Request.Context(), 1, req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
+	position, err := s.perpetuals.OpenPosition(c.Request.Context(), userID, 1, req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
 
+	positionID, err := uuid.Parse(position.ID)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to allocate position id"})
+		return
+	}
+
 	stored := models.PerpetualPosition{
+		ID:         positionID,
 		UserID:     userID,
 		Pair:       position.Pair,
 		Side:       position.Side,
@@ -459,7 +466,19 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 // ClosePerpetualPosition closes a perpetual trading position owned by the
 // authenticated caller.
 func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
+	// The position id may arrive as a path parameter or in the body; accept
+	// either so the same handler serves both route shapes.
 	positionID := c.Param("id")
+	if positionID == "" {
+		var req struct {
+			PositionID string `json:"position_id"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil || req.PositionID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "position_id is required"})
+			return
+		}
+		positionID = req.PositionID
+	}
 
 	userID, ok := authenticatedUserID(c)
 	if !ok {
@@ -480,7 +499,7 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 		return
 	}
 
-	closed, err := s.perpetuals.ClosePosition(c.Request.Context(), positionID)
+	closed, err := s.perpetuals.ClosePosition(c.Request.Context(), userID, positionID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Close failed", "details": err.Error()})
 		return

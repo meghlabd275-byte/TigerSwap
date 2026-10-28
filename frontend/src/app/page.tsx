@@ -38,8 +38,9 @@ import { Portfolio } from '@/components/Portfolio';
 import { PerpetualTrading } from '@/components/PerpetualTrading';
 import { CrossChain } from '@/components/CrossChain';
 import { Governance } from '@/components/Governance';
+import { MarginTrading } from '@/components/MarginTrading';
 
-type Tab = 'swap' | 'perpetuals' | 'cross-chain' | 'portfolio' | 'governance';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -66,6 +67,7 @@ export default function Home() {
   const tabs = [
     { id: 'swap' as const, label: 'Swap', icon: ArrowRightLeft },
     { id: 'perpetuals' as const, label: 'Perpetuals', icon: TrendingUp },
+    { id: 'margin' as const, label: 'Margin', icon: Coins },
     { id: 'cross-chain' as const, label: 'Cross-Chain', icon: Globe },
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
     { id: 'governance' as const, label: 'Governance', icon: Vote },
@@ -133,6 +135,7 @@ export default function Home() {
               >
                 {activeTab === 'swap' && <SwapInterface />}
                 {activeTab === 'perpetuals' && <PerpetualTrading />}
+                {activeTab === 'margin' && <MarginTrading />}
                 {activeTab === 'cross-chain' && <CrossChain />}
                 {activeTab === 'portfolio' && <Portfolio />}
                 {activeTab === 'governance' && <Governance />}

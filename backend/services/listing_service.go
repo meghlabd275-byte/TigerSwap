@@ -21,10 +21,28 @@ import (
 // listing can never reach the matching engine.
 type ListingService struct {
 	db *gorm.DB
+
+	// onMarketsChanged, when set, is invoked after any listing write that can
+	// change which markets are tradable. It lets the matching engine reload its
+	// registry immediately instead of trading a stale market set.
+	onMarketsChanged func()
 }
 
 func NewListingService(db *gorm.DB) *ListingService {
 	return &ListingService{db: db}
+}
+
+// SetMarketsChangedHook registers a callback invoked after listing writes that
+// affect tradability (create, update, delete of futures/perps/margin markets).
+func (s *ListingService) SetMarketsChangedHook(hook func()) {
+	s.onMarketsChanged = hook
+}
+
+// notifyMarketsChanged runs the refresh hook when one is registered.
+func (s *ListingService) notifyMarketsChanged() {
+	if s.onMarketsChanged != nil {
+		s.onMarketsChanged()
+	}
 }
 
 // allowedSettlementAssets are the assets a contract may settle in. RUSD is the
@@ -274,6 +292,7 @@ func (s *ListingService) CreateFuturesMarket(c *gin.Context) {
 	}
 
 	logListingAction(c, s.db, "create_futures_market", "futures_market", market.ID.String(), gin.H{"symbol": market.Symbol})
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusCreated, market)
 }
 
@@ -446,6 +465,7 @@ func (s *ListingService) UpdateFuturesMarket(c *gin.Context) {
 		return
 	}
 	logListingAction(c, s.db, "update_futures_market", "futures_market", id.String(), updates)
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusOK, market)
 }
 
@@ -468,6 +488,7 @@ func (s *ListingService) DeleteFuturesMarket(c *gin.Context) {
 	}
 
 	logListingAction(c, s.db, "delist_futures_market", "futures_market", id.String(), nil)
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusOK, gin.H{"success": true, "id": id, "status": models.ListingStatusDelisting})
 }
 
@@ -602,6 +623,7 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 	}
 
 	logListingAction(c, s.db, "create_perps_market", "perps_market", market.ID.String(), gin.H{"symbol": market.Symbol})
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusCreated, market)
 }
 
@@ -747,6 +769,7 @@ func (s *ListingService) UpdatePerpsMarket(c *gin.Context) {
 		return
 	}
 	logListingAction(c, s.db, "update_perps_market", "perps_market", id.String(), updates)
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusOK, market)
 }
 
@@ -769,6 +792,7 @@ func (s *ListingService) DeletePerpsMarket(c *gin.Context) {
 	}
 
 	logListingAction(c, s.db, "delist_perps_market", "perps_market", id.String(), nil)
+	s.notifyMarketsChanged()
 	c.JSON(http.StatusOK, gin.H{"success": true, "id": id, "status": models.ListingStatusDelisting})
 }
 

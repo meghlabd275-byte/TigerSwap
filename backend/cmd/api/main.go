@@ -38,6 +38,30 @@ func depositWatcherChains() []int64 {
 	return chains
 }
 
+// corsAllowedOrigins returns the browser origins permitted to call the API with
+// credentials. CORS_ALLOW_ORIGINS is a comma-separated list; entries are
+// trimmed and blank entries dropped. A wildcard is never returned, because
+// AllowCredentials is enabled and the browser would reject the response.
+func corsAllowedOrigins() []string {
+	raw := strings.TrimSpace(os.Getenv("CORS_ALLOW_ORIGINS"))
+	if raw == "" {
+		return []string{"http://localhost:3000"}
+	}
+
+	origins := make([]string, 0, 4)
+	for _, part := range strings.Split(raw, ",") {
+		origin := strings.TrimSpace(part)
+		if origin == "" || origin == "*" {
+			continue
+		}
+		origins = append(origins, origin)
+	}
+	if len(origins) == 0 {
+		return []string{"http://localhost:3000"}
+	}
+	return origins
+}
+
 func main() {
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
@@ -74,6 +98,9 @@ func main() {
 		&models.FuturesMarket{},
 		&models.PerpsMarket{},
 		&models.MarginMarket{},
+		&models.MarginAccount{},
+		&models.MarginCollateral{},
+		&models.MarginBorrow{},
 		&models.VeLock{},
 		&models.Gauge{},
 		&models.GaugeVote{},
@@ -104,7 +131,18 @@ func main() {
 	services.SetBlockchainClient(blockchainClient)
 
 	liquidityService := services.NewLiquidityPoolService(blockchainClient, priceAggregator)
+	marginEngine := services.NewMarginEngine(db, priceAggregator)
 	perpetualEngine := services.NewPerpetualEngine(blockchainClient, priceAggregator)
+	if err := perpetualEngine.SetDB(db); err != nil {
+		log.Fatalf("Failed to load perpetual markets: %v", err)
+	}
+	// Reload the engine's market registry whenever an admin changes a listing,
+	// so a newly listed or paused market takes effect without a restart.
+	listingService.SetMarketsChangedHook(func() {
+		if err := perpetualEngine.RefreshMarkets(); err != nil {
+			log.Printf("failed to refresh perpetual markets: %v", err)
+		}
+	})
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
 	launchpadService := services.NewLaunchpadService(blockchainClient, priceAggregator)
@@ -134,9 +172,13 @@ func main() {
 	// Setup router
 	router := gin.Default()
 
-	// CORS configuration
+	// CORS configuration. A wildcard origin cannot be combined with
+	// credentials: browsers reject `Access-Control-Allow-Origin: *` when
+	// `Access-Control-Allow-Credentials: true`, and echoing credentials back to
+	// any origin would let an arbitrary site drive the authenticated API. The
+	// allowed origins are an explicit, configured list.
 	router.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"*"},
+		AllowOrigins:     corsAllowedOrigins(),
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Request-ID"},
 		ExposeHeaders:    []string{"Content-Length", "X-Request-ID"},
@@ -236,6 +278,13 @@ func main() {
 			protected.POST("/perpetual/open", perpetualEngine.OpenPositionHandler)
 			protected.DELETE("/perpetual/positions/:id", perpetualEngine.ClosePositionHandler)
 			protected.GET("/perpetual/positions", perpetualEngine.GetPositionsHandler)
+
+			// Spot margin: accounts, collateral, borrow/repay.
+			protected.POST("/margin/accounts", marginEngine.OpenMarginAccountHandler)
+			protected.GET("/margin/accounts/:id", marginEngine.GetMarginAccountHandler)
+			protected.POST("/margin/collateral", marginEngine.DepositMarginCollateralHandler)
+			protected.POST("/margin/borrow", marginEngine.BorrowMarginHandler)
+			protected.POST("/margin/repay", marginEngine.RepayMarginHandler)
 			protected.POST("/perpetual/orders", perpetualEngine.CreateOrderHandler)
 
 			// Liquidity pool read routes
@@ -329,6 +378,9 @@ func main() {
 			admin.GET("/margin/markets", listingService.GetMarginMarkets)
 			admin.PUT("/margin/markets/:id", listingService.UpdateMarginMarket)
 			admin.DELETE("/margin/markets/:id", listingService.DeleteMarginMarket)
+
+			// Margin risk operations (admin only)
+			admin.GET("/margin/liquidatable", marginEngine.ListLiquidatableHandler)
 
 			// Fee management (admin only)
 			admin.POST("/fees/config", feeCollector.UpdateConfigHandler)

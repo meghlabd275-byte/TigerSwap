@@ -19,10 +19,14 @@ import {
   FuturesMarketInput,
   Gauge,
   GovernanceBoost,
+  MarginAccount,
+  MarginAccountView,
   MarginListing,
   MarginListingInput,
   MarketStats,
   PerpMarket,
+  PerpOpenResult,
+  PerpPosition,
   PerpsListing,
   PerpsListingInput,
   Pool,
@@ -45,10 +49,14 @@ import {
   gaugeListValidator,
   gaugeValidator,
   governanceBoostValidator,
+  marginAccountValidator,
+  marginAccountViewValidator,
   marginListingListValidator,
   marginListingValidator,
   marketStatsValidator,
   perpMarketListValidator,
+  perpOpenResultValidator,
+  perpPositionListValidator,
   perpsListingListValidator,
   perpsListingValidator,
   poolListValidator,
@@ -176,6 +184,66 @@ export const endpoints = {
   async getPerpMarkets(): Promise<PerpMarket[]> {
     const body = await apiRequest("/perpetuals/markets", { authenticated: false, timeoutMs: 8000 });
     return perpMarketListValidator(body);
+  },
+
+  /** The authenticated caller's open and historical perpetual positions. */
+  async getPerpPositions(): Promise<PerpPosition[]> {
+    const body = await api.get("/wallet/perpetual/positions");
+    const envelope = object<{ positions: PerpPosition[] }>({ positions: perpPositionListValidator })(body);
+    return envelope.positions;
+  },
+
+  /**
+   * Opens a perpetual position for the authenticated caller.
+   *
+   * The engine prices the position from its own oracle and persists it; the
+   * response is the stored position.
+   */
+  async openPerpPosition(payload: {
+    pair: string;
+    side: 'long' | 'short';
+    size: string;
+    collateral: string;
+    leverage: number;
+  }): Promise<PerpOpenResult> {
+    const body = await api.post("/wallet/perpetual/open", payload);
+    return perpOpenResultValidator(body);
+  },
+
+  /** Closes a perpetual position owned by the authenticated caller. */
+  async closePerpPosition(positionId: string): Promise<void> {
+    await api.post("/wallet/perpetual/close", { position_id: positionId });
+  },
+
+  /** Opens a spot margin account for the authenticated caller. */
+  async openMarginAccount(payload: { pair: string; margin_mode?: string }): Promise<MarginAccount> {
+    const body = await api.post("/margin/accounts", payload);
+    return marginAccountValidator(body);
+  },
+
+  /** Returns the risk view of a margin account the caller owns. */
+  async getMarginAccount(accountId: string): Promise<MarginAccountView> {
+    const body = await api.get(`/margin/accounts/${encodeURIComponent(accountId)}`);
+    return marginAccountViewValidator(body);
+  },
+
+  /** Adds collateral to a margin account the caller owns. */
+  async depositMarginCollateral(payload: {
+    account_id: string;
+    asset: string;
+    amount: string;
+  }): Promise<void> {
+    await api.post("/margin/collateral", payload);
+  },
+
+  /** Borrows against a margin account the caller owns. */
+  async borrowMargin(payload: { account_id: string; asset: string; amount: string }): Promise<void> {
+    await api.post("/margin/borrow", payload);
+  },
+
+  /** Repays debt on a margin account the caller owns. */
+  async repayMargin(payload: { account_id: string; asset: string; amount: string }): Promise<void> {
+    await api.post("/margin/repay", payload);
   },
 
   /**

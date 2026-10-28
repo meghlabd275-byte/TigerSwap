@@ -111,6 +111,70 @@ func (m *PerpsMarket) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// Margin account status values.
+const (
+	MarginAccountActive     = "active"
+	MarginAccountLiquidated = "liquidated"
+	MarginAccountClosed     = "closed"
+)
+
+// MarginAccount is a margin trading account. A cross account pools all of its
+// collateral and debt; an isolated account is scoped to a single pair, so a
+// loss in one isolated account cannot touch another.
+type MarginAccount struct {
+	ID         uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID     string    `gorm:"index;size:100" json:"user_id"`
+	MarginMode string    `gorm:"size:16;default:'cross'" json:"margin_mode"`
+	Pair       string    `gorm:"size:40;index" json:"pair"`
+	Status     string    `gorm:"size:20;index;default:'active'" json:"status"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+func (a *MarginAccount) BeforeCreate(tx *gorm.DB) error {
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
+	}
+	return nil
+}
+
+// MarginCollateral is one collateral asset held in a margin account.
+type MarginCollateral struct {
+	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	AccountID uuid.UUID `gorm:"index" json:"account_id"`
+	Asset     string    `gorm:"size:20;index" json:"asset"`
+	Amount    string    `gorm:"size:60" json:"amount"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (c *MarginCollateral) BeforeCreate(tx *gorm.DB) error {
+	if c.ID == uuid.Nil {
+		c.ID = uuid.New()
+	}
+	return nil
+}
+
+// MarginBorrow is one borrowed asset within a margin account. Interest accrues
+// from LastAccrual at the market's utilization-driven rate.
+type MarginBorrow struct {
+	ID              uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	AccountID       uuid.UUID `gorm:"index" json:"account_id"`
+	Asset           string    `gorm:"size:20;index" json:"asset"`
+	Principal       string    `gorm:"size:60" json:"principal"`
+	AccruedInterest string    `gorm:"size:60" json:"accrued_interest"`
+	LastAccrual     time.Time `json:"last_accrual"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (b *MarginBorrow) BeforeCreate(tx *gorm.DB) error {
+	if b.ID == uuid.Nil {
+		b.ID = uuid.New()
+	}
+	return nil
+}
+
 // MarginMarket is an admin-managed spot-margin listing with its own risk
 // parameters and interest-rate curve.
 type MarginMarket struct {

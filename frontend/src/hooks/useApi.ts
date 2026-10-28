@@ -18,7 +18,9 @@ import type {
   AdminDashboard,
   Chain,
   MarketStats,
+  MarginAccountView,
   PerpMarket,
+  PerpPosition,
   Pool,
   Portfolio,
   PriceEntry,
@@ -138,6 +140,114 @@ export function usePerpMarkets(): UseQueryResult<PerpMarket[], Error> {
     queryFn: () => endpoints.getPerpMarkets(),
     refetchInterval: REFRESH.fast,
     retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's perpetual positions. */
+export function usePerpPositions(enabled = true): UseQueryResult<PerpPosition[], Error> {
+  return useQuery<PerpPosition[], Error>({
+    queryKey: ["perps", "positions"],
+    queryFn: () => endpoints.getPerpPositions(),
+    enabled: enabled && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/**
+ * Opens a perpetual position.
+ *
+ * On success the positions list and the portfolio are refetched, because both
+ * change when a position opens.
+ */
+export function useOpenPerpPosition() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: {
+      pair: string;
+      side: 'long' | 'short';
+      size: string;
+      collateral: string;
+      leverage: number;
+    }) => endpoints.openPerpPosition(params),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["perps", "positions"] });
+      void queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+    },
+  });
+}
+
+/** Closes a perpetual position and refreshes the positions list. */
+export function useClosePerpPosition() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (positionId: string) => endpoints.closePerpPosition(positionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["perps", "positions"] });
+      void queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+    },
+  });
+}
+
+/** The risk view of one margin account, refreshed while it is open. */
+export function useMarginAccount(accountId: string | null): UseQueryResult<MarginAccountView, Error> {
+  return useQuery<MarginAccountView, Error>({
+    queryKey: ["margin", "account", accountId],
+    queryFn: () => {
+      if (!accountId) {
+        throw new Error("an account id is required");
+      }
+      return endpoints.getMarginAccount(accountId);
+    },
+    enabled: isAuthenticated() && accountId !== null,
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/** Opens a margin account. */
+export function useOpenMarginAccount() {
+  return useMutation({
+    mutationFn: (payload: { pair: string; margin_mode?: string }) =>
+      endpoints.openMarginAccount(payload),
+  });
+}
+
+/** Deposits collateral into a margin account. */
+export function useDepositMarginCollateral() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { account_id: string; asset: string; amount: string }) =>
+      endpoints.depositMarginCollateral(payload),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["margin", "account", variables.account_id] });
+    },
+  });
+}
+
+/** Borrows against a margin account's collateral. */
+export function useBorrowMargin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { account_id: string; asset: string; amount: string }) =>
+      endpoints.borrowMargin(payload),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["margin", "account", variables.account_id] });
+    },
+  });
+}
+
+/** Repays debt on a margin account. */
+export function useRepayMargin() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { account_id: string; asset: string; amount: string }) =>
+      endpoints.repayMargin(payload),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ["margin", "account", variables.account_id] });
+    },
   });
 }
 

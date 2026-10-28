@@ -2,24 +2,36 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"math/big"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // PerpetualEngine handles real perpetual trading
 type PerpetualEngine struct {
-	blockchain     *BlockchainClient
-	priceAgg       *PriceAggregator
-	positions      map[string]*PerpetualPosition // positionID -> position
-	orders         map[string]*PerpetualOrder
-	mu             sync.RWMutex
-	supportedPairs []string
+	blockchain *BlockchainClient
+	priceAgg   *PriceAggregator
+	positions  map[string]*PerpetualPosition // positionID -> position
+	orders     map[string]*PerpetualOrder
+	mu         sync.RWMutex
+
+	// db, when set, is the source of truth for tradable markets. A market is
+	// tradable only while its admin-managed listing is active, so the engine can
+	// never trade a symbol that was never listed.
+	db *gorm.DB
+
+	// markets caches the active listings by symbol. It is rebuilt from the
+	// database by RefreshMarkets and read on the trading path.
+	markets map[string]*perpMarketConfig
 }
 
 // PerpetualPosition represents a real perpetual position
@@ -36,7 +48,7 @@ type PerpetualPosition struct {
 	LiquidationPrice float64    `json:"liquidation_price"`
 	Leverage         int        `json:"leverage"`
 	UnrealizedPNL    string     `json:"unrealized_pnl"`
-	FundingPaid      string     `json:" funding_paid"`
+	FundingPaid      string     `json:"funding_paid"`
 	Status           string     `json:"status"` // open, closed, liquidated
 	OpenedAt         time.Time  `json:"opened_at"`
 	ClosedAt         *time.Time `json:"closed_at"`
@@ -67,22 +79,186 @@ type FundingInfo struct {
 	InterestRate    float64   `json:"interest_rate"`
 }
 
+// perpMarketConfig is the tradable subset of an admin listing. It is derived
+// from a FuturesMarket or PerpsMarket row and carries everything the trading
+// path needs: the oracle symbol, leverage cap, margin rates and fees.
+type perpMarketConfig struct {
+	Symbol                string
+	OracleSymbol          string
+	MaxLeverage           int
+	MakerFeeRate          float64
+	TakerFeeRate          float64
+	MaintenanceMarginRate float64
+	LiquidationFeeRate    float64
+	MaxOpenInterest       float64
+	PriceImpactRate       float64
+}
+
+// NewPerpetualEngine builds an engine with no markets. Markets are loaded from
+// the admin listing tables with SetDB, so the engine can only ever trade
+// symbols an operator has explicitly listed.
 func NewPerpetualEngine(blockchain *BlockchainClient, priceAgg *PriceAggregator) *PerpetualEngine {
 	return &PerpetualEngine{
-		blockchain:     blockchain,
-		priceAgg:       priceAgg,
-		positions:      make(map[string]*PerpetualPosition),
-		orders:         make(map[string]*PerpetualOrder),
-		supportedPairs: []string{"BTC-USD", "ETH-USD", "SOL-USD", "AVAX-USD", "LINK-USD"},
+		blockchain: blockchain,
+		priceAgg:   priceAgg,
+		positions:  make(map[string]*PerpetualPosition),
+		orders:     make(map[string]*PerpetualOrder),
+		markets:    make(map[string]*perpMarketConfig),
 	}
+}
+
+// SetDB attaches the database that holds the market listings and loads the
+// currently active markets. It is separate from the constructor so tests can
+// build an engine without a database.
+func (e *PerpetualEngine) SetDB(db *gorm.DB) error {
+	e.db = db
+	return e.RefreshMarkets()
+}
+
+// RefreshMarkets reloads the active market registry from the listing tables.
+// Futures and perpetual listings are both honoured; a symbol listed in both
+// keeps the futures entry, which carries the richer risk model. Listings that
+// are paused, delisting or in maintenance are excluded, so pausing a market in
+// the admin immediately stops it being tradable.
+func (e *PerpetualEngine) RefreshMarkets() error {
+	if e.db == nil {
+		return errors.New("perpetual engine has no database configured")
+	}
+
+	registry := make(map[string]*perpMarketConfig)
+
+	var futures []models.FuturesMarket
+	if err := e.db.Where("status = ?", models.ListingStatusActive).Find(&futures).Error; err != nil {
+		return fmt.Errorf("load futures listings: %w", err)
+	}
+	for i := range futures {
+		cfg := futuresMarketConfig(&futures[i])
+		if cfg == nil {
+			continue
+		}
+		registry[cfg.Symbol] = cfg
+	}
+
+	var perps []models.PerpsMarket
+	if err := e.db.Where("status = ?", models.ListingStatusActive).Find(&perps).Error; err != nil {
+		return fmt.Errorf("load perps listings: %w", err)
+	}
+	for i := range perps {
+		cfg := perpsMarketConfig(&perps[i])
+		if cfg == nil {
+			continue
+		}
+		if _, exists := registry[cfg.Symbol]; !exists {
+			registry[cfg.Symbol] = cfg
+		}
+	}
+
+	e.mu.Lock()
+	e.markets = registry
+	e.mu.Unlock()
+	return nil
+}
+
+// futuresMarketConfig converts a futures listing into a tradable market.
+// Leverage is bounded by the hard engine ceiling so a mis-typed listing cannot
+// open leverage the risk engine does not support.
+func futuresMarketConfig(m *models.FuturesMarket) *perpMarketConfig {
+	symbol := strings.ToUpper(strings.TrimSpace(m.Symbol))
+	base := strings.ToUpper(strings.TrimSpace(m.BaseAsset))
+	if symbol == "" || base == "" {
+		return nil
+	}
+
+	return &perpMarketConfig{
+		Symbol:                symbol,
+		OracleSymbol:          base,
+		MaxLeverage:           clampLeverage(m.MaxLeverage),
+		MakerFeeRate:          m.MakerFeeRate,
+		TakerFeeRate:          m.TakerFeeRate,
+		MaintenanceMarginRate: m.MaintenanceMarginRate,
+		LiquidationFeeRate:    m.LiquidationFeeRate,
+	}
+}
+
+// perpsMarketConfig converts an oracle perpetual listing into a tradable
+// market. Orderbook listings are matched by the CLOB, not this engine, so only
+// oracle-priced markets are registered here.
+func perpsMarketConfig(m *models.PerpsMarket) *perpMarketConfig {
+	symbol := strings.ToUpper(strings.TrimSpace(m.Symbol))
+	if symbol == "" {
+		return nil
+	}
+	if mt := strings.ToLower(strings.TrimSpace(m.MarketType)); mt != "" && mt != "oracle" {
+		return nil
+	}
+	base := oracleBaseFromSymbol(symbol)
+	if base == "" {
+		return nil
+	}
+
+	return &perpMarketConfig{
+		Symbol:                symbol,
+		OracleSymbol:          base,
+		MaxLeverage:           clampLeverage(m.MaxLeverage),
+		MakerFeeRate:          m.MakerFeeRate,
+		TakerFeeRate:          m.TakerFeeRate,
+		MaintenanceMarginRate: m.MaintenanceMarginRate,
+		LiquidationFeeRate:    m.LiquidationFeeRate,
+		MaxOpenInterest:       parseFloat(m.MaxOpenInterest),
+		PriceImpactRate:       m.PriceImpactRate,
+	}
+}
+
+// clampLeverage bounds a listing's leverage to the engine ceiling.
+func clampLeverage(leverage int) int {
+	if leverage <= 0 || leverage > maxPerpLeverage {
+		return maxPerpLeverage
+	}
+	return leverage
+}
+
+// oracleBaseFromSymbol extracts the base asset from a listing symbol. Listings
+// use the slash form ("BTC/RUSD"); the hyphen form ("BTC-USD") is also accepted
+// so existing callers keep working. Returns "" when no base asset is present.
+func oracleBaseFromSymbol(symbol string) string {
+	s := strings.ToUpper(strings.TrimSpace(symbol))
+	if s == "" {
+		return ""
+	}
+	if i := strings.IndexAny(s, "/-"); i > 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// market returns the tradable configuration for a symbol, or nil when the
+// symbol is not an active listing.
+func (e *PerpetualEngine) market(pair string) *perpMarketConfig {
+	symbol := strings.ToUpper(strings.TrimSpace(pair))
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.markets[symbol]
+}
+
+// Markets returns the active market symbols.
+func (e *PerpetualEngine) Markets() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	symbols := make([]string, 0, len(e.markets))
+	for symbol := range e.markets {
+		symbols = append(symbols, symbol)
+	}
+	return symbols
 }
 
 // OpenPosition opens a new perpetual position. The position is opened against
 // the engine's own mark and index prices; the caller's on-chain settlement is
 // broadcast separately with a client-signed transaction.
-func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, pair, side, size, collateral string, leverage int) (*PerpetualPosition, error) {
-	// Validate inputs
-	if !e.isValidPair(pair) {
+func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chainID int64, pair, side, size, collateral string, leverage int) (*PerpetualPosition, error) {
+	// Resolve the listing first: it is the source of truth for leverage and
+	// fees, and an unlisted symbol must never be tradable.
+	cfg := e.market(pair)
+	if cfg == nil {
 		return nil, fmt.Errorf("unsupported pair: %s", pair)
 	}
 
@@ -110,16 +286,16 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, pair,
 	if markPrice <= 0 {
 		return nil, fmt.Errorf("no mark price available for %s", pair)
 	}
-	if leverage < 1 || leverage > 1001 {
-		return nil, fmt.Errorf("leverage must be between 1 and 1001")
+	if leverage < 1 || leverage > cfg.MaxLeverage {
+		return nil, fmt.Errorf("leverage must be between 1 and %d for %s", cfg.MaxLeverage, cfg.Symbol)
 	}
 	if requiredMargin := sizeFloat / float64(leverage); collateralFloat+1e-9 < requiredMargin {
 		return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", requiredMargin, leverage, sizeFloat)
 	}
 
 	position := &PerpetualPosition{
-		ID:               fmt.Sprintf("pos_%d", time.Now().UnixNano()),
-		UserAddress:      "", // Would derive from private key
+		ID:               uuid.NewString(),
+		UserAddress:      ownerID,
 		Pair:             pair,
 		Side:             side,
 		Size:             size,
@@ -145,12 +321,17 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, chainID int64, pair,
 }
 
 // ClosePosition closes an existing position
-func (e *PerpetualEngine) ClosePosition(ctx context.Context, positionID string) (*PerpetualPosition, error) {
+func (e *PerpetualEngine) ClosePosition(ctx context.Context, ownerID, positionID string) (*PerpetualPosition, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	position, exists := e.positions[positionID]
 	if !exists {
+		return nil, fmt.Errorf("position not found: %s", positionID)
+	}
+	if ownerID != "" && position.UserAddress != ownerID {
+		// Report a missing position rather than a permission error so the
+		// endpoint cannot be used to probe which position ids exist.
 		return nil, fmt.Errorf("position not found: %s", positionID)
 	}
 
@@ -298,13 +479,17 @@ func (e *PerpetualEngine) executeOrder(ctx context.Context, order *PerpetualOrde
 }
 
 func (e *PerpetualEngine) getMarkPrice(ctx context.Context, pair string) (float64, error) {
-	// Extract base asset from pair (e.g., BTC from BTC-USD)
-	base := strings.Split(pair, "-")[0]
+	cfg := e.market(pair)
+	if cfg == nil {
+		return 0, fmt.Errorf("market %s is not listed", pair)
+	}
 
-	// Get price from aggregator
-	priceData, err := e.priceAgg.GetRealPrice(ctx, base)
+	priceData, err := e.priceAgg.GetRealPrice(ctx, cfg.OracleSymbol)
 	if err != nil {
 		return 0, err
+	}
+	if priceData.USD <= 0 {
+		return 0, fmt.Errorf("oracle returned a non-positive price for %s", cfg.OracleSymbol)
 	}
 
 	return priceData.USD, nil
@@ -349,12 +534,7 @@ func (e *PerpetualEngine) calculatePNL(position *PerpetualPosition, currentPrice
 }
 
 func (e *PerpetualEngine) isValidPair(pair string) bool {
-	for _, p := range e.supportedPairs {
-		if p == pair {
-			return true
-		}
-	}
-	return false
+	return e.market(pair) != nil
 }
 
 // GetFundingRate calculates the funding rate for a pair
@@ -440,11 +620,15 @@ func (e *PerpetualEngine) BroadcastTransaction(ctx context.Context, chainID int6
 }
 
 func (e *PerpetualEngine) ClosePositionHandler(c *gin.Context) {
-	positionID := c.Param("id")
+	owner, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	position, err := e.ClosePosition(c.Request.Context(), positionID)
+	positionID := c.Param("id")
+	position, err := e.ClosePosition(c.Request.Context(), owner, positionID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(404, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -452,10 +636,12 @@ func (e *PerpetualEngine) ClosePositionHandler(c *gin.Context) {
 }
 
 func (e *PerpetualEngine) GetPositionsHandler(c *gin.Context) {
-	userAddress := c.Query("user_address")
+	owner, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
 
-	positions := e.GetUserPositions(userAddress)
-
+	positions := e.GetUserPositions(owner)
 	c.JSON(200, gin.H{
 		"positions": positions,
 		"count":     len(positions),
@@ -507,7 +693,7 @@ func (e *PerpetualEngine) GetFundingRateHandler(c *gin.Context) {
 
 func (e *PerpetualEngine) GetSupportedPairsHandler(c *gin.Context) {
 	c.JSON(200, gin.H{
-		"pairs": e.supportedPairs,
+		"pairs": e.Markets(),
 	})
 }
 
@@ -524,25 +710,37 @@ type PerpMarketView struct {
 	IsActive          bool    `json:"isActive"`
 }
 
-// maxPerpLeverage caps leverage for engine-priced perpetual markets.
-const maxPerpLeverage = 100
+// maxPerpLeverage is the absolute leverage ceiling for engine-priced perpetual
+// markets. It is the upper bound for a listing's own max_leverage; a listing may
+// set anything from 1 up to this value. It is also the fallback when a listing
+// leaves max_leverage unset or out of range, so a bad listing can never open
+// more leverage than the risk engine supports.
+const maxPerpLeverage = 1001
 
 // GetMarketsHandler lists the engine's markets with live mark/index prices and
 // funding. A market whose price feed is unavailable is still returned but is
 // marked inactive, so a client never trades against a stale price.
 func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
 	ctx := c.Request.Context()
-	markets := make([]PerpMarketView, 0, len(e.supportedPairs))
+	symbols := e.Markets()
 
-	for _, pair := range e.supportedPairs {
-		view := PerpMarketView{
-			MarketID:    pair,
-			Symbol:      pair,
-			MaxLeverage: maxPerpLeverage,
+	markets := make([]PerpMarketView, 0, len(symbols))
+	for _, symbol := range symbols {
+		cfg := e.market(symbol)
+		if cfg == nil {
+			continue
 		}
 
-		markPrice, err := e.getMarkPrice(ctx, pair)
+		view := PerpMarketView{
+			MarketID:    symbol,
+			Symbol:      symbol,
+			MaxLeverage: cfg.MaxLeverage,
+		}
+
+		markPrice, err := e.getMarkPrice(ctx, symbol)
 		if err != nil {
+			// A market with no reachable price is returned inactive, so a
+			// client never treats a stale price as tradable.
 			markets = append(markets, view)
 			continue
 		}
@@ -551,30 +749,35 @@ func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
 		view.IndexPrice = markPrice
 		view.IsActive = true
 
-		if funding, err := e.GetFundingRate(ctx, pair); err == nil {
+		if funding, err := e.GetFundingRate(ctx, symbol); err == nil {
 			view.FundingRate = funding.LastFundingRate
 		}
 
-		e.mu.RLock()
-		for _, position := range e.positions {
-			if position.Pair != pair || position.Status != "open" {
-				continue
-			}
-			size, ok := new(big.Float).SetString(position.Size)
-			if !ok {
-				continue
-			}
-			notional, _ := size.Float64()
-			if position.Side == "short" {
-				view.OpenInterestShort += notional
-			} else {
-				view.OpenInterestLong += notional
-			}
-		}
-		e.mu.RUnlock()
+		long, short := e.openInterest(symbol)
+		view.OpenInterestLong = long
+		view.OpenInterestShort = short
 
 		markets = append(markets, view)
 	}
 
 	c.JSON(200, gin.H{"markets": markets})
+}
+
+// openInterest totals the notional of open positions on one symbol.
+func (e *PerpetualEngine) openInterest(symbol string) (float64, float64) {
+	var long, short float64
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, position := range e.positions {
+		if position.Pair != symbol || position.Status != "open" {
+			continue
+		}
+		notional := parseFloat(position.Size)
+		if position.Side == "short" {
+			short += notional
+		} else {
+			long += notional
+		}
+	}
+	return long, short
 }
