@@ -134,6 +134,24 @@ Future, perps and margin listings are admin-managed and persisted in
 New listings are created with status `paused`; an operator activates them.
 `DELETE` moves a listing to `delisting` rather than removing the row.
 
+The perp and margin engines treat these tables as the source of truth, so
+listing changes take effect without a restart:
+
+- `PerpetualEngine.SetDB` loads the active futures/perps listings into a
+  registry; `RefreshMarkets` rebuilds it. `ListingService.SetMarketsChangedHook`
+  is wired to that refresh in `cmd/api/main.go`, so a create, update or delete
+  reloads the registry. Only `active` listings are tradable; a listing's
+  `max_leverage` is authoritative and clamped to `maxPerpLeverage`.
+- `MarginEngine` reads LTV, liquidation threshold, close factor, collateral and
+  borrowable asset lists and the interest curve from `margin_markets` on every
+  operation. An unlisted or inactive pair is rejected. Collateral and debt are
+  valued from the oracle; a missing or non-positive price is an error, never a
+  default.
+
+Margin accounts live in `margin_accounts`, with `margin_collaterals` and
+`margin_borrows` per account. Borrow interest accrues on read from
+`last_accrual`, so it survives restarts and does not depend on a background job.
+
 ## Pool families and on-chain ABIs
 
 Every pool family is registered in `TigerSwapFactory.familyPools[family][t0][t1]`
