@@ -370,6 +370,20 @@ public:
         }
 
         if (remaining > 0) {
+            if (would_cross(working)) {
+                // Only the trader's own liquidity stood in the way. Resting here
+                // would leave a crossed book, so the remainder is rejected.
+                working.status =
+                    working.filled > 0 ? OrderStatus::PartiallyFilled : OrderStatus::Cancelled;
+                index_.insert(working);
+                result.report.accepted = true;
+                result.report.reason = RejectReason::SelfTradePrevented;
+                result.report.order_id = working.id;
+                result.report.filled = working.filled;
+                result.report.remaining = 0;
+                return result;
+            }
+
             working.status =
                 working.filled > 0 ? OrderStatus::PartiallyFilled : OrderStatus::Open;
             index_.insert(working);
@@ -476,15 +490,29 @@ private:
         return has_bid() && order.price <= best_bid();
     }
 
+    /// Quantity on a level that `trader` is allowed to trade against. Orders
+    /// owned by the taker are excluded because match_at_level stops at them.
+    uint64_t tradable_quantity(const Level& level, uint64_t trader) const {
+        uint64_t total = 0;
+        for (const LevelQueue::Node* node = level.queue.front(); node != nullptr; node = node->next) {
+            if (node->trader != trader) {
+                total += node->quantity;
+            }
+        }
+        return total;
+    }
+
     uint64_t fillable_quantity(const Order& order) const {
         uint64_t available = 0;
 
+        // Self-owned orders are excluded: match_at_level stops at them, so they can
+        // never contribute to a fill.
         if (order.side == Side::Buy) {
             for (auto it = asks_.begin(); it != asks_.end(); ++it) {
                 if (it->first > order.price) {
                     break;
                 }
-                available += it->second.queue.total_quantity();
+                available += tradable_quantity(it->second, order.trader);
                 if (available >= order.quantity) {
                     return available;
                 }
@@ -494,7 +522,7 @@ private:
                 if (it->first < order.price) {
                     break;
                 }
-                available += it->second.queue.total_quantity();
+                available += tradable_quantity(it->second, order.trader);
                 if (available >= order.quantity) {
                     return available;
                 }

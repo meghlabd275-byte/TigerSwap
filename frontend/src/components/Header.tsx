@@ -4,12 +4,14 @@ import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Wallet, Menu, X, ChevronDown, Rocket, Zap, Shield, Globe } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import { useChains } from '@/hooks/useApi';
 import Link from 'next/link';
 
 export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
   const { connected, address, connectWallet, disconnectWallet } = useStore();
+  const { data: chains } = useChains();
 
   const formatAddress = (addr: string) => {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -80,7 +82,9 @@ export function Header() {
             {/* Network Selector */}
             <button className="hidden sm:flex items-center space-x-2 px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-colors">
               <Globe className="w-4 h-4 text-tiger-orange" />
-              <span className="text-white text-sm">100+ Chains</span>
+              <span className="text-white text-sm">
+                {chains && chains.length > 0 ? `${chains.length} Chains` : 'Chains'}
+              </span>
             </button>
 
             {/* Wallet Button */}

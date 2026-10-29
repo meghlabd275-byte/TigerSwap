@@ -382,3 +382,62 @@ func TestDeleteMovesListingToDelisting(t *testing.T) {
 		t.Fatalf("expected delisting status, got %q", stored.Status)
 	}
 }
+
+// TestGetActiveMarginMarketsFiltersByStatus verifies the public margin-market
+// listing returns only active listings, so the trading UI can never offer a
+// paused or delisted pair.
+func TestGetActiveMarginMarketsFiltersByStatus(t *testing.T) {
+	db := newListingTestDB(t)
+	svc := NewListingService(db)
+
+	createMarket := func(pair string) models.MarginMarket {
+		rec := postJSON(t, svc.CreateMarginMarket, "/x", gin.H{
+			"pair":                  pair,
+			"margin_mode":           "cross",
+			"max_leverage":          10,
+			"collateral_assets":     "BTC,ETH,TGR,RUSD",
+			"borrowable_assets":     "RUSD,USDT,USDC",
+			"base_rate_apy":         0.05,
+			"kink_utilization":      0.8,
+			"jump_multiplier":       1.0,
+			"ltv":                   0.7,
+			"liquidation_threshold": 0.75,
+			"liquidation_bonus":     0.05,
+			"close_factor":          0.5,
+			"supply_cap":            "10000000",
+			"borrow_cap":            "10000000",
+			"risk_tier":             "low",
+		}, nil)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("create %s failed: %d %s", pair, rec.Code, rec.Body.String())
+		}
+		return decodeMarket[models.MarginMarket](t, rec)
+	}
+
+	active := createMarket("BTC/RUSD")
+	createMarket("ETH/RUSD")
+
+	// A freshly created listing is paused, so nothing is public yet.
+	if rec := getJSON(t, svc.GetActiveMarginMarkets, "/x"); len(decodeMarket[struct {
+		Markets []models.MarginMarket `json:"markets"`
+	}](t, rec).Markets) != 0 {
+		t.Fatalf("paused listings must not be public")
+	}
+
+	if err := db.Model(&models.MarginMarket{}).Where("id = ?", active.ID).
+		Update("status", models.ListingStatusActive).Error; err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+
+	rec := getJSON(t, svc.GetActiveMarginMarkets, "/x")
+	out := decodeMarket[struct {
+		Markets []models.MarginMarket `json:"markets"`
+		Count   int                   `json:"count"`
+	}](t, rec)
+	if out.Count != 1 || len(out.Markets) != 1 {
+		t.Fatalf("expected exactly one active market, got %d", out.Count)
+	}
+	if out.Markets[0].Pair != "BTC/RUSD" {
+		t.Fatalf("unexpected pair %q", out.Markets[0].Pair)
+	}
+}

@@ -15,10 +15,17 @@ import { ApiError } from "@/lib/apiClient";
 import { endpoints } from "@/lib/endpoints";
 import { isAdmin, isAuthenticated } from "@/lib/auth";
 import type {
+  AdminAuditLog,
+  AdminChain,
   AdminDashboard,
+  AdminSettings,
+  AdminToken,
   Chain,
+  FeeConfig,
+  LaunchpadProject,
   MarketStats,
   MarginAccountView,
+  MarginListing,
   PerpMarket,
   PerpPosition,
   Pool,
@@ -134,11 +141,86 @@ export function useAdminDashboard(): UseQueryResult<AdminDashboard, Error> {
   });
 }
 
+/** Admin: every configured chain, including inactive ones. */
+export function useAdminChains(): UseQueryResult<AdminChain[], Error> {
+  return useQuery<AdminChain[], Error>({
+    queryKey: ["admin", "chains"],
+    queryFn: () => endpoints.getAdminChains(),
+    enabled: isAdmin(),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: every configured token, including inactive ones. */
+export function useAdminTokens(): UseQueryResult<AdminToken[], Error> {
+  return useQuery<AdminToken[], Error>({
+    queryKey: ["admin", "tokens"],
+    queryFn: () => endpoints.getAdminTokens(),
+    enabled: isAdmin(),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: persisted platform runtime switches. */
+export function useAdminSettings(): UseQueryResult<AdminSettings, Error> {
+  return useQuery<AdminSettings, Error>({
+    queryKey: ["admin", "settings"],
+    queryFn: () => endpoints.getAdminSettings(),
+    enabled: isAdmin(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: current fee configuration. */
+export function useFeeConfig(): UseQueryResult<FeeConfig, Error> {
+  return useQuery<FeeConfig, Error>({
+    queryKey: ["admin", "fees"],
+    queryFn: () => endpoints.getFeeConfig(),
+    enabled: isAdmin(),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: immutable audit log of operator actions. */
+export function useAdminLogs(): UseQueryResult<AdminAuditLog[], Error> {
+  return useQuery<AdminAuditLog[], Error>({
+    queryKey: ["admin", "logs"],
+    queryFn: () => endpoints.getAdminLogs(),
+    enabled: isAdmin(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Public launchpad projects. */
+export function useLaunchpadProjects(status?: string): UseQueryResult<LaunchpadProject[], Error> {
+  return useQuery<LaunchpadProject[], Error>({
+    queryKey: ["launchpad", "projects", status ?? "all"],
+    queryFn: () => endpoints.getLaunchpadProjects(status),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
 export function usePerpMarkets(): UseQueryResult<PerpMarket[], Error> {
   return useQuery<PerpMarket[], Error>({
     queryKey: ["perps", "markets"],
     queryFn: () => endpoints.getPerpMarkets(),
     refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/** Active spot-margin markets offered by the venue. */
+export function useMarginMarkets(): UseQueryResult<MarginListing[], Error> {
+  return useQuery<MarginListing[], Error>({
+    queryKey: ["margin", "markets"],
+    queryFn: () => endpoints.getMarginMarkets(),
+    refetchInterval: REFRESH.normal,
     retry: shouldRetry,
   });
 }

@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"net/http"
@@ -16,6 +18,9 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // FeeCollectorService collects and manages all platform fees
@@ -42,6 +47,10 @@ type FeeCollectorService struct {
 
 	// Blockchain client for on-chain fee settlement
 	blockchain *BlockchainClient
+
+	// db backs the admin audit trail. It is optional so the collector can be
+	// constructed in tests without a database.
+	db *gorm.DB
 }
 
 // FeeConfig holds all fee configurations
@@ -472,6 +481,13 @@ func feeTreasuryKey() (*ecdsa.PrivateKey, error) {
 }
 
 // SetBlockchain wires the blockchain client used for fee settlement.
+// SetDB attaches the database used to persist admin audit entries.
+func (s *FeeCollectorService) SetDB(db *gorm.DB) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.db = db
+}
+
 func (s *FeeCollectorService) SetBlockchain(blockchain *BlockchainClient) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -502,7 +518,39 @@ func (s *FeeCollectorService) UpdateConfigHandler(c *gin.Context) {
 		return
 	}
 
+	s.auditFeeAction(c, "update_fee_config", "fee_config", "default", req)
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Fee configuration updated"})
+}
+
+// auditFeeAction records an immutable audit entry for an admin fee or treasury
+// operation. Failures are logged rather than returned: the change has already
+// been applied, so the caller must not be told it failed.
+func (s *FeeCollectorService) auditFeeAction(c *gin.Context, action, entityType, entityID string, details interface{}) {
+	s.mu.RLock()
+	db := s.db
+	s.mu.RUnlock()
+	if db == nil {
+		return
+	}
+
+	var encoded *string
+	if raw, err := json.Marshal(details); err == nil {
+		encodedValue := string(raw)
+		encoded = &encodedValue
+	}
+
+	entry := models.AdminLog{
+		AdminID:    adminUUID(c.GetString("user_id")),
+		Action:     action,
+		EntityType: entityType,
+		EntityID:   entityID,
+		Details:    encoded,
+		IPAddress:  c.ClientIP(),
+		UserAgent:  c.Request.UserAgent(),
+	}
+	if err := db.Create(&entry).Error; err != nil {
+		log.Printf("failed to write fee audit log: %v", err)
+	}
 }
 
 // validateFeeConfig rejects negative fees and percentages above 100.
@@ -589,6 +637,7 @@ func (s *FeeCollectorService) SetMasterWalletHandler(c *gin.Context) {
 
 	address := strings.ToLower(req.Address)
 	s.SetMasterWallet(address)
+	s.auditFeeAction(c, "set_fee_master_wallet", "fee_config", "master_wallet", gin.H{"address": address})
 	c.JSON(http.StatusOK, gin.H{"success": true, "master_wallet": address})
 }
 
@@ -616,6 +665,13 @@ func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	s.auditFeeAction(c, "distribute_fees", "fee_treasury", req.Token, gin.H{
+		"chain_id": req.ChainID,
+		"token":    req.Token,
+		"amount":   req.Amount,
+		"tx_hash":  txHash,
+	})
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,

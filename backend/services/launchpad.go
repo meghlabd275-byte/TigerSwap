@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -378,6 +379,40 @@ func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 	}
 
 	c.JSON(200, project)
+}
+
+// UpdateProjectStatusHandler is the admin endpoint that moves a launchpad
+// project between lifecycle states (upcoming, active, completed, cancelled).
+func (s *LaunchpadService) UpdateProjectStatusHandler(c *gin.Context) {
+	projectID := c.Param("id")
+
+	var req struct {
+		Status string `json:"status" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !validLaunchpadStatuses[req.Status] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported launchpad status"})
+		return
+	}
+
+	if err := s.UpdateProjectStatus(projectID, req.Status); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "id": projectID, "status": req.Status})
+}
+
+// validLaunchpadStatuses is the closed set of lifecycle states a project may
+// be moved into.
+var validLaunchpadStatuses = map[string]bool{
+	"upcoming":  true,
+	"active":    true,
+	"completed": true,
+	"cancelled": true,
 }
 
 func (s *LaunchpadService) GetProjectsHandler(c *gin.Context) {

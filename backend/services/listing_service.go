@@ -1205,12 +1205,28 @@ func (s *ListingService) GetMarginMarkets(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"markets": markets, "count": len(markets)})
 }
 
+// GetActiveMarginMarkets lists the tradable spot-margin markets for the public
+// trading UI. Only active listings are returned; paused and delisted markets
+// are hidden, matching the engine's rule that an unlisted pair cannot trade.
+func (s *ListingService) GetActiveMarginMarkets(c *gin.Context) {
+	limit, offset := paginationParams(c, 100)
+
+	var markets []models.MarginMarket
+	if err := s.db.Where("status = ?", models.ListingStatusActive).
+		Order("pair ASC").Limit(limit).Offset(offset).Find(&markets).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load margin markets"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"markets": markets, "count": len(markets)})
+}
+
 // logListingAction records an immutable audit entry for a listing change.
 func logListingAction(c *gin.Context, db *gorm.DB, action, entityType, entityID string, details interface{}) {
-	encoded := ""
+	var encoded *string
 	if details != nil {
 		if raw, err := json.Marshal(details); err == nil {
-			encoded = string(raw)
+			s := string(raw)
+			encoded = &s
 		}
 	}
 	entry := models.AdminLog{

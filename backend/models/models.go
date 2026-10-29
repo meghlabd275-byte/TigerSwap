@@ -49,29 +49,29 @@ type Blockchain struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
-
-	// Relations
-	Tokens []Token `gorm:"foreignKey:ChainID" json:"-"`
 }
 
 // Token represents a cryptocurrency token
 type Token struct {
-	ID          uint           `gorm:"primaryKey" json:"id"`
-	Address     string         `gorm:"size:42;index" json:"address"`
-	ChainID     int64          `gorm:"index" json:"chain_id"`
-	Name        string         `gorm:"size:100" json:"name"`
-	Symbol      string         `gorm:"size:20;index" json:"symbol"`
-	Decimals    int            `json:"decimals"`
-	LogoURI     string         `gorm:"size:500" json:"logo_uri"`
-	TotalSupply string         `gorm:"size:50" json:"total_supply"`
-	IsActive    bool           `gorm:"default:true" json:"is_active"`
-	IsVerified  bool           `gorm:"default:false" json:"is_verified"`
-	CoingeckoID string         `gorm:"size:100" json:"coingecko_id,omitempty"`
-	Price       float64        `gorm:"-" json:"price"`
-	CreatedBy   uuid.UUID      `gorm:"type:uuid" json:"created_by,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	ID uint `gorm:"primaryKey" json:"id"`
+	// A token is identified by its contract address on a chain.
+	Address     string  `gorm:"size:42;index:idx_tokens_chain_address,unique,priority:2" json:"address"`
+	ChainID     int64   `gorm:"index;index:idx_tokens_chain_address,unique,priority:1" json:"chain_id"`
+	Name        string  `gorm:"size:100" json:"name"`
+	Symbol      string  `gorm:"size:20;index" json:"symbol"`
+	Decimals    int     `json:"decimals"`
+	LogoURI     string  `gorm:"size:500" json:"logo_uri"`
+	TotalSupply string  `gorm:"size:50" json:"total_supply"`
+	IsActive    bool    `gorm:"default:true" json:"is_active"`
+	IsVerified  bool    `gorm:"default:false" json:"is_verified"`
+	CoingeckoID string  `gorm:"size:100" json:"coingecko_id,omitempty"`
+	Price       float64 `gorm:"-" json:"price"`
+	// CreatedBy is null for platform-listed tokens and set only when an
+	// operator lists a token on a specific user's behalf.
+	CreatedBy *uuid.UUID     `gorm:"type:uuid" json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 // Pool represents a liquidity pool
@@ -166,10 +166,12 @@ type AdminLog struct {
 	Action     string    `gorm:"size:100" json:"action"`
 	EntityType string    `gorm:"size:50" json:"entity_type"` // user, token, chain, pool
 	EntityID   string    `gorm:"size:100" json:"entity_id"`
-	Details    string    `gorm:"type:jsonb" json:"details"`
-	IPAddress  string    `gorm:"size:45" json:"ip_address"`
-	UserAgent  string    `gorm:"size:500" json:"user_agent"`
-	CreatedAt  time.Time `json:"created_at"`
+	// Details holds the structured payload for an action. NULL means the action
+	// carried no details, which a jsonb column cannot express as an empty string.
+	Details   *string   `gorm:"type:jsonb" json:"details"`
+	IPAddress string    `gorm:"size:45" json:"ip_address"`
+	UserAgent string    `gorm:"size:500" json:"user_agent"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // APIKey represents API keys for developers

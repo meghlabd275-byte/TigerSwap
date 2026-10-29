@@ -2,10 +2,11 @@ package main
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
-	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,22 @@ import (
 )
 
 // ============== MESSAGE QUEUE ==============
+
+// nextMessageID returns a sortable, collision-resistant identifier. A
+// monotonic counter makes IDs unique within a process and the random suffix
+// keeps them unguessable, so a caller cannot predict or forge another
+// message's ID.
+func nextMessageID() string {
+	var suffix [12]byte
+	if _, err := crand.Read(suffix[:]); err != nil {
+		// Fall back to the counter alone rather than failing the enqueue; the
+		// process-local sequence is still unique.
+		return fmt.Sprintf("%d-%d", time.Now().UnixNano(), idCounter.Add(1))
+	}
+	return fmt.Sprintf("%d-%d-%s", time.Now().UnixNano(), idCounter.Add(1), hex.EncodeToString(suffix[:]))
+}
+
+var idCounter atomic.Uint64
 
 type Message struct {
 	ID       string          `json:"id"`
@@ -52,7 +69,7 @@ func NewQueue(name string, redisAddr string) *Queue {
 func (q *Queue) Push(msg *Message) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	msg.ID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(10000))
+	msg.ID = nextMessageID()
 	msg.Created = time.Now().UnixMilli()
 
 	pos := 0

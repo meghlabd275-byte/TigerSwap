@@ -11,14 +11,20 @@ import { api, apiRequest } from "./apiClient";
 import { integer, object, string } from "./validation";
 import {
   AccountBalance,
+  AdminAuditLog,
+  AdminChain,
   AdminDashboard,
+  AdminSettings,
+  AdminToken,
   Bribe,
   BribeClaimResult,
   Chain,
+  FeeConfig,
   FuturesMarket,
   FuturesMarketInput,
   Gauge,
   GovernanceBoost,
+  LaunchpadProject,
   MarginAccount,
   MarginAccountView,
   MarginListing,
@@ -39,8 +45,15 @@ import {
   UserTransaction,
   VeLock,
   accountBalanceListValidator,
+  adminAuditLogListValidator,
+  adminChainListValidator,
+  adminChainValidator,
   adminDashboardValidator,
+  adminSettingsValidator,
+  adminTokenListValidator,
+  adminTokenValidator,
   chainListValidator,
+  feeConfigValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
   bribeClaimResultValidator,
@@ -49,6 +62,8 @@ import {
   gaugeListValidator,
   gaugeValidator,
   governanceBoostValidator,
+  launchpadProjectListValidator,
+  launchpadProjectValidator,
   marginAccountValidator,
   marginAccountViewValidator,
   marginListingListValidator,
@@ -180,10 +195,136 @@ export const endpoints = {
     return adminDashboardValidator(body);
   },
 
+  /** Admin: every configured chain, including inactive ones. */
+  async getAdminChains(): Promise<AdminChain[]> {
+    const body = await api.get("/admin/chains");
+    return adminChainListValidator(body);
+  },
+
+  async createAdminChain(payload: Partial<AdminChain>): Promise<AdminChain> {
+    const body = await api.post("/admin/chains", payload);
+    return adminChainValidator(body);
+  },
+
+  async updateAdminChain(id: number, payload: Partial<AdminChain>): Promise<AdminChain> {
+    const body = await api.put(`/admin/chains/${encodeURIComponent(id)}`, payload);
+    return adminChainValidator(body);
+  },
+
+  async deleteAdminChain(id: number): Promise<void> {
+    await apiRequest(`/admin/chains/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: every configured token, including inactive ones. */
+  async getAdminTokens(): Promise<AdminToken[]> {
+    const body = await api.get("/admin/tokens");
+    return adminTokenListValidator(body);
+  },
+
+  async createAdminToken(payload: Partial<AdminToken>): Promise<AdminToken> {
+    const body = await api.post("/admin/tokens", payload);
+    return adminTokenValidator(body);
+  },
+
+  async updateAdminToken(id: number, payload: Partial<AdminToken>): Promise<AdminToken> {
+    const body = await api.put(`/admin/tokens/${encodeURIComponent(id)}`, payload);
+    return adminTokenValidator(body);
+  },
+
+  async deleteAdminToken(id: number): Promise<void> {
+    await apiRequest(`/admin/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: persisted platform runtime switches. */
+  async getAdminSettings(): Promise<AdminSettings> {
+    const body = await api.get("/admin/settings");
+    return adminSettingsValidator(body);
+  },
+
+  /** Admin: current fee configuration. */
+  async getFeeConfig(): Promise<FeeConfig> {
+    const body = await api.get("/admin/fees/config");
+    return feeConfigValidator(body);
+  },
+
+  async updateFeeConfig(payload: Partial<FeeConfig>): Promise<void> {
+    await api.post("/admin/fees/config", payload);
+  },
+
+  /** Admin: persist platform runtime switches. */
+  async updateAdminSettings(payload: Partial<AdminSettings>): Promise<AdminSettings> {
+    const body = await api.post("/admin/config/update", {
+      trading_enabled: payload.trading_enabled,
+      withdrawal_enabled: payload.withdrawal_enabled,
+      deposit_enabled: payload.deposit_enabled,
+      new_user_registration_enabled: payload.new_user_registration_enabled,
+    });
+    return adminSettingsValidator(body);
+  },
+
+  /** Admin: enter or leave maintenance mode. */
+  async setMaintenance(enabled: boolean): Promise<void> {
+    await api.post(enabled ? "/admin/maintenance/enable" : "/admin/maintenance/disable");
+  },
+
+  /** Admin: immutable audit log of operator actions. */
+  async getAdminLogs(): Promise<AdminAuditLog[]> {
+    const body = await api.get("/admin/logs");
+    return adminAuditLogListValidator(body);
+  },
+
+  /** Public launchpad projects. */
+  async getLaunchpadProjects(status?: string): Promise<LaunchpadProject[]> {
+    const query = status ? `?status=${encodeURIComponent(status)}` : "";
+    const body = await apiRequest(`/launchpad/projects${query}`, {
+      authenticated: false,
+      timeoutMs: 8000,
+    });
+    return launchpadProjectListValidator(body);
+  },
+
+  async createLaunchpadProject(payload: {
+    creator: string;
+    name: string;
+    token_address: string;
+    token_symbol: string;
+    token_name: string;
+    total_supply: string;
+    token_price: string;
+    payment_token: string;
+    start_time: string;
+    end_time: string;
+    description?: string;
+    min_purchase?: string;
+    max_purchase?: string;
+    soft_cap?: string;
+    hard_cap?: string;
+    website_url?: string;
+    whitepaper_url?: string;
+    logo_url?: string;
+  }): Promise<LaunchpadProject> {
+    const body = await api.post("/launchpad/projects", payload);
+    return launchpadProjectValidator(body);
+  },
+
+  /** Admin: move a launchpad project between lifecycle states. */
+  async updateLaunchpadStatus(id: string, status: string): Promise<void> {
+    await api.put(`/admin/launchpad/projects/${encodeURIComponent(id)}/status`, { status });
+  },
+
   /** Perpetual markets. Returns an empty list when the venue is not enabled. */
   async getPerpMarkets(): Promise<PerpMarket[]> {
     const body = await apiRequest("/perpetuals/markets", { authenticated: false, timeoutMs: 8000 });
     return perpMarketListValidator(body);
+  },
+
+  /**
+   * Active spot-margin markets. Only listings the operator has activated are
+   * returned, so the margin panel offers exactly the pairs that can trade.
+   */
+  async getMarginMarkets(): Promise<MarginListing[]> {
+    const body = await apiRequest("/margin/markets", { authenticated: false, timeoutMs: 8000 });
+    return marginListingListValidator(body);
   },
 
   /** The authenticated caller's open and historical perpetual positions. */

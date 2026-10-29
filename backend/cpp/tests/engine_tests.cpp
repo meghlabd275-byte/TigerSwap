@@ -186,6 +186,64 @@ void test_self_trade_prevented() {
     CHECK_EQ(book.total_trades(), 0u);
 }
 
+// A self-crossing order must not be rested: leaving it on the book would produce
+// a crossed market where the best bid exceeds the best ask.
+void test_self_cross_does_not_rest() {
+    OrderBook book(1, 1, 0, 2);
+    const auto resting = book.submit(make_limit(1, 100, 50'000, 10, Side::Sell));
+    CHECK(resting.report.accepted);
+
+    const auto blocked = book.submit(make_limit(2, 100, 50'100, 5, Side::Buy));
+    CHECK(blocked.report.accepted);
+    CHECK(blocked.trades.empty());
+    CHECK(blocked.report.reason == RejectReason::SelfTradePrevented);
+    CHECK_EQ(blocked.report.remaining, 0u);
+
+    // The crossing bid must not appear, and the ask must survive intact.
+    const auto depth = book.depth(5);
+    CHECK_EQ(depth.size(), 1u);
+    CHECK_EQ(depth[0].price, 50'000u);
+    CHECK_EQ(depth[0].quantity, 10u);
+
+    // A foreign trader can still trade against the untouched ask.
+    const auto foreign = book.submit(make_limit(3, 200, 50'100, 5, Side::Buy));
+    CHECK_EQ(foreign.trades.size(), 1u);
+    CHECK_EQ(foreign.trades[0].quantity, 5u);
+}
+
+// Fill-or-kill must only count liquidity the taker is allowed to trade against.
+// Self-owned orders block matching, so they cannot satisfy the fill.
+void test_fok_ignores_own_liquidity() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 50'000, 10, Side::Sell));
+
+    const auto rejected = book.submit(make_limit(2, 100, 50'000, 5, Side::Buy), TimeInForce::Fok);
+    CHECK(!rejected.report.accepted);
+    CHECK(rejected.report.reason == RejectReason::FillOrKillUnfillable);
+
+    // Foreign liquidity satisfies the same request.
+    const auto filled = book.submit(make_limit(3, 200, 50'000, 5, Side::Buy), TimeInForce::Fok);
+    CHECK(filled.report.accepted);
+    CHECK_EQ(filled.trades.size(), 1u);
+    CHECK_EQ(filled.trades[0].quantity, 5u);
+}
+
+// Post-only must never lock the book, even against the trader's own liquidity:
+// an order priced at the opposite best is not a maker order.
+void test_post_only_rejects_locking_price() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 50'000, 10, Side::Sell));
+
+    const auto locking = book.submit(make_limit(2, 100, 50'000, 5, Side::Buy), TimeInForce::PostOnly);
+    CHECK(!locking.report.accepted);
+    CHECK(locking.report.reason == RejectReason::PostOnlyWouldCross);
+
+    // A genuinely passive price is accepted and rests.
+    const auto passive = book.submit(make_limit(3, 100, 49'900, 5, Side::Buy), TimeInForce::PostOnly);
+    CHECK(passive.report.accepted);
+    CHECK_EQ(passive.report.remaining, 5u);
+}
+
 void test_cancel() {
     OrderBook book(1, 1, 0, 2);
     const auto placed = book.submit(make_limit(1, 100, 50'000, 10, Side::Buy));
@@ -832,6 +890,9 @@ int main() {
     test_market_sweeps_levels();
     test_market_without_liquidity_rejected();
     test_self_trade_prevented();
+    test_self_cross_does_not_rest();
+    test_fok_ignores_own_liquidity();
+    test_post_only_rejects_locking_price();
     test_cancel();
     test_tick_validation();
     test_zero_quantity_rejected();

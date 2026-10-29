@@ -80,6 +80,9 @@ enum class RejectReason : uint8_t {
     UnknownOrder,
     NotOrderOwner,
     AlreadyClosed,
+    // The order could only have matched the trader's own resting liquidity, so
+    // resting it would leave the book crossed.
+    SelfTradePrevented,
 };
 
 /// Outcome of a submit or cancel call.

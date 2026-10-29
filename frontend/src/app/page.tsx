@@ -210,18 +210,22 @@ export default function Home() {
                 <Layers className="w-4 h-4 text-tiger-orange" />
               </div>
               <div className="grid grid-cols-4 gap-2">
-                {['ETH', 'BSC', 'MATIC', 'ARB', 'OPT', 'AVAX', 'SOL', 'APT'].map((chain) => (
-                  <div 
-                    key={chain}
+                {(chains ?? []).slice(0, 8).map((chain) => (
+                  <div
+                    key={chain.id}
+                    title={chain.name}
                     className="aspect-square rounded-lg bg-white/5 flex items-center justify-center text-xs font-medium text-gray-400 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
                   >
-                    {chain}
+                    {chain.nativeSymbol}
                   </div>
                 ))}
+                {(!chains || chains.length === 0) && (
+                  <p className="col-span-4 text-gray-500 text-xs">No chains available.</p>
+                )}
               </div>
-              <button className="w-full mt-4 py-2 text-sm text-tiger-orange hover:text-tiger-accent transition-colors">
-                View all 100+ chains →
-              </button>
+              <p className="w-full mt-4 py-2 text-sm text-tiger-orange">
+                {chains && chains.length > 0 ? `${chains.length} chains available` : ''}
+              </p>
             </div>
 
             {/* Recent Transactions */}

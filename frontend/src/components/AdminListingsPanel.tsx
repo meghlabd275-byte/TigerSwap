@@ -350,7 +350,9 @@ function CreateListingForm({ kind, onCreated, onError }: CreateListingFormProps)
     setSubmitting(true);
     try {
       const parsedSymbol = parseSymbol(symbolValue, 'symbol');
-      const leverage = parseInteger(maxLeverage, 'max_leverage', { min: 1, max: 1001 });
+      // Spot margin is capped at 10x server-side; derivatives may go to 1001x.
+      const leverageMax = kind === 'margin' ? 10 : 1001;
+      const leverage = parseInteger(maxLeverage, 'max_leverage', { min: 1, max: leverageMax });
 
       if (kind === 'futures') {
         const payload: FuturesMarketInput = {

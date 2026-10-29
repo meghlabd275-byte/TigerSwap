@@ -148,6 +148,7 @@ func main() {
 	launchpadService := services.NewLaunchpadService(blockchainClient, priceAggregator)
 	feeCollector := services.NewFeeCollectorService()
 	feeCollector.SetBlockchain(blockchainClient)
+	feeCollector.SetDB(db)
 
 	ledgerService := services.NewLedgerService(db)
 
@@ -342,11 +343,13 @@ func main() {
 
 			// Blockchain management
 			admin.POST("/chains", adminService.CreateChain)
+			admin.GET("/chains", adminService.GetChains)
 			admin.PUT("/chains/:id", adminService.UpdateChain)
 			admin.DELETE("/chains/:id", adminService.DeleteChain)
 
 			// Token management
 			admin.POST("/tokens", adminService.CreateToken)
+			admin.GET("/tokens", adminService.GetTokens)
 			admin.PUT("/tokens/:id", adminService.UpdateToken)
 			admin.DELETE("/tokens/:id", adminService.DeleteToken)
 
@@ -356,10 +359,14 @@ func main() {
 			admin.DELETE("/pools/:id", adminService.DeletePool)
 
 			// System management
+			admin.GET("/settings", adminService.GetSettings)
 			admin.GET("/logs", adminService.GetLogs)
 			admin.POST("/config/update", adminService.UpdateConfig)
 			admin.POST("/maintenance/enable", adminService.EnableMaintenance)
 			admin.POST("/maintenance/disable", adminService.DisableMaintenance)
+
+			// Launchpad administration
+			admin.PUT("/launchpad/projects/:id/status", launchpadService.UpdateProjectStatusHandler)
 
 			// Futures market listings (admin managed)
 			admin.POST("/futures/markets", listingService.CreateFuturesMarket)
@@ -383,6 +390,7 @@ func main() {
 			admin.GET("/margin/liquidatable", marginEngine.ListLiquidatableHandler)
 
 			// Fee management (admin only)
+			admin.GET("/fees/config", feeCollector.GetConfigHandler)
 			admin.POST("/fees/config", feeCollector.UpdateConfigHandler)
 			admin.POST("/fees/master-wallet", feeCollector.SetMasterWalletHandler)
 			admin.POST("/fees/distribute", feeCollector.DistributeFeesHandler)
@@ -402,6 +410,15 @@ func main() {
 		// Perpetual markets (public read)
 		public.GET("/perpetuals/markets", perpetualEngine.GetMarketsHandler)
 		public.GET("/perpetuals/pairs", perpetualEngine.GetSupportedPairsHandler)
+
+		// Spot-margin markets (public read): the tradable pairs shown in the
+		// margin panel. Only active listings are returned.
+		public.GET("/margin/markets", listingService.GetActiveMarginMarkets)
+
+		// Launchpad (public read): projects and allocation tiers.
+		public.GET("/launchpad/projects", launchpadService.GetProjectsHandler)
+		public.GET("/launchpad/projects/:id", launchpadService.GetProjectHandler)
+		public.GET("/launchpad/tiers", launchpadService.GetTiersHandler)
 
 		// TigerSwap router (public read, protected broadcast)
 		public.GET("/tigerswap/supported", swapExecutor.GetSupportedDEXHandler)

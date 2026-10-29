@@ -56,12 +56,14 @@ func seedChains(db *gorm.DB) {
 		{ChainID: 43114, Name: "Avalanche", Symbol: "AVAX", Icon: "🔺", ExplorerURL: "https://snowtrace.io", Type: "evm", IsActive: true},
 		{ChainID: 250, Name: "Fantom", Symbol: "FTM", Icon: "👻", ExplorerURL: "https://ftmscan.com", Type: "evm", IsActive: true},
 		{ChainID: 101, Name: "Solana", Symbol: "SOL", Icon: "☀️", ExplorerURL: "https://solscan.io", Type: "solana", IsActive: true},
-		{ChainID: 1, Name: "Aptos", Symbol: "APT", Icon: "🔷", ExplorerURL: "https://aptoscan.com", Type: "aptos", IsActive: true},
-		{ChainID: 1, Name: "Cosmos", Symbol: "ATOM", Icon: "🌌", ExplorerURL: "https://mintscan.io/cosmos", Type: "cosmos", IsActive: true},
-		{ChainID: 1, Name: "TON", Symbol: "TON", Icon: "📱", ExplorerURL: "https://tonscan.org", Type: "ton", IsActive: true},
+		{ChainID: 9001, Name: "Aptos", Symbol: "APT", Icon: "🔷", ExplorerURL: "https://aptoscan.com", Type: "aptos", IsActive: true},
+		{ChainID: 9002, Name: "Cosmos", Symbol: "ATOM", Icon: "🌌", ExplorerURL: "https://mintscan.io/cosmos", Type: "cosmos", IsActive: true},
+		{ChainID: 9003, Name: "TON", Symbol: "TON", Icon: "📱", ExplorerURL: "https://tonscan.org", Type: "ton", IsActive: true},
 	}
 	for _, chain := range chains {
-		db.Create(&chain)
+		if err := db.Create(&chain).Error; err != nil {
+			log.Printf("failed to seed chain %s (chain_id %d): %v", chain.Name, chain.ChainID, err)
+		}
 	}
 	log.Println("Seeded blockchain data")
 }
@@ -109,7 +111,9 @@ func seedTokens(db *gorm.DB) {
 		{ChainID: 56, Address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", Name: "Wrapped BNB", Symbol: "WBNB", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png", IsActive: true, IsVerified: true},
 	}
 	for _, token := range tokens {
-		db.Create(&token)
+		if err := db.Create(&token).Error; err != nil {
+			log.Printf("failed to seed token %s on chain %d: %v", token.Symbol, token.ChainID, err)
+		}
 	}
 	log.Println("Seeded token data")
 }
@@ -344,9 +348,9 @@ func (s *SwapService) GetPrice(c *gin.Context) {
 	})
 }
 
-// GetMarketStats aggregates real counts from the database. Values that are not
-// tracked server-side (TVL, 24h volume) are reported as zero rather than
-// invented.
+// GetMarketStats aggregates real platform activity. Volume and fee figures are
+// derived from confirmed swap transactions in the window; they are never
+// reported as a constant.
 func (s *SwapService) GetMarketStats(c *gin.Context) {
 	var poolCount int64
 	var tokenCount int64
@@ -361,16 +365,52 @@ func (s *SwapService) GetMarketStats(c *gin.Context) {
 	var tvl float64
 	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
 
+	now := time.Now()
+	volume24h, fees24h, swaps24h := s.swapTotals(now.Add(-24 * time.Hour))
+	volume7d, _, _ := s.swapTotals(now.Add(-7 * 24 * time.Hour))
+
 	c.JSON(http.StatusOK, gin.H{
 		"total_tvl":   tvl,
-		"volume_24h":  0,
-		"volume_7d":   0,
-		"fees_24h":    0,
+		"volume_24h":  volume24h,
+		"volume_7d":   volume7d,
+		"fees_24h":    fees24h,
+		"swaps_24h":   swaps24h,
 		"user_count":  userCount,
 		"pool_count":  poolCount,
 		"token_count": tokenCount,
 		"chain_count": chainCount,
 	})
+}
+
+// swapTotals sums confirmed swap notional and the fees they paid since a point
+// in time. Fees are taken from the pool the swap belongs to, so a pool with a
+// different fee tier is accounted for correctly.
+func (s *SwapService) swapTotals(since time.Time) (volume float64, fees float64, count int64) {
+	var txs []models.Transaction
+	if err := s.db.Where("type = ? AND status = ? AND timestamp >= ?", "swap", "confirmed", since).
+		Find(&txs).Error; err != nil {
+		return 0, 0, 0
+	}
+
+	// Look the pool fee up once per pair rather than per transaction.
+	feeByPair := make(map[string]int)
+	for _, tx := range txs {
+		volume += tx.AmountUSD
+		count++
+
+		feeBps, ok := feeByPair[tx.Pair]
+		if !ok {
+			var pool models.Pool
+			feeBps = 30 // the protocol default when a pool is not found
+			if err := s.db.Where("pool_address = ? OR (token_a_address = ? AND token_b_address = ?)",
+				tx.Pair, tx.FromToken, tx.ToToken).First(&pool).Error; err == nil && pool.Fee > 0 {
+				feeBps = pool.Fee
+			}
+			feeByPair[tx.Pair] = feeBps
+		}
+		fees += tx.AmountUSD * float64(feeBps) / 10000
+	}
+	return volume, fees, count
 }
 
 // GetRecentTrades returns confirmed swaps from the database.
@@ -1060,6 +1100,13 @@ func (s *AdminService) GetDashboard(c *gin.Context) {
 	var tvl float64
 	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
 
+	// 24h volume and fees come from confirmed swaps, not a constant.
+	var volume24h, fees24h float64
+	s.db.Model(&models.Transaction{}).
+		Where("type = ? AND status = ? AND timestamp >= ?", "swap", "confirmed", time.Now().Add(-24*time.Hour)).
+		Select("COALESCE(SUM(amount_usd), 0)").Scan(&volume24h)
+	fees24h = volume24h * float64(DefaultFeeBps) / 10000
+
 	c.JSON(http.StatusOK, gin.H{
 		"users":          userCount,
 		"transactions":   txCount,
@@ -1068,8 +1115,46 @@ func (s *AdminService) GetDashboard(c *gin.Context) {
 		"orders":         orderCount,
 		"open_positions": positionCount,
 		"tvl":            tvl,
-		"volume_24h":     0,
+		"volume_24h":     volume24h,
+		"fees_24h":       fees24h,
 	})
+}
+
+// GetChains lists every configured chain, including inactive ones, for the
+// admin console. The public endpoint hides inactive chains; operators need the
+// full set to manage them.
+func (s *AdminService) GetChains(c *gin.Context) {
+	limit, offset := paginationParams(c, 200)
+
+	var chains []models.Blockchain
+	if err := s.db.Order("chain_id ASC").Limit(limit).Offset(offset).Find(&chains).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load chains"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"chains": chains, "count": len(chains)})
+}
+
+// GetTokens lists every configured token, including inactive ones, for the
+// admin console.
+func (s *AdminService) GetTokens(c *gin.Context) {
+	limit, offset := paginationParams(c, 200)
+
+	var tokens []models.Token
+	if err := s.db.Order("chain_id ASC, symbol ASC").Limit(limit).Offset(offset).Find(&tokens).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load tokens"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tokens": tokens, "count": len(tokens)})
+}
+
+// GetSettings returns the persisted platform runtime switches.
+func (s *AdminService) GetSettings(c *gin.Context) {
+	settings, err := s.systemSettings()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load settings"})
+		return
+	}
+	c.JSON(http.StatusOK, settings)
 }
 
 func (s *AdminService) GetUsers(c *gin.Context) {
@@ -1171,6 +1256,14 @@ func (s *AdminService) CreateChain(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// chain_id is unique; report the collision as a conflict rather than a 500.
+	var existing int64
+	s.db.Model(&models.Blockchain{}).Where("chain_id = ?", chain.ChainID).Count(&existing)
+	if existing > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "a chain with this chain_id already exists"})
+		return
+	}
+
 	if err := s.db.Create(&chain).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create chain"})
 		return
@@ -1255,6 +1348,18 @@ func (s *AdminService) CreateToken(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// A token is identified by its contract address on a chain. Rejecting the
+	// duplicate here keeps the error actionable instead of surfacing a unique
+	// constraint violation as an opaque 500.
+	var existing int64
+	s.db.Model(&models.Token{}).
+		Where("chain_id = ? AND address = ?", token.ChainID, token.Address).
+		Count(&existing)
+	if existing > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "a token with this address already exists on this chain"})
+		return
+	}
+
 	if err := s.db.Create(&token).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create token"})
 		return
@@ -1534,10 +1639,11 @@ func (s *AdminService) setMaintenance(enabled bool) error {
 
 // logAdminAction records an immutable audit entry for a privileged action.
 func (s *AdminService) logAdminAction(c *gin.Context, action, resource, resourceID string, details interface{}) {
-	var encoded string
+	var encoded *string
 	if details != nil {
 		if raw, err := json.Marshal(details); err == nil {
-			encoded = string(raw)
+			s := string(raw)
+			encoded = &s
 		}
 	}
 

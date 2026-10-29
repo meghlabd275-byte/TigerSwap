@@ -381,6 +381,194 @@ export const adminDashboardValidator = object<AdminDashboard>(
   { optional: ["activePools", "updatedAt"] },
 );
 
+/** A blockchain row as returned by the admin chains endpoint. */
+export interface AdminChain {
+  id: number;
+  chain_id: number;
+  name: string;
+  symbol: string;
+  icon: string;
+  rpc_url: string;
+  explorer_url: string;
+  type: string;
+  is_active: boolean;
+  is_testnet: boolean;
+}
+
+export const adminChainValidator = object<AdminChain>({
+  id: integer,
+  chain_id: integer,
+  name: string,
+  symbol: string,
+  icon: withDefault(string, ""),
+  rpc_url: withDefault(string, ""),
+  explorer_url: withDefault(string, ""),
+  type: withDefault(string, ""),
+  is_active: withDefault(boolean, true),
+  is_testnet: withDefault(boolean, false),
+});
+
+export const adminChainListValidator = listingArray(adminChainValidator);
+
+/** A token row as returned by the admin tokens endpoint. */
+export interface AdminToken {
+  id: number;
+  address: string;
+  chain_id: number;
+  name: string;
+  symbol: string;
+  decimals: number;
+  logo_uri: string;
+  total_supply: string;
+  is_active: boolean;
+  is_verified: boolean;
+  coingecko_id?: string;
+}
+
+export const adminTokenValidator = object<AdminToken>({
+  id: integer,
+  address: string,
+  chain_id: integer,
+  name: string,
+  symbol,
+  decimals: integer,
+  logo_uri: withDefault(string, ""),
+  total_supply: withDefault(string, "0"),
+  is_active: withDefault(boolean, true),
+  is_verified: withDefault(boolean, false),
+  coingecko_id: withDefault(string, ""),
+});
+
+export const adminTokenListValidator = listingArray(adminTokenValidator);
+
+/** Platform runtime switches. */
+export interface AdminSettings {
+  id: number;
+  key: string;
+  maintenance_mode: boolean;
+  trading_enabled: boolean;
+  withdrawal_enabled: boolean;
+  deposit_enabled: boolean;
+  new_user_registration_enabled: boolean;
+  updated_at: string | null;
+}
+
+export const adminSettingsValidator = object<AdminSettings>({
+  id: integer,
+  key: withDefault(string, "default"),
+  maintenance_mode: withDefault(boolean, false),
+  trading_enabled: withDefault(boolean, true),
+  withdrawal_enabled: withDefault(boolean, true),
+  deposit_enabled: withDefault(boolean, true),
+  new_user_registration_enabled: withDefault(boolean, true),
+  updated_at: nullable(timestamp),
+});
+
+/** A fee configuration as stored by the fee collector. */
+export interface FeeConfig {
+  swap_fee_percent: number;
+  swap_fee_fixed: number;
+  bridge_fee_percent: number;
+  bridge_fee_fixed: number;
+  wallet_tx_fee_percent: number;
+  wallet_tx_fee_fixed: number;
+  deposit_fee_percent: number;
+  deposit_fee_fixed: number;
+  withdraw_fee_percent: number;
+  withdraw_fee_fixed: number;
+  launchpad_fee_percent: number;
+  launchpad_fee_fixed: number;
+  referral_fee_percent: number;
+}
+
+export const feeConfigValidator = object<FeeConfig>({
+  swap_fee_percent: nonNegative,
+  swap_fee_fixed: withDefault(nonNegative, 0),
+  bridge_fee_percent: withDefault(nonNegative, 0),
+  bridge_fee_fixed: withDefault(nonNegative, 0),
+  wallet_tx_fee_percent: withDefault(nonNegative, 0),
+  wallet_tx_fee_fixed: withDefault(nonNegative, 0),
+  deposit_fee_percent: withDefault(nonNegative, 0),
+  deposit_fee_fixed: withDefault(nonNegative, 0),
+  withdraw_fee_percent: withDefault(nonNegative, 0),
+  withdraw_fee_fixed: withDefault(nonNegative, 0),
+  launchpad_fee_percent: withDefault(nonNegative, 0),
+  launchpad_fee_fixed: withDefault(nonNegative, 0),
+  referral_fee_percent: withDefault(nonNegative, 0),
+});
+
+/** An immutable admin audit-log entry. */
+export interface AdminAuditLog {
+  id: number;
+  action: string;
+  entity_type: string;
+  entity_id: string;
+  details: string;
+  created_at: string;
+}
+
+export const adminAuditLogValidator = object<AdminAuditLog>({
+  id: integer,
+  action: string,
+  entity_type: withDefault(string, ""),
+  entity_id: withDefault(string, ""),
+  details: withDefault(string, ""),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const adminAuditLogListValidator = listingArray(adminAuditLogValidator);
+
+/** A launchpad project as returned by the public launchpad endpoint. */
+export interface LaunchpadProject {
+  id: string;
+  name: string;
+  description: string;
+  token_address: string;
+  token_symbol: string;
+  token_name: string;
+  total_supply: string;
+  price_per_token: string;
+  payment_token: string;
+  min_purchase: string;
+  max_purchase: string;
+  soft_cap: string;
+  hard_cap: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  raised_amount: string;
+  participants: number;
+  website_url: string;
+  whitepaper_url: string;
+  logo_url: string;
+}
+
+export const launchpadProjectValidator = object<LaunchpadProject>({
+  id: string,
+  name: string,
+  description: withDefault(string, ""),
+  token_address: withDefault(string, ""),
+  token_symbol: string,
+  token_name: withDefault(string, ""),
+  total_supply: withDefault(string, "0"),
+  price_per_token: withDefault(string, "0"),
+  payment_token: withDefault(string, ""),
+  min_purchase: withDefault(string, "0"),
+  max_purchase: withDefault(string, "0"),
+  soft_cap: withDefault(string, "0"),
+  hard_cap: withDefault(string, "0"),
+  start_time: withDefault(timestamp, new Date(0).toISOString()),
+  end_time: withDefault(timestamp, new Date(0).toISOString()),
+  status: string,
+  raised_amount: withDefault(string, "0"),
+  participants: withDefault(integer, 0),
+  website_url: withDefault(string, ""),
+  whitepaper_url: withDefault(string, ""),
+  logo_url: withDefault(string, ""),
+});
+
+export const launchpadProjectListValidator = listingArray(launchpadProjectValidator);
+
 /**
  * Admin-managed listing models.
  *
@@ -594,7 +782,11 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.locks ??
         record.gauges ??
         record.bribes ??
-        record.proposals;
+        record.proposals ??
+        record.chains ??
+        record.tokens ??
+        record.logs ??
+        record.projects;
       if (items !== undefined) {
         return arrayLenient(element)(items, `${path}.items`);
       }

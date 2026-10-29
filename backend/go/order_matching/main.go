@@ -1,12 +1,20 @@
+// Command order_matching serves TigerSwap's central limit order book over HTTP
+// and WebSocket.
+//
+// All matching happens in the local orderbook engine; the service never calls
+// an external venue. Listed pairs and their fee tiers come from the operator
+// (ORDER_MATCHING_PAIRS), so a pair that is not listed cannot be traded.
 package main
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -14,6 +22,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+
+	"tigerswap/backend/go/order_matching/orderbook"
 )
 
 // ============== CONFIGURATION ==============
@@ -21,369 +31,72 @@ import (
 type Config struct {
 	Port           string
 	RedisURL       string
-	PostgresURL    string
-	MaxConnections int
 	RateLimit      int
+	AdminKey       string
+	AllowedOrigins []string
 }
 
-var cfg = Config{
-	Port:           getEnv("PORT", "8080"),
-	RedisURL:       getEnv("REDIS_URL", "redis://localhost:6379"),
-	PostgresURL:    getEnv("DATABASE_URL", ""),
-	MaxConnections: 10000,
-	RateLimit:      1000,
-}
-
-// ============== ORDER BOOK SERVICE ==============
-
-type OrderBookService struct {
-	mu        sync.RWMutex
-	orderMap  map[uint64]Order
-	traderMap map[string][]uint64
-	tradeCh   chan Trade
-	stats     OrderBookStats
-}
-
-type Order struct {
-	OrderID   uint64  `json:"order_id"`
-	Trader    string  `json:"trader"`
-	Pair      string  `json:"pair"`
-	Side      string  `json:"side"`
-	Type      string  `json:"type"`
-	Price     float64 `json:"price"`
-	Quantity  float64 `json:"quantity"`
-	Filled    float64 `json:"filled"`
-	Leaves    float64 `json:"leaves"`
-	Status    string  `json:"status"`
-	CreatedAt int64   `json:"created_at"`
-	ExpiresAt int64   `json:"expires_at"`
-}
-
-type Trade struct {
-	TradeID   uint64  `json:"trade_id"`
-	OrderID   uint64  `json:"order_id"`
-	Pair      string  `json:"pair"`
-	Side      string  `json:"side"`
-	Price     float64 `json:"price"`
-	Quantity  float64 `json:"quantity"`
-	Fee       float64 `json:"fee"`
-	Timestamp int64   `json:"timestamp"`
-}
-
-type OrderBookStats struct {
-	TotalOrders     uint64    `json:"total_orders"`
-	TotalTrades     uint64    `json:"total_trades"`
-	OrdersPerSecond float64   `json:"orders_per_second"`
-	AvgLatencyUs    float64   `json:"avg_latency_us"`
-	LastUpdate      time.Time `json:"last_update"`
-}
-
-type MarketData struct {
-	Pair      string       `json:"pair"`
-	Bids      []PriceLevel `json:"bids"`
-	Asks      []PriceLevel `json:"asks"`
-	Trades    []Trade      `json:"trades"`
-	LastPrice float64      `json:"last_price"`
-	Spread    float64      `json:"spread"`
-	Volume24h float64      `json:"volume_24h"`
-	High24h   float64      `json:"high_24h"`
-	Low24h    float64      `json:"low_24h"`
-}
-
-type PriceLevel struct {
-	Price    float64 `json:"price"`
-	Quantity float64 `json:"quantity"`
-	Orders   int     `json:"orders"`
-}
-
-var orderBook *OrderBookService
-var redisClient *redis.Client
-
-// ============== ORDER BOOK IMPLEMENTATION ==============
-
-func NewOrderBookService() *OrderBookService {
-	return &OrderBookService{
-		orderMap:  make(map[uint64]Order),
-		traderMap: make(map[string][]uint64),
-		tradeCh:   make(chan Trade, 10000),
-		stats:     OrderBookStats{LastUpdate: time.Now()},
+func loadConfig() Config {
+	return Config{
+		Port:           getEnv("PORT", "8080"),
+		RedisURL:       getEnv("REDIS_URL", "redis://localhost:6379"),
+		RateLimit:      getEnvInt("RATE_LIMIT_PER_SECOND", 1000),
+		AdminKey:       os.Getenv("ORDER_MATCHING_ADMIN_KEY"),
+		AllowedOrigins: splitCSV(os.Getenv("ALLOWED_ORIGINS")),
 	}
 }
 
-// SubmitOrder - Ultra low latency order submission
-func (s *OrderBookService) SubmitOrder(order Order) (uint64, error) {
-	start := time.Now()
+// ============== PAIR REGISTRY ==============
 
-	// Generate order ID (in production, use distributed ID generator)
-	orderID := generateOrderID()
-
-	// Store in memory for O(1) access
-	order.OrderID = orderID
-	order.Status = "open"
-	order.CreatedAt = time.Now().UnixMilli()
-	order.ExpiresAt = order.CreatedAt + 86400000
-	order.Leaves = order.Quantity
-
-	s.mu.Lock()
-	s.orderMap[orderID] = order
-	s.traderMap[order.Trader] = append(s.traderMap[order.Trader], orderID)
-	s.stats.TotalOrders++
-	s.stats.LastUpdate = time.Now()
-	s.mu.Unlock()
-
-	// Match against existing orders (in production, use C++ order book)
-	s.matchOrder(order)
-
-	// Publish to Redis for distribution
-	s.publishOrder(order)
-
-	// Calculate latency
-	latency := time.Since(start).Microseconds()
-	s.mu.Lock()
-	s.stats.AvgLatencyUs = (s.stats.AvgLatencyUs*float64(s.stats.TotalOrders-1) + float64(latency)) / float64(s.stats.TotalOrders)
-	s.mu.Unlock()
-
-	return orderID, nil
+// pairSpec is the operator-supplied definition of a tradable pair. It is read
+// from ORDER_MATCHING_PAIRS as a JSON array, so the listed set lives in
+// configuration and not in the binary.
+type pairSpec struct {
+	Pair        string  `json:"pair"`
+	MakerFeeBps int64   `json:"maker_fee_bps"`
+	TakerFeeBps int64   `json:"taker_fee_bps"`
+	MinQuantity float64 `json:"min_quantity"`
+	MaxQuantity float64 `json:"max_quantity"`
 }
 
-// matchOrder - Match incoming order against the book
-func (s *OrderBookService) matchOrder(incoming Order) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Get opposite side orders
-	var oppositeOrders []Order
-	for _, order := range s.orderMap {
-		if order.Pair == incoming.Pair && order.Side != incoming.Side && order.Status == "open" {
-			oppositeOrders = append(oppositeOrders, order)
+// loadPairSpecs parses the operator's pair list. It fails closed: an unparsable
+// list is an error rather than an empty registry, because silently listing
+// nothing would look like a working venue.
+func loadPairSpecs(raw string) ([]pairSpec, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, errors.New("ORDER_MATCHING_PAIRS is not set")
+	}
+	var specs []pairSpec
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&specs); err != nil {
+		return nil, fmt.Errorf("ORDER_MATCHING_PAIRS is not valid JSON: %w", err)
+	}
+	if len(specs) == 0 {
+		return nil, errors.New("ORDER_MATCHING_PAIRS lists no pairs")
+	}
+	seen := make(map[string]bool, len(specs))
+	for i, s := range specs {
+		if strings.TrimSpace(s.Pair) == "" {
+			return nil, fmt.Errorf("ORDER_MATCHING_PAIRS[%d] has no pair name", i)
+		}
+		if seen[s.Pair] {
+			return nil, fmt.Errorf("ORDER_MATCHING_PAIRS lists %q twice", s.Pair)
+		}
+		seen[s.Pair] = true
+		if s.MakerFeeBps < 0 || s.TakerFeeBps < 0 {
+			return nil, fmt.Errorf("ORDER_MATCHING_PAIRS[%d] has a negative fee", i)
+		}
+		if s.MinQuantity < 0 || (s.MaxQuantity > 0 && s.MaxQuantity < s.MinQuantity) {
+			return nil, fmt.Errorf("ORDER_MATCHING_PAIRS[%d] has an invalid quantity range", i)
 		}
 	}
-
-	// Sort by price (best first)
-	if incoming.Side == "buy" {
-		// For buy orders, sort by descending price
-		for i := 0; i < len(oppositeOrders)-1; i++ {
-			for j := i + 1; j < len(oppositeOrders); j++ {
-				if oppositeOrders[i].Price < oppositeOrders[j].Price {
-					oppositeOrders[i], oppositeOrders[j] = oppositeOrders[j], oppositeOrders[i]
-				}
-			}
-		}
-	} else {
-		// For sell orders, sort by ascending price
-		for i := 0; i < len(oppositeOrders)-1; i++ {
-			for j := i + 1; j < len(oppositeOrders); j++ {
-				if oppositeOrders[i].Price > oppositeOrders[j].Price {
-					oppositeOrders[i], oppositeOrders[j] = oppositeOrders[j], oppositeOrders[i]
-				}
-			}
-		}
-	}
-
-	// Match
-	for _, maker := range oppositeOrders {
-		if incoming.Leaves <= 0 {
-			break
-		}
-
-		// Check price
-		if incoming.Side == "buy" && maker.Price > incoming.Price {
-			break
-		}
-		if incoming.Side == "sell" && maker.Price < incoming.Price {
-			break
-		}
-
-		// Execute trade
-		tradeQty := min(incoming.Leaves, maker.Leaves)
-		tradePrice := maker.Price
-
-		// Update orders
-		incoming.Filled += tradeQty
-		incoming.Leaves -= tradeQty
-		maker.Filled += tradeQty
-		maker.Leaves -= tradeQty
-
-		if maker.Leaves <= 0 {
-			maker.Status = "filled"
-		} else {
-			maker.Status = "partially_filled"
-		}
-
-		s.orderMap[maker.OrderID] = maker
-
-		// Create trade record
-		trade := Trade{
-			TradeID:   generateTradeID(),
-			OrderID:   incoming.OrderID,
-			Pair:      incoming.Pair,
-			Side:      incoming.Side,
-			Price:     tradePrice,
-			Quantity:  tradeQty,
-			Fee:       tradeQty * tradePrice * 0.003, // 0.3% fee
-			Timestamp: time.Now().UnixMilli(),
-		}
-
-		s.stats.TotalTrades++
-
-		// Publish trade
-		s.publishTrade(trade)
-	}
-
-	// Update incoming order
-	if incoming.Leaves > 0 {
-		incoming.Status = "partially_filled"
-	} else {
-		incoming.Status = "filled"
-	}
-	s.orderMap[incoming.OrderID] = incoming
-}
-
-func (s *OrderBookService) CancelOrder(orderID uint64, trader string) error {
-	s.mu.RLock()
-	order, exists := s.orderMap[orderID]
-	s.mu.RUnlock()
-
-	if !exists {
-		return fmt.Errorf("order not found")
-	}
-
-	if order.Trader != trader {
-		return fmt.Errorf("unauthorized")
-	}
-
-	s.mu.Lock()
-	order.Status = "cancelled"
-	order.Leaves = 0
-	s.orderMap[orderID] = order
-	s.mu.Unlock()
-
-	return nil
-}
-
-func (s *OrderBookService) GetOrder(orderID uint64) (Order, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	order, exists := s.orderMap[orderID]
-	if !exists {
-		return Order{}, fmt.Errorf("order not found")
-	}
-
-	return order, nil
-}
-
-func (s *OrderBookService) GetTraderOrders(trader string) []Order {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	orderIDs, exists := s.traderMap[trader]
-	if !exists {
-		return []Order{}
-	}
-
-	orders := make([]Order, 0, len(orderIDs))
-	for _, id := range orderIDs {
-		if order, ok := s.orderMap[id]; ok {
-			orders = append(orders, order)
-		}
-	}
-
-	return orders
-}
-
-func (s *OrderBookService) GetMarketData(pair string, limit int) MarketData {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Find best bid/ask
-	var bestBid, bestAsk float64
-	var bidQty, askQty float64
-
-	for _, order := range s.orderMap {
-		if order.Pair != pair || order.Status == "cancelled" || order.Status == "filled" {
-			continue
-		}
-
-		if order.Side == "buy" && (bestBid == 0 || order.Price > bestBid) {
-			bestBid = order.Price
-			bidQty += order.Leaves
-		}
-		if order.Side == "sell" && (bestAsk == 0 || order.Price < bestAsk) {
-			bestAsk = order.Price
-			askQty += order.Leaves
-		}
-	}
-
-	spread := 0.0
-	if bestBid > 0 && bestAsk > 0 {
-		spread = bestAsk - bestBid
-	}
-
-	return MarketData{
-		Pair:      pair,
-		Bids:      []PriceLevel{{Price: bestBid, Quantity: bidQty, Orders: 1}},
-		Asks:      []PriceLevel{{Price: bestAsk, Quantity: askQty, Orders: 1}},
-		LastPrice: bestBid,
-		Spread:    spread,
-	}
-}
-
-func (s *OrderBookService) GetStats() OrderBookStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	stats := s.stats
-	stats.LastUpdate = time.Now()
-
-	uptime := time.Since(stats.LastUpdate).Seconds()
-	if uptime > 0 {
-		stats.OrdersPerSecond = float64(stats.TotalOrders) / uptime
-	}
-
-	return stats
-}
-
-func (s *OrderBookService) publishOrder(order Order) {
-	if redisClient == nil {
-		return
-	}
-
-	data, _ := json.Marshal(order)
-	redisClient.Publish(context.Background(), "orders:"+order.Pair, data)
-}
-
-func (s *OrderBookService) publishTrade(trade Trade) {
-	if redisClient == nil {
-		return
-	}
-
-	data, _ := json.Marshal(trade)
-	redisClient.Publish(context.Background(), "trades:"+trade.Pair, data)
-
-	// Also add to trade list
-	redisClient.LPush(context.Background(), "trades:"+trade.Pair, data)
-	redisClient.LTrim(context.Background(), "trades:"+trade.Pair, 0, 999) // Keep last 1000
+	return specs, nil
 }
 
 // ============== HTTP HANDLERS ==============
 
-func setupRoutes(r *gin.Engine) {
-	api := r.Group("/api/v1")
-	{
-		api.POST("/orders", submitOrderHandler)
-		api.DELETE("/orders/:id", cancelOrderHandler)
-		api.GET("/orders/:id", getOrderHandler)
-		api.GET("/orders/trader/:address", getTraderOrdersHandler)
-		api.GET("/market/:pair", getMarketDataHandler)
-		api.GET("/market/:pair/depth", getDepthHandler)
-		api.GET("/market/:pair/trades", getTradesHandler)
-		api.GET("/stats", getStatsHandler)
-		api.GET("/health", healthHandler)
-	}
-
-	r.GET("/ws/:pair", wsHandler)
-}
+var engine = orderbook.NewEngine()
 
 func submitOrderHandler(c *gin.Context) {
 	var req struct {
@@ -391,176 +104,337 @@ func submitOrderHandler(c *gin.Context) {
 		Pair     string  `json:"pair" binding:"required"`
 		Side     string  `json:"side" binding:"required"`
 		Type     string  `json:"type" binding:"required"`
+		TIF      string  `json:"tif"`
 		Price    float64 `json:"price"`
 		Quantity float64 `json:"quantity" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order request"})
 		return
 	}
 
-	order := Order{
+	placed, trades, err := engine.Submit(orderbook.Order{
 		Trader:   req.Trader,
 		Pair:     req.Pair,
 		Side:     req.Side,
 		Type:     req.Type,
+		TIF:      req.TIF,
 		Price:    req.Price,
 		Quantity: req.Quantity,
-		Filled:   0,
-		Leaves:   req.Quantity,
-	}
-
-	orderID, err := orderBook.SubmitOrder(order)
+	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		status := http.StatusBadRequest
+		if errors.Is(err, orderbook.ErrUnknownPair) {
+			status = http.StatusNotFound
+		}
+		c.JSON(status, gin.H{"error": err.Error(), "order_id": placed.OrderID})
 		return
 	}
 
 	c.JSON(http.StatusCreated, gin.H{
-		"success":  true,
-		"order_id": orderID,
-		"message":  "Order submitted successfully",
+		"success": true,
+		"order":   placed,
+		"trades":  trades,
+		"message": "order accepted",
 	})
 }
 
 func cancelOrderHandler(c *gin.Context) {
-	orderID := c.Param("id")
+	orderID, ok := parseOrderID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
+		return
+	}
+
 	var req struct {
 		Trader string `json:"trader" binding:"required"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "trader is required to cancel an order"})
 		return
 	}
 
-	var id uint64
-	fmt.Sscanf(orderID, "%d", &id)
-
-	err := orderBook.CancelOrder(id, req.Trader)
+	cancelled, err := engine.Cancel(orderID, req.Trader)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		status := http.StatusBadRequest
+		switch {
+		case errors.Is(err, orderbook.ErrUnknownOrder):
+			status = http.StatusNotFound
+		case errors.Is(err, orderbook.ErrNotOwner):
+			status = http.StatusForbidden
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"success": true, "message": "Order cancelled"})
+	c.JSON(http.StatusOK, gin.H{"success": true, "order": cancelled})
 }
 
 func getOrderHandler(c *gin.Context) {
-	orderID := c.Param("id")
+	orderID, ok := parseOrderID(c.Param("id"))
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
+		return
+	}
 
-	var id uint64
-	fmt.Sscanf(orderID, "%d", &id)
-
-	order, err := orderBook.GetOrder(id)
+	order, err := engine.GetOrder(orderID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-
 	c.JSON(http.StatusOK, order)
 }
 
 func getTraderOrdersHandler(c *gin.Context) {
 	trader := c.Param("address")
-
-	orders := orderBook.GetTraderOrders(trader)
+	orders := make([]orderbook.Order, 0)
+	for _, pair := range engine.ListedPairs() {
+		book, err := engine.Book(pair)
+		if err != nil {
+			continue
+		}
+		orders = append(orders, book.OrdersByTrader(trader)...)
+	}
 	c.JSON(http.StatusOK, gin.H{"orders": orders, "count": len(orders)})
 }
 
 func getMarketDataHandler(c *gin.Context) {
-	pair := c.Param("pair")
-
-	data := orderBook.GetMarketData(pair, 10)
-	c.JSON(http.StatusOK, data)
-}
-
-func getDepthHandler(c *gin.Context) {
-	pair := c.Param("pair")
-
-	data := orderBook.GetMarketData(pair, 10)
+	pair, ok := requirePair(c)
+	if !ok {
+		return
+	}
+	book, err := engine.Book(pair)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	bids, asks := book.Depth(20)
 	c.JSON(http.StatusOK, gin.H{
-		"bids": data.Bids,
-		"asks": data.Asks,
+		"pair":        pair,
+		"bids":        bids,
+		"asks":        asks,
+		"last_price":  book.LastPrice(),
+		"best_bid":    book.BestBid(),
+		"best_ask":    book.BestAsk(),
+		"open_orders": book.OpenOrders(),
 	})
 }
 
-func getTradesHandler(c *gin.Context) {
-	pair := c.Param("pair")
-	limit := 100
-
+func getDepthHandler(c *gin.Context) {
+	pair, ok := requirePair(c)
+	if !ok {
+		return
+	}
+	limit := 20
 	if l := c.Query("limit"); l != "" {
 		fmt.Sscanf(l, "%d", &limit)
 	}
 
-	if redisClient != nil {
-		trades, _ := redisClient.LRange(context.Background(), "trades:"+pair, 0, int64(limit-1)).Result()
-		c.JSON(http.StatusOK, gin.H{"trades": trades, "count": len(trades)})
+	book, err := engine.Book(pair)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	bids, asks := book.Depth(limit)
+	c.JSON(http.StatusOK, gin.H{"pair": pair, "bids": bids, "asks": asks})
+}
 
-	c.JSON(http.StatusOK, gin.H{"trades": []string{}, "count": 0})
+func getTradesHandler(c *gin.Context) {
+	pair, ok := requirePair(c)
+	if !ok {
+		return
+	}
+	limit := 100
+	if l := c.Query("limit"); l != "" {
+		fmt.Sscanf(l, "%d", &limit)
+	}
+
+	book, err := engine.Book(pair)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	trades := book.Trades(limit)
+	c.JSON(http.StatusOK, gin.H{"trades": trades, "count": len(trades)})
 }
 
 func getStatsHandler(c *gin.Context) {
-	stats := orderBook.GetStats()
-	c.JSON(http.StatusOK, stats)
+	c.JSON(http.StatusOK, engine.Stats())
 }
 
 func healthHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status":    "healthy",
 		"timestamp": time.Now().Unix(),
+		"pairs":     len(engine.ListedPairs()),
 	})
+}
+
+// ============== ADMIN PAIR MANAGEMENT ==============
+
+// adminAuth requires the configured admin key. When no key is configured the
+// admin surface is disabled entirely rather than left open.
+func adminAuth(c *gin.Context) {
+	if cfg.AdminKey == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "admin API is disabled: ORDER_MATCHING_ADMIN_KEY is not set"})
+		c.Abort()
+		return
+	}
+	provided := c.GetHeader("X-Admin-Key")
+	if provided == "" {
+		provided = strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+	}
+	if !subtleCompare(provided, cfg.AdminKey) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid admin key"})
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+func listPairsHandler(c *gin.Context) {
+	pairs := engine.ListedPairs()
+	c.JSON(http.StatusOK, gin.H{"pairs": pairs, "count": len(pairs)})
+}
+
+func registerPairHandler(c *gin.Context) {
+	var spec pairSpec
+	if err := c.ShouldBindJSON(&spec); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pair spec"})
+		return
+	}
+	if err := engine.RegisterPair(orderbook.PairConfig{
+		Pair:        spec.Pair,
+		MakerFeeBps: spec.MakerFeeBps,
+		TakerFeeBps: spec.TakerFeeBps,
+		MinQuantity: spec.MinQuantity,
+		MaxQuantity: spec.MaxQuantity,
+	}); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "pair": spec.Pair})
+}
+
+func unregisterPairHandler(c *gin.Context) {
+	pair, ok := requirePair(c)
+	if !ok {
+		return
+	}
+	if !engine.UnregisterPair(pair) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "pair is not listed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "pair": pair})
 }
 
 // ============== WEBSOCKET ==============
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+func newUpgrader(allowed []string) websocket.Upgrader {
+	allowAll := len(allowed) == 0
+	set := make(map[string]bool, len(allowed))
+	for _, o := range allowed {
+		set[o] = true
+	}
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			if allowAll {
+				// With no configured origins only same-host requests are
+				// accepted, so a random page cannot open a socket to the venue.
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true
+				}
+				return sameHost(origin, r.Host)
+			}
+			return set[r.Header.Get("Origin")]
+		},
+	}
 }
 
-func wsHandler(c *gin.Context) {
-	pair := c.Param("pair")
-
-	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	var pubsub *redis.PubSub
-	if redisClient != nil {
-		pubsub = redisClient.Subscribe(context.Background(), "market:"+pair)
-		defer pubsub.Close()
-	}
-
-	// Send initial data
-	data := orderBook.GetMarketData(pair, 10)
-	conn.WriteJSON(gin.H{"type": "snapshot", "data": data})
-
-	// Handle updates
-	for {
-		select {
-		case <-time.After(100 * time.Millisecond):
-			data := orderBook.GetMarketData(pair, 10)
-			conn.WriteJSON(gin.H{"type": "update", "data": data})
-
-		case msg := <-pubsub.Channel():
-			if msg != nil {
-				conn.WriteJSON(gin.H{"type": "trade", "data": msg.Payload})
-			}
+func wsHandler(upgrader websocket.Upgrader) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		pair, ok := requirePair(c)
+		if !ok {
+			return
+		}
+		book, err := engine.Book(pair)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			return
 		}
 
-		// Read client message
-		_, _, err := conn.ReadMessage()
+		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
-			break
+			return
+		}
+		defer conn.Close()
+
+		var pubsub *redis.PubSub
+		if redisClient != nil {
+			pubsub = redisClient.Subscribe(context.Background(), "market:"+pair)
+			defer pubsub.Close()
+		}
+
+		done := make(chan struct{})
+		var once sync.Once
+		closeDone := func() { once.Do(func() { close(done) }) }
+
+		// Reader: detect the client going away.
+		go func() {
+			defer closeDone()
+			for {
+				if _, _, err := conn.ReadMessage(); err != nil {
+					return
+				}
+			}
+		}()
+
+		write := func(v any) error {
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			return conn.WriteJSON(v)
+		}
+
+		bids, asks := book.Depth(20)
+		if err := write(gin.H{"type": "snapshot", "data": gin.H{
+			"pair": pair, "bids": bids, "asks": asks,
+			"last_price": book.LastPrice(),
+		}}); err != nil {
+			return
+		}
+
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+
+		var pubsubCh <-chan *redis.Message
+		if pubsub != nil {
+			pubsubCh = pubsub.Channel()
+		}
+
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				bids, asks := book.Depth(20)
+				if err := write(gin.H{"type": "update", "data": gin.H{
+					"pair": pair, "bids": bids, "asks": asks,
+					"last_price": book.LastPrice(),
+				}}); err != nil {
+					return
+				}
+			case msg, ok := <-pubsubCh:
+				if !ok {
+					pubsubCh = nil
+					continue
+				}
+				if err := write(gin.H{"type": "trade", "data": json.RawMessage(msg.Payload)}); err != nil {
+					return
+				}
+			}
 		}
 	}
 }
@@ -572,6 +446,7 @@ type RateLimiter struct {
 	mu       sync.Mutex
 	limit    int
 	window   time.Duration
+	stop     chan struct{}
 }
 
 func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
@@ -579,15 +454,9 @@ func NewRateLimiter(limit int, window time.Duration) *RateLimiter {
 		requests: make(map[string][]time.Time),
 		limit:    limit,
 		window:   window,
+		stop:     make(chan struct{}),
 	}
-
-	go func() {
-		for {
-			time.Sleep(time.Minute)
-			rl.cleanup()
-		}
-	}()
-
+	go rl.cleanupLoop()
 	return rl
 }
 
@@ -596,8 +465,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 	defer rl.mu.Unlock()
 
 	now := time.Now()
-
-	var valid []time.Time
+	valid := rl.requests[key][:0]
 	for _, t := range rl.requests[key] {
 		if now.Sub(t) < rl.window {
 			valid = append(valid, t)
@@ -613,19 +481,33 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return true
 }
 
+func (rl *RateLimiter) cleanupLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			rl.cleanup()
+		}
+	}
+}
+
+func (rl *RateLimiter) Stop() { close(rl.stop) }
+
 func (rl *RateLimiter) cleanup() {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
 	now := time.Now()
 	for key, requests := range rl.requests {
-		var valid []time.Time
+		valid := requests[:0]
 		for _, t := range requests {
 			if now.Sub(t) < rl.window {
 				valid = append(valid, t)
 			}
 		}
-
 		if len(valid) == 0 {
 			delete(rl.requests, key)
 		} else {
@@ -636,22 +518,56 @@ func (rl *RateLimiter) cleanup() {
 
 // ============== UTILITIES ==============
 
-var orderIDCounter uint64
-var tradeIDCounter uint64
-var idMutex sync.Mutex
-
-func generateOrderID() uint64 {
-	idMutex.Lock()
-	defer idMutex.Unlock()
-	orderIDCounter++
-	return uint64(time.Now().UnixMilli())<<32 | orderIDCounter
+// requirePair reads the pair from the query string. Pairs contain a slash
+// ("BTC/RUSD"), so they cannot travel as a path parameter; the request is
+// answered with 400 when the parameter is missing.
+func requirePair(c *gin.Context) (string, bool) {
+	pair := strings.TrimSpace(c.Query("pair"))
+	if pair == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "pair query parameter is required"})
+		return "", false
+	}
+	return pair, true
 }
 
-func generateTradeID() uint64 {
-	idMutex.Lock()
-	defer idMutex.Unlock()
-	tradeIDCounter++
-	return uint64(time.Now().UnixMilli())<<32 | tradeIDCounter
+func parseOrderID(raw string) (uint64, bool) {
+	var id uint64
+	if _, err := fmt.Sscanf(raw, "%d", &id); err != nil || id == 0 {
+		return 0, false
+	}
+	return id, true
+}
+
+func sameHost(origin, host string) bool {
+	origin = strings.TrimPrefix(strings.TrimPrefix(origin, "http://"), "https://")
+	origin = strings.TrimSuffix(origin, "/")
+	return strings.EqualFold(origin, host)
+}
+
+// subtleCompare compares two secrets without leaking content through timing.
+func subtleCompare(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var diff byte
+	for i := 0; i < len(a); i++ {
+		diff |= a[i] ^ b[i]
+	}
+	return diff == 0
+}
+
+func splitCSV(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getEnv(key, defaultValue string) string {
@@ -661,69 +577,146 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func min(a, b float64) float64 {
-	if a < b {
-		return a
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		var parsed int
+		if _, err := fmt.Sscanf(value, "%d", &parsed); err == nil && parsed > 0 {
+			return parsed
+		}
 	}
-	return b
+	return defaultValue
 }
 
 // ============== MAIN ==============
 
+var (
+	cfg         Config
+	redisClient *redis.Client
+)
+
 func main() {
-	// Initialize Redis
+	cfg = loadConfig()
+
+	specs, err := loadPairSpecs(os.Getenv("ORDER_MATCHING_PAIRS"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "order matching: %v\n", err)
+		os.Exit(1)
+	}
+	for _, s := range specs {
+		if err := engine.RegisterPair(orderbook.PairConfig{
+			Pair:        s.Pair,
+			MakerFeeBps: s.MakerFeeBps,
+			TakerFeeBps: s.TakerFeeBps,
+			MinQuantity: s.MinQuantity,
+			MaxQuantity: s.MaxQuantity,
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "order matching: register %s: %v\n", s.Pair, err)
+			os.Exit(1)
+		}
+	}
+
+	// Redis is used only to fan trades out to subscribers; the engine does not
+	// depend on it to match.
 	redisClient = redis.NewClient(&redis.Options{
-		Addr:     getEnv("REDIS_HOST", "localhost:6379"),
+		Addr:     redisAddr(cfg.RedisURL),
 		Password: getEnv("REDIS_PASSWORD", ""),
 		DB:       0,
 	})
-	defer redisClient.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := redisClient.Ping(ctx).Err(); err != nil {
-		fmt.Printf("Warning: Redis not available: %v\n", err)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		fmt.Printf("Warning: Redis not available, trade fan-out disabled: %v\n", err)
+		redisClient.Close()
 		redisClient = nil
 	}
+	cancel()
 
-	// Initialize order book service
-	orderBook = NewOrderBookService()
+	if redisClient != nil {
+		engine.OnTrade(func(t orderbook.Trade) {
+			data, err := json.Marshal(t)
+			if err != nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			pipe := redisClient.Pipeline()
+			pipe.Publish(ctx, "market:"+t.Pair, data)
+			pipe.LPush(ctx, "trades:"+t.Pair, data)
+			pipe.LTrim(ctx, "trades:"+t.Pair, 0, 999)
+			_, _ = pipe.Exec(ctx)
+		})
+	}
 
-	// Setup Gin
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.Use(gin.Logger())
 
-	// Rate limiting
 	rateLimiter := NewRateLimiter(cfg.RateLimit, time.Second)
+	defer rateLimiter.Stop()
 	r.Use(func(c *gin.Context) {
 		if !rateLimiter.Allow(c.ClientIP()) {
-			c.JSON(http.StatusTooManyRequests, gin.H{
-				"error": "Rate limit exceeded",
-			})
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
 			c.Abort()
 			return
 		}
 		c.Next()
 	})
 
-	// Setup routes
-	setupRoutes(r)
+	api := r.Group("/api/v1")
+	{
+		api.POST("/orders", submitOrderHandler)
+		api.DELETE("/orders/:id", cancelOrderHandler)
+		api.GET("/orders/:id", getOrderHandler)
+		api.GET("/orders/trader/:address", getTraderOrdersHandler)
+		api.GET("/market", getMarketDataHandler)
+		api.GET("/market/depth", getDepthHandler)
+		api.GET("/market/trades", getTradesHandler)
+		api.GET("/pairs", listPairsHandler)
+		api.GET("/stats", getStatsHandler)
+		api.GET("/health", healthHandler)
 
-	// Start server
-	fmt.Printf("TigerSwap Order Matching Engine starting on port %s\n", cfg.Port)
-	fmt.Printf("Redis: %s\n", cfg.RedisURL)
+		admin := api.Group("/admin", adminAuth)
+		{
+			admin.POST("/pairs", registerPairHandler)
+			admin.DELETE("/pairs", unregisterPairHandler)
+		}
+	}
+
+	r.GET("/ws", wsHandler(newUpgrader(cfg.AllowedOrigins)))
+
+	srv := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		fmt.Printf("TigerSwap order matching engine listening on port %s with %d listed pairs\n", cfg.Port, len(engine.ListedPairs()))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "order matching: server error: %v\n", err)
+			os.Exit(1)
+		}
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
 
-	go func() {
-		<-quit
-		fmt.Println("\nShutting down...")
-		os.Exit(0)
-	}()
+	fmt.Println("Shutting down...")
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "order matching: shutdown error: %v\n", err)
+	}
+	if redisClient != nil {
+		redisClient.Close()
+	}
+}
 
-	r.Run(":" + cfg.Port)
+// redisAddr extracts host:port from a redis:// URL, falling back to the raw
+// value so a plain host:port is also accepted.
+func redisAddr(raw string) string {
+	if strings.HasPrefix(raw, "redis://") {
+		return strings.TrimPrefix(raw, "redis://")
+	}
+	return raw
 }

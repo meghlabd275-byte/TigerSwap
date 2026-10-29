@@ -16,15 +16,14 @@ import {
   useBorrowMargin,
   useDepositMarginCollateral,
   useMarginAccount,
+  useMarginMarkets,
   useOpenMarginAccount,
   useRepayMargin,
 } from '@/hooks/useApi';
 import { isAuthenticated } from '@/lib/auth';
 
-const DEFAULT_PAIRS = ['BTC/RUSD', 'ETH/RUSD'];
-
 export function MarginTrading() {
-  const [pair, setPair] = useState(DEFAULT_PAIRS[0]);
+  const [pair, setPair] = useState('');
   const [accountId, setAccountId] = useState<string | null>(null);
   const [collateralAsset, setCollateralAsset] = useState('BTC');
   const [collateralAmount, setCollateralAmount] = useState('');
@@ -32,6 +31,10 @@ export function MarginTrading() {
   const [borrowAmount, setBorrowAmount] = useState('');
   const [repayAmount, setRepayAmount] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+
+  const marketsQuery = useMarginMarkets();
+  const markets = marketsQuery.data ?? [];
+  const selectedPair = pair || markets[0]?.pair || '';
 
   const accountQuery = useMarginAccount(accountId);
   const openAccount = useOpenMarginAccount();
@@ -47,8 +50,12 @@ export function MarginTrading() {
       setFormError('Sign in to open a margin account.');
       return;
     }
+    if (!selectedPair) {
+      setFormError('No margin market is available.');
+      return;
+    }
     openAccount.mutate(
-      { pair },
+      { pair: selectedPair },
       {
         onSuccess: (account) => setAccountId(account.id),
         onError: (error) => setFormError(error.message),
@@ -84,25 +91,38 @@ export function MarginTrading() {
         <div className="flex space-x-2">
           <select
             id="margin-pair"
-            value={pair}
+            value={selectedPair}
             onChange={(event) => setPair(event.target.value)}
-            className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
+            disabled={markets.length === 0}
+            className="flex-1 bg-white/10 border border-white/20 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange disabled:text-gray-500"
           >
-            {DEFAULT_PAIRS.map((option) => (
-              <option key={option} value={option} className="bg-gray-900">
-                {option}
+            {markets.length === 0 ? (
+              <option value="" className="bg-gray-900">
+                {marketsQuery.isPending ? 'Loading markets…' : 'No margin markets available'}
               </option>
-            ))}
+            ) : (
+              markets.map((market) => (
+                <option key={market.pair} value={market.pair} className="bg-gray-900">
+                  {market.pair} · {market.max_leverage}x
+                </option>
+              ))
+            )}
           </select>
           <button
             onClick={handleOpen}
-            disabled={openAccount.isPending || accountId !== null}
+            disabled={openAccount.isPending || accountId !== null || !selectedPair}
             className="px-4 py-3 rounded-xl font-medium bg-tiger-orange text-white disabled:bg-gray-700 disabled:text-gray-500"
           >
             {openAccount.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Open account'}
           </button>
         </div>
       </div>
+
+      {marketsQuery.error && (
+        <p className="text-red-400 text-xs mb-3" role="alert">
+          {marketsQuery.error.message}
+        </p>
+      )}
 
       {formError && (
         <p className="text-red-400 text-xs mb-3" role="alert">
