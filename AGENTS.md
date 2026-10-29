@@ -223,3 +223,24 @@ suite imports `forge-std`.
 There is no `go.mod` at the repository root, so `actions/setup-go` needs an
 explicit `cache-dependency-path` listing `backend/go.sum` and
 `backend/go/api_gateway/go.sum`, or the cache restore fails.
+
+## Matching engine invariants
+
+`backend/cpp/include/tigerswap/order_book.hpp` keeps the book uncrossed: the best
+bid is always below the best ask. Two rules enforce it and must both hold.
+
+- An order may only rest when its price does not cross the opposite best. A
+  remainder that still crosses could only be blocked by the submitting trader's
+  own resting liquidity (self-trade prevention stops at it), so it is rejected
+  as `SelfTradePrevented` instead of resting. Resting it would leave a crossed
+  book.
+- `fillable_quantity` must count only liquidity the taker may trade against.
+  Self-owned orders are excluded because `match_at_level` stops at them; counting
+  them lets fill-or-kill accept an order that can never fill.
+
+Engine API notes: the bearer token is the configured secret itself, not
+`id:secret`. Pair config entries are `symbol:tick:maker_bps:taker_bps`. Orders
+need a `trader` field. The engine binds `TIGERSWAP_BIND`/`TIGERSWAP_PORT` and
+writes its write-ahead log to `TIGERSWAP_WAL` (default
+`/var/lib/tigerswap/engine.wal`, which does not exist on a clean machine — set it
+to a writable path when running locally).
