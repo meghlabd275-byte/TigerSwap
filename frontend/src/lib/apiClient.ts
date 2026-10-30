@@ -220,9 +220,13 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
 /**
  * Pulls a human-readable message out of an error body without trusting its
  * shape. Falls back to a generic message for the status code.
+ *
+ * A 5xx body is server-side detail (stack traces, driver messages, internal
+ * hostnames) and is deliberately not shown to the user; those responses always
+ * render the generic message for their status.
  */
 function extractErrorMessage(text: string, status: number): string {
-  if (text.length > 0 && text.length < 4096) {
+  if (status < 500 && text.length > 0 && text.length < 4096) {
     try {
       const parsed = JSON.parse(text) as unknown;
       if (parsed && typeof parsed === "object") {

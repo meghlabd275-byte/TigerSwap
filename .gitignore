@@ -6,6 +6,8 @@ package-lock.json
 .next/
 dist/
 build/
+.test-build/
+tsconfig.tsbuildinfo
 
 # Environment
 .env

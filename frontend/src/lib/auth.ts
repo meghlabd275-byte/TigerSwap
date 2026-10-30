@@ -69,11 +69,28 @@ export function validatePassword(password: string): string | null {
   if (password.length < 12) {
     return "Password must be at least 12 characters";
   }
+  // bcrypt hashes at most 72 bytes and ignores the remainder, so the server
+  // rejects longer passwords rather than accept two that share a prefix.
+  if (new TextEncoder().encode(password).length > 72) {
+    return "Password must be at most 72 bytes";
+  }
   if (!/[a-z]/.test(password) || !/[A-Z]/.test(password)) {
     return "Password must contain both upper and lower case letters";
   }
   if (!/[0-9]/.test(password)) {
     return "Password must contain a digit";
+  }
+  return null;
+}
+
+/** Username rules, mirrored from the server so the user gets fast feedback. */
+export function validateUsername(username: string): string | null {
+  const trimmed = username.trim();
+  if (trimmed.length < 3 || trimmed.length > 32) {
+    return "Username must be between 3 and 32 characters";
+  }
+  if (!/^[A-Za-z0-9_.-]+$/.test(trimmed)) {
+    return "Username may only contain letters, digits, underscore, hyphen and dot";
   }
   return null;
 }
@@ -114,8 +131,23 @@ export async function login(email: string, password: string): Promise<SessionUse
   return user;
 }
 
-export async function register(email: string, password: string): Promise<SessionUser> {
-  await api.post("/auth/register", { email, password }, { authenticated: false });
+export async function register(
+  email: string,
+  password: string,
+  username: string,
+): Promise<SessionUser> {
+  // The server requires a username and rejects anything outside its character
+  // set; sending it here is what makes registration succeed at all.
+  const usernameError = validateUsername(username);
+  if (usernameError) {
+    throw new Error(usernameError);
+  }
+
+  await api.post(
+    "/auth/register",
+    { email, password, username: username.trim() },
+    { authenticated: false },
+  );
   return login(email, password);
 }
 
