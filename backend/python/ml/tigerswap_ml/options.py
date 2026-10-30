@@ -148,6 +148,12 @@ class BlackScholes:
         kind = option_type.lower()
         if kind not in ("call", "put"):
             raise ValueError("option_type must be 'call' or 'put'")
+        if volatility <= 0:
+            # Gamma and vega both divide by volatility, and the sensitivities
+            # are not well defined at zero volatility (the terminal
+            # distribution is a point mass), so reject rather than divide by
+            # zero. Use price() for the deterministic value.
+            raise ValueError("greeks require a positive volatility")
 
         d1, d2 = BlackScholes._d1_d2(spot, strike, rate, dividend_yield, volatility, time_to_expiry)
         discount_q = math.exp(-dividend_yield * time_to_expiry)

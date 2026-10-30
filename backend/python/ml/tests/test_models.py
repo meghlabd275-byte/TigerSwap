@@ -712,3 +712,110 @@ def test_risk_engine_rejects_an_invalid_confidence():
 def test_stable_swap_rejects_mismatched_indices():
     with pytest.raises(ValueError):
         StableSwap().out_amount(100.0, 0, 0, [1000.0, 1000.0])
+
+
+# --- Regression tests for defects found in review -------------------------
+#
+# Each of these pins a property that the implementation previously violated, so
+# the specific defect cannot return unnoticed.
+
+
+def test_skewness_and_kurtosis_use_one_consistent_scale():
+    """Skewness and kurtosis must not mix population moments with a sample scale.
+
+    Previously the third and fourth central moments used a 1/n divisor while
+    the scale came from the (n-1) sample standard deviation, which scaled the
+    skewness by ((n-1)/n)**1.5 and the kurtosis by an unrelated factor.
+    """
+    data = [-0.02, 0.01, 0.03, -0.05, 0.02, 0.07, -0.01, 0.04, -0.03, 0.06, 0.0, 0.05]
+    count = len(data)
+    mu = sum(data) / count
+    m2 = sum((value - mu) ** 2 for value in data) / count
+    m3 = sum((value - mu) ** 3 for value in data) / count
+    m4 = sum((value - mu) ** 4 for value in data) / count
+
+    engine = RiskEngine()
+    assert engine.skewness(data) == pytest.approx(m3 / m2**1.5, rel=1e-12)
+    assert engine.kurtosis(data) == pytest.approx(m4 / m2**2 - 3.0, rel=1e-12)
+
+
+def test_benford_leading_digit_is_exact_for_powers_of_ten():
+    """A power of ten must report digit 1, not the digit below it.
+
+    Floating point makes `10.0**k` slightly below the exact value, so dividing
+    by it and truncating previously produced 9 (or 0) instead of 1.
+    """
+    detector = BenfordDetector()
+    for exponent in range(0, 12):
+        assert detector.leading_digit(10.0**exponent) == 1
+        assert detector.leading_digit(2.0 * 10.0**exponent) == 2
+
+    distribution = detector.observed_distribution([1000.0, 100.0, 10.0, 10000.0])
+    assert distribution[0] == pytest.approx(1.0)
+    assert sum(distribution[1:]) == pytest.approx(0.0)
+
+
+def test_benford_chi_square_ignores_values_without_a_leading_digit():
+    """Zeros and non-finite values must not be counted as observations."""
+    detector = BenfordDetector()
+    assert detector.chi_square([0.0, 0.0]) == pytest.approx(0.0)
+    assert detector.chi_square([]) == pytest.approx(0.0)
+    # Adding values with no digit must not change the statistic.
+    assert detector.chi_square([1.0, 2.0, 0.0]) == pytest.approx(
+        detector.chi_square([1.0, 2.0])
+    )
+
+
+def test_smart_router_is_optimal_across_more_than_two_venues():
+    """The split must maximise total output, not just search the first venue.
+
+    Previously a three-venue split routed most of the order to the smallest
+    pool and lost about 9% of the achievable output.
+    """
+    venues = [
+        {"name": "A", "reserve_in": 1_000_000.0, "reserve_out": 1_000_000.0, "fee_bps": 30},
+        {"name": "B", "reserve_in": 5_000_000.0, "reserve_out": 5_000_000.0, "fee_bps": 30},
+        {"name": "C", "reserve_in": 100_000.0, "reserve_out": 100_000.0, "fee_bps": 30},
+    ]
+    amount = 200_000.0
+    quote = SmartRouter().optimal_split(amount, venues)
+
+    best = 0.0
+    steps = 200
+    for first in range(steps + 1):
+        for second in range(steps + 1 - first):
+            split = [
+                amount * first / steps,
+                amount * second / steps,
+                amount * (steps - first - second) / steps,
+            ]
+            total = sum(
+                constant_product_out(leg, venue["reserve_in"], venue["reserve_out"], 30)
+                for leg, venue in zip(split, venues)
+                if leg > 0
+            )
+            best = max(best, total)
+
+    assert quote.total_out >= best - 1e-6
+    assert quote.total_in == pytest.approx(amount)
+
+
+def test_smart_router_preserves_the_input_amount():
+    """No allocation scheme may consume or create input."""
+    venues = [
+        {"name": "x", "reserve_in": 1_000_000.0, "reserve_out": 1_000_000.0, "fee_bps": 30},
+        {"name": "y", "reserve_in": 500_000.0, "reserve_out": 500_000.0, "fee_bps": 5},
+        {"name": "z", "reserve_in": 250_000.0, "reserve_out": 250_000.0, "fee_bps": 100},
+    ]
+    amount = 75_000.0
+    quote = SmartRouter().optimal_split(amount, venues)
+    assert sum(leg.amount_in for leg in quote.allocations) == pytest.approx(amount)
+
+
+def test_greeks_reject_zero_volatility_instead_of_dividing_by_zero():
+    """Gamma and vega divide by volatility, so zero must be rejected."""
+    with pytest.raises(ValueError):
+        BlackScholes.greeks(100.0, 100.0, 0.05, 0.0, 1.0, "call")
+    # The deterministic price is still available at zero volatility.
+    value = BlackScholes.call_price(100.0, 100.0, 0.05, 0.0, 1.0)
+    assert value == pytest.approx(max(0.0, 100.0 - 100.0 * math.exp(-0.05)), abs=1e-9)

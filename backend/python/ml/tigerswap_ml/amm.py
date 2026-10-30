@@ -82,7 +82,9 @@ def price_impact(
 def impermanent_loss(price_ratio: float) -> float:
     """Impermanent loss of a V2 LP for a price ratio of new/initial price.
 
-    Returns a positive fraction representing the loss versus simply holding.
+    Returns the return of the LP position relative to holding: zero at parity
+    and negative when the price moves (for example -0.0572 for a 2x move), so
+    a caller reports the loss as `-impermanent_loss(ratio)`.
     """
     if price_ratio <= 0:
         raise ValueError("price_ratio must be positive")
@@ -264,8 +266,11 @@ class SmartRouter:
         """Finds the output-maximising split of `amount_in` across venues.
 
         Each venue is a mapping with `name`, `reserve_in`, `reserve_out` and
-        `fee_bps`. The objective is concave in the split fraction, so a ternary
-        search converges to the optimum.
+        `fee_bps`. For constant-product venues the objective is concave in the
+        allocations, so the optimum is found exactly: the closed-form
+        proportional split (input proportional to input reserves) is optimal
+        whenever the fee tiers match, and coordinate ascent polishes it when
+        they differ.
         """
         if amount_in <= 0:
             raise ValueError("amount_in must be positive")
@@ -282,124 +287,105 @@ class SmartRouter:
             )
             return self._build_quote([(0, amount_in, out)], venues)
 
-        # Ternary search on the fraction routed to the first venue. For two
-        # venues this is exact; for more, venues are folded in order.
-        low = 0.0
-        high = 1.0
+        shares = self._proportional_shares(amount_in, venues)
+        shares = self._refine_shares(amount_in, venues, shares)
 
-        def total_out(fraction: float) -> float:
-            return self._evaluate_split(amount_in, venues, fraction)
-
-        for _ in range(self.max_iterations):
-            if high - low < self.tolerance:
-                break
-            third = (high - low) / 3.0
-            left = low + third
-            right = high - third
-            if total_out(left) < total_out(right):
-                low = left
-            else:
-                high = right
-
-        best_fraction = (low + high) / 2.0
-        return self._quote_for_fraction(amount_in, venues, best_fraction)
-
-    def _evaluate_split(
-        self, amount_in: float, venues: Sequence[Dict[str, float]], first_fraction: float
-    ) -> float:
-        """Total output when `first_fraction` of the order goes to the first venue."""
-        if len(venues) == 2:
-            first_in = amount_in * first_fraction
-            second_in = amount_in - first_in
-            total = 0.0
-            total += constant_product_out(
-                first_in, venues[0]["reserve_in"], venues[0]["reserve_out"],
-                int(venues[0].get("fee_bps", 30)),
-            ) if first_in > 0 else 0.0
-            total += constant_product_out(
-                second_in, venues[1]["reserve_in"], venues[1]["reserve_out"],
-                int(venues[1].get("fee_bps", 30)),
-            ) if second_in > 0 else 0.0
-            return total
-
-        # For more than two venues, split the remainder evenly among the rest
-        # and search on the first venue's share.
-        first_in = amount_in * first_fraction
-        remainder = amount_in - first_in
-        share = remainder / (len(venues) - 1)
-
-        total = 0.0
-        if first_in > 0:
-            total += constant_product_out(
-                first_in, venues[0]["reserve_in"], venues[0]["reserve_out"],
-                int(venues[0].get("fee_bps", 30)),
-            )
-        for venue in venues[1:]:
-            if share > 0:
-                total += constant_product_out(
-                    share, venue["reserve_in"], venue["reserve_out"], int(venue.get("fee_bps", 30))
-                )
-        return total
-
-    def _quote_for_fraction(
-        self, amount_in: float, venues: Sequence[Dict[str, float]], first_fraction: float
-    ) -> RouteQuote:
         allocations: List[tuple[int, float, float]] = []
-
-        if len(venues) == 2:
-            first_in = amount_in * first_fraction
-            second_in = amount_in - first_in
-            if first_in > 0:
-                allocations.append(
-                    (
-                        0,
-                        first_in,
-                        constant_product_out(
-                            first_in, venues[0]["reserve_in"], venues[0]["reserve_out"],
-                            int(venues[0].get("fee_bps", 30)),
-                        ),
-                    )
+        for index, share in enumerate(shares):
+            if share <= 0:
+                continue
+            allocations.append(
+                (
+                    index,
+                    share,
+                    self._venue_out(share, venues[index]),
                 )
-            if second_in > 0:
-                allocations.append(
-                    (
-                        1,
-                        second_in,
-                        constant_product_out(
-                            second_in, venues[1]["reserve_in"], venues[1]["reserve_out"],
-                            int(venues[1].get("fee_bps", 30)),
-                        ),
-                    )
-                )
-        else:
-            first_in = amount_in * first_fraction
-            remainder = amount_in - first_in
-            share = remainder / (len(venues) - 1)
-            if first_in > 0:
-                allocations.append(
-                    (
-                        0,
-                        first_in,
-                        constant_product_out(
-                            first_in, venues[0]["reserve_in"], venues[0]["reserve_out"],
-                            int(venues[0].get("fee_bps", 30)),
-                        ),
-                    )
-                )
-            for index, venue in enumerate(venues[1:], start=1):
-                if share > 0:
-                    allocations.append(
-                        (
-                            index,
-                            share,
-                            constant_product_out(
-                                share, venue["reserve_in"], venue["reserve_out"],
-                                int(venue.get("fee_bps", 30)),
-                            ),
-                        )
-                    )
-
+            )
         return self._build_quote(allocations, venues)
+
+    @staticmethod
+    def _venue_out(amount: float, venue: Dict[str, float]) -> float:
+        if amount <= 0:
+            return 0.0
+        return constant_product_out(
+            amount, venue["reserve_in"], venue["reserve_out"], int(venue.get("fee_bps", 30))
+        )
+
+    def _proportional_shares(
+        self, amount_in: float, venues: Sequence[Dict[str, float]]
+    ) -> List[float]:
+        """Closed-form optimal split for constant-product venues.
+
+        With a common fee factor the output of venue i is
+        `R_out,i * x_i / (R_in,i + x_i)`, which is maximised subject to a fixed
+        total when `x_i / R_in,i` is equal across venues, i.e. when each
+        allocation is proportional to that venue's input reserve.
+        """
+        reserves = [float(venue["reserve_in"]) for venue in venues]
+        total = math.fsum(reserves)
+        if total <= 0:
+            raise ValueError("reserves must be positive")
+        return [amount_in * reserve / total for reserve in reserves]
+
+    def _total_out(self, amounts: Sequence[float], venues: Sequence[Dict[str, float]]) -> float:
+        return math.fsum(self._venue_out(amount, venue) for amount, venue in zip(amounts, venues))
+
+    def _refine_shares(
+        self,
+        amount_in: float,
+        venues: Sequence[Dict[str, float]],
+        shares: Sequence[float],
+    ) -> List[float]:
+        """Polishes the split with pairwise transfers.
+
+        Moving an amount between two venues keeps the total allocated exactly,
+        and the two-venue objective is concave in the amount moved, so a ternary
+        search finds the best transfer for that pair. Sweeping every ordered
+        pair converges to the global optimum and corrects the starting point
+        when the venues charge different fees.
+        """
+        amounts = list(shares)
+        best = self._total_out(amounts, venues)
+        improvement_floor = 1e-12 * max(1.0, abs(best))
+
+        for _ in range(min(self.max_iterations, 100)):
+            improved = False
+            for source in range(len(venues)):
+                for sink in range(len(venues)):
+                    if source == sink or amounts[source] <= 0:
+                        continue
+
+                    def objective(delta: float, source: int = source, sink: int = sink) -> float:
+                        trial = list(amounts)
+                        trial[sink] += delta
+                        trial[source] -= delta
+                        return self._total_out(trial, venues)
+
+                    low = 0.0
+                    high = amounts[source]
+                    for _ in range(80):
+                        if high - low < self.tolerance:
+                            break
+                        third = (high - low) / 3.0
+                        left = low + third
+                        right = high - third
+                        if objective(left) < objective(right):
+                            low = left
+                        else:
+                            high = right
+
+                    delta = 0.5 * (low + high)
+                    value = objective(delta)
+                    if value > best + improvement_floor:
+                        amounts[sink] += delta
+                        amounts[source] -= delta
+                        best = value
+                        improved = True
+
+            if not improved:
+                break
+
+        return amounts
 
     def _build_quote(
         self, allocations: Sequence[tuple[int, float, float]], venues: Sequence[Dict[str, float]]

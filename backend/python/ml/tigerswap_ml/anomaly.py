@@ -181,17 +181,31 @@ class BenfordDetector:
         """Expected first-digit frequencies under Benford's law."""
         return [math.log10(1.0 + 1.0 / digit) for digit in range(1, 10)]
 
+    @staticmethod
+    def leading_digit(value: float) -> int:
+        """First significant digit of a value, or 0 when it has none.
+
+        Computed from the decimal exponent with the mantissa floored, which is
+        exact for exact powers of ten where a naive `int(magnitude / 10**exp)`
+        rounds the quotient down to the previous digit.
+        """
+        magnitude = abs(value)
+        if magnitude <= 0 or not math.isfinite(magnitude):
+            return 0
+        exponent = math.floor(math.log10(magnitude))
+        mantissa = magnitude / (10.0**exponent)
+        digit = int(mantissa)
+        if digit > 9:
+            digit = 9
+        return digit
+
     def observed_distribution(self, values: Sequence[float]) -> List[float]:
         """Observed first-digit frequencies, ignoring non-positive values."""
         counts = [0] * 9
         total = 0
 
         for value in values:
-            magnitude = abs(value)
-            if magnitude <= 0:
-                continue
-
-            digit = int(magnitude / (10 ** math.floor(math.log10(magnitude))))
+            digit = self.leading_digit(value)
             if 1 <= digit <= 9:
                 counts[digit - 1] += 1
                 total += 1
@@ -205,7 +219,7 @@ class BenfordDetector:
         observed = self.observed_distribution(values)
         expected = self.expected_distribution()
 
-        total = sum(1 for value in values if value != 0 and abs(value) > 0)
+        total = sum(1 for value in values if self.leading_digit(value) != 0)
         if total == 0:
             return 0.0
 

@@ -155,28 +155,33 @@ class RiskEngine:
         )
 
     def skewness(self, returns: Sequence[float]) -> float:
-        """Sample skewness (third standardised moment)."""
-        if len(returns) < 3:
-            return 0.0
-        sigma = mathx.stdev(returns)
-        if sigma == 0.0:
+        """Sample skewness (third standardised central moment).
+
+        The third moment and the scale use the same divisor, so the statistic
+        does not depend on an arbitrary mix of the population and sample
+        conventions.
+        """
+        count = len(returns)
+        if count < 3:
             return 0.0
         mu = mathx.mean(returns)
-        count = len(returns)
-        moment = math.fsum((value - mu) ** 3 for value in returns) / count
-        return moment / (sigma**3)
+        m2 = math.fsum((value - mu) ** 2 for value in returns) / count
+        if m2 == 0.0:
+            return 0.0
+        m3 = math.fsum((value - mu) ** 3 for value in returns) / count
+        return m3 / (m2**1.5)
 
     def kurtosis(self, returns: Sequence[float]) -> float:
-        """Excess kurtosis (fourth standardised moment minus 3)."""
-        if len(returns) < 4:
-            return 0.0
-        sigma = mathx.stdev(returns)
-        if sigma == 0.0:
+        """Excess kurtosis (fourth standardised central moment minus 3)."""
+        count = len(returns)
+        if count < 4:
             return 0.0
         mu = mathx.mean(returns)
-        count = len(returns)
-        moment = math.fsum((value - mu) ** 4 for value in returns) / count
-        return moment / (sigma**4) - 3.0
+        m2 = math.fsum((value - mu) ** 2 for value in returns) / count
+        if m2 == 0.0:
+            return 0.0
+        m4 = math.fsum((value - mu) ** 4 for value in returns) / count
+        return m4 / (m2**2) - 3.0
 
     def liquidation_probability(
         self,
