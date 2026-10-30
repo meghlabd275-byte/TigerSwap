@@ -63,6 +63,21 @@ jobs:
           mkdir -p build && cd build
           cmake .. && make && ctest --output-on-failure
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Python tests
+        run: |
+          set -e
+          python -m pip install --quiet --upgrade pip
+          # The ML models are standard library only; the SDK talks to the chain
+          # and needs web3.
+          python -m pip install --quiet pytest "web3>=6.0.0" "eth-account>=0.9.0" "eth-typing>=4.0.0"
+          cd "$GITHUB_WORKSPACE/backend/python/ml" && python -m pytest tests/ -q
+          cd "$GITHUB_WORKSPACE/backend/python/sdk" && python -m pytest tests/ -q
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
