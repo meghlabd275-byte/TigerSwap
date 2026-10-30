@@ -183,6 +183,33 @@ void test_fok_fills_when_liquid() {
     CHECK_EQ(result.report.remaining, 0u);
 }
 
+void test_fok_market_order_is_symmetric_across_sides() {
+    // A market order carries no price limit, so a fill-or-kill market buy must be
+    // judged against the whole book exactly like the matching sell.
+    OrderBook bids(1, 1, 0, 2);
+    bids.submit(make_limit(1, 100, 50'000, 30, Side::Buy));
+    const auto sell = bids.submit(make_market(2, 20, 20, Side::Sell), TimeInForce::Fok);
+    CHECK(sell.report.accepted);
+    CHECK_EQ(sell.report.remaining, 0u);
+
+    OrderBook asks(1, 1, 0, 2);
+    asks.submit(make_limit(1, 100, 50'000, 30, Side::Sell));
+    const auto buy = asks.submit(make_market(2, 20, 20, Side::Buy), TimeInForce::Fok);
+    CHECK(buy.report.accepted);
+    CHECK_EQ(buy.report.remaining, 0u);
+    CHECK_EQ(buy.report.filled, 20u);
+}
+
+void test_fok_market_order_rejects_when_thin() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 50'000, 5, Side::Sell));
+
+    const auto result = book.submit(make_market(2, 20, 20, Side::Buy), TimeInForce::Fok);
+    CHECK(!result.report.accepted);
+    CHECK(result.report.reason == RejectReason::FillOrKillUnfillable);
+    CHECK_EQ(book.total_trades(), 0u);
+}
+
 void test_post_only() {
     OrderBook book(1, 1, 0, 2);
     book.submit(make_limit(1, 100, 50'000, 5, Side::Sell));
@@ -969,6 +996,8 @@ int main() {
     test_open_orders_counts_only_resting();
     test_fok_rejects_thin_book();
     test_fok_fills_when_liquid();
+    test_fok_market_order_is_symmetric_across_sides();
+    test_fok_market_order_rejects_when_thin();
     test_post_only();
     test_market_sweeps_levels();
     test_market_without_liquidity_rejected();

@@ -37,6 +37,19 @@ enable_testing()
 
 add_executable(tigerswap_tests tests/engine_tests.cpp)
 target_link_libraries(tigerswap_tests PRIVATE tigerswap_engine_core)
-add_test(NAME tigerswap_tests COMMAND tigerswap_tests)
+
+# ThreadSanitizer needs a flat address space and aborts with "unexpected memory
+# mapping" under the default PIE + ASLR layout, so under TSan the test runs
+# through `setarch -R` when that tool is available.
+if(CMAKE_CXX_FLAGS MATCHES "fsanitize=thread")
+    find_program(SETARCH_EXECUTABLE setarch)
+endif()
+
+if(SETARCH_EXECUTABLE)
+    add_test(NAME tigerswap_tests
+        COMMAND ${SETARCH_EXECUTABLE} ${CMAKE_SYSTEM_PROCESSOR} -R $<TARGET_FILE:tigerswap_tests>)
+else()
+    add_test(NAME tigerswap_tests COMMAND tigerswap_tests)
+endif()
 
 install(TARGETS tigerswap_engine RUNTIME DESTINATION bin)

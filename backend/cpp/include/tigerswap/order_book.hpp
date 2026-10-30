@@ -530,11 +530,16 @@ private:
     uint64_t fillable_quantity(const Order& order) const {
         uint64_t available = 0;
 
+        // A market order has no price bound, so it can take every level. Applying
+        // the price limit to it would make the check depend on a placeholder price
+        // and reject, for example, every fill-or-kill market buy.
+        const bool is_market = order.type == OrderType::Market;
+
         // Self-owned orders are excluded: match_at_level stops at them, so they can
         // never contribute to a fill.
         if (order.side == Side::Buy) {
             for (auto it = asks_.begin(); it != asks_.end(); ++it) {
-                if (it->first > order.price) {
+                if (!is_market && it->first > order.price) {
                     break;
                 }
                 available += tradable_quantity(it->second, order.trader);
@@ -544,7 +549,7 @@ private:
             }
         } else {
             for (auto it = bids_.begin(); it != bids_.end(); ++it) {
-                if (it->first < order.price) {
+                if (!is_market && it->first < order.price) {
                     break;
                 }
                 available += tradable_quantity(it->second, order.trader);
