@@ -333,17 +333,11 @@ func (e *CopyTradingEngine) getPriceForPair(ctx context.Context, pair string) (f
 	return priceData.USD, nil
 }
 
+// calculateCopyPNL mirrors the perpetual engine's PnL: `Size` is the notional
+// value of the copied position, so the leverage is already reflected in the
+// collateral and must not be applied again to the price move.
 func (e *CopyTradingEngine) calculateCopyPNL(position *CopyPosition) string {
-	size := parseFloat(position.Size)
-
-	var pnl float64
-	if position.Side == "long" {
-		pnl = (position.CurrentPrice - position.EntryPrice) * size / position.EntryPrice * float64(position.Leverage)
-	} else {
-		pnl = (position.EntryPrice - position.CurrentPrice) * size / position.EntryPrice * float64(position.Leverage)
-	}
-
-	return fmt.Sprintf("%.8f", pnl)
+	return fmt.Sprintf("%.8f", notionalPNL(position.EntryPrice, position.CurrentPrice, position.Size, position.Side))
 }
 
 // API Handlers

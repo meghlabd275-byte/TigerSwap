@@ -519,18 +519,29 @@ func (e *PerpetualEngine) isLiquidatable(position *PerpetualPosition) bool {
 	return position.MarkPrice >= position.LiquidationPrice
 }
 
+// calculatePNL returns the position's profit and loss in settlement terms.
+//
+// `position.Size` is the notional value of the position in quote terms: the
+// open path requires `size / leverage` of collateral, so a size of 10,000 at
+// 10x is a 1,000 margin position controlling 10,000 of notional. PnL is
+// therefore the price move applied to that notional. Multiplying by the
+// leverage a second time would report ten times the true profit, which is why
+// it is deliberately absent here.
 func (e *PerpetualEngine) calculatePNL(position *PerpetualPosition, currentPrice float64) string {
-	size := parseFloat(position.Size)
-	entryPrice := position.EntryPrice
+	return fmt.Sprintf("%.8f", notionalPNL(position.EntryPrice, currentPrice, position.Size, position.Side))
+}
 
-	var pnl float64
-	if position.Side == "long" {
-		pnl = (currentPrice - entryPrice) * size / entryPrice * float64(position.Leverage)
-	} else {
-		pnl = (entryPrice - currentPrice) * size / entryPrice * float64(position.Leverage)
+// notionalPNL computes the PnL of a position whose size is a notional amount.
+func notionalPNL(entryPrice, currentPrice float64, size, side string) float64 {
+	if entryPrice <= 0 {
+		return 0
 	}
-
-	return fmt.Sprintf("%.8f", pnl)
+	notional := parseFloat(size)
+	move := (currentPrice - entryPrice) / entryPrice
+	if strings.EqualFold(side, "short") {
+		move = -move
+	}
+	return move * notional
 }
 
 func (e *PerpetualEngine) isValidPair(pair string) bool {

@@ -145,14 +145,25 @@ func Load() (*Config, error) {
 	// Request timeout
 	cfg.RequestTimeout = getEnvAsDuration("REQUEST_TIMEOUT", 30*time.Second)
 
-	// JWT
+	// JWT. There is deliberately no default secret: a well-known fallback would
+	// let anyone mint a valid token for any user, so an unset JWT_SECRET must
+	// fail closed at startup rather than run insecurely.
+	secret := os.Getenv("JWT_SECRET")
+	if len(secret) < minJWTSecretLength {
+		return nil, fmt.Errorf(
+			"JWT_SECRET must be set to at least %d characters", minJWTSecretLength,
+		)
+	}
 	cfg.JWT = JWTConfig{
-		Secret:          getEnv("JWT_SECRET", "tigerswap-secret-key-change-in-production"),
+		Secret:          secret,
 		ExpirationHours: getEnvAsInt("JWT_EXPIRATION_HOURS", 24),
 	}
 
 	return cfg, nil
 }
+
+// minJWTSecretLength is the shortest HS256 secret accepted at startup.
+const minJWTSecretLength = 32
 
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
