@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -157,9 +158,11 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	amountFloat := parseFloat(amount)
-	// Calculate fee
-	feeAmount := s.calculateFee(amountFloat, s.config.SwapFeePercent, s.config.SwapFeeFixed)
+	feeExact, err := calculateFeeExact(amount, s.config.SwapFeePercent, s.config.SwapFeeFixed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
 
 	// Calculate USD value
 	feeUSD := feeAmount * priceIn
@@ -193,8 +196,11 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	amountFloat := parseFloat(amount)
-	feeAmount := s.calculateFee(amountFloat, s.config.BridgeFeePercent, s.config.BridgeFeeFixed)
+	feeExact, err := calculateFeeExact(amount, s.config.BridgeFeePercent, s.config.BridgeFeeFixed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
@@ -223,8 +229,11 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	amountFloat := parseFloat(amount)
-	feeAmount := s.calculateFee(amountFloat, s.config.WalletTxFeePercent, s.config.WalletTxFeeFixed)
+	feeExact, err := calculateFeeExact(amount, s.config.WalletTxFeePercent, s.config.WalletTxFeeFixed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
@@ -254,8 +263,11 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	amountFloat := parseFloat(amount)
-	feeAmount := s.calculateFee(amountFloat, s.config.WithdrawFeePercent, s.config.WithdrawFeeFixed)
+	feeExact, err := calculateFeeExact(amount, s.config.WithdrawFeePercent, s.config.WithdrawFeeFixed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
@@ -285,8 +297,11 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	amountFloat := parseFloat(amount)
-	feeAmount := s.calculateFee(amountFloat, s.config.LaunchpadFeePercent, s.config.LaunchpadFeeFixed)
+	feeExact, err := calculateFeeExact(amount, s.config.LaunchpadFeePercent, s.config.LaunchpadFeeFixed)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
@@ -311,12 +326,57 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 }
 
 // CalculateFee calculates the fee amount
-func (s *FeeCollectorService) calculateFee(amount, percent, fixed float64) float64 {
-	percentFee := amount * (percent / 100)
-	if percentFee < fixed {
-		return fixed
+// calculateFeeExact applies the percentage fee and the fixed floor using exact
+// rational arithmetic, then truncates to 8 decimal places. `percent` and
+// `fixed` are rates from the service configuration, not user input; `amount` is
+// the user-supplied value and is rejected when malformed instead of being
+// silently read as zero.
+func calculateFeeExact(amount string, percent, fixed float64) (*big.Rat, error) {
+	amountValue, err := parseDecimal(amount)
+	if err != nil {
+		return nil, err
 	}
-	return percentFee
+	if amountValue.Sign() < 0 {
+		return nil, fmt.Errorf("fee amount must not be negative")
+	}
+
+	percentValue, err := rationalFromRate(percent)
+	if err != nil {
+		return nil, fmt.Errorf("fee percent: %w", err)
+	}
+	fixedValue, err := rationalFromRate(fixed)
+	if err != nil {
+		return nil, fmt.Errorf("fixed fee: %w", err)
+	}
+
+	percentFee := new(big.Rat).Quo(new(big.Rat).Mul(amountValue, percentValue), big.NewRat(100, 1))
+	if percentFee.Cmp(fixedValue) < 0 {
+		return fixedValue, nil
+	}
+	return percentFee, nil
+}
+
+// rationalFromRate converts a configured fee rate to an exact rational using
+// its shortest decimal representation. Converting the float64 directly would
+// bake in the binary rounding error (0.3 becomes 0.29999999999999998), which
+// then truncates to a fee a hundredth of a unit short.
+func rationalFromRate(rate float64) (*big.Rat, error) {
+	if math.IsNaN(rate) || math.IsInf(rate, 0) {
+		return nil, fmt.Errorf("rate is not a finite number")
+	}
+	return parseDecimal(strconv.FormatFloat(rate, 'f', -1, 64))
+}
+
+// feeAmountString renders a computed fee with the 8 decimal places the API
+// contract uses.
+func feeAmountString(fee *big.Rat) string {
+	return formatDecimal(fee, 8)
+}
+
+// feeAmountFloat converts a computed fee to float64 for the legacy USD fields.
+func feeAmountFloat(fee *big.Rat) float64 {
+	value, _ := fee.Float64()
+	return value
 }
 
 func (s *FeeCollectorService) updateDailyRevenue(feeType string, amount float64) {
