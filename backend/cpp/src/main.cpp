@@ -261,6 +261,14 @@ public:
                     order_sequence.push_back(order.id);
                 }
                 latest[order.id] = order;
+            } else if (record.type == WalEventType::OrderCancelled && record.payload.size() >= 8) {
+                // A cancel is the last word on that order id: without this the
+                // order would be restored as resting and could trade again.
+                const uint64_t cancelled_id = read_u64(record.payload, 0);
+                auto it = latest.find(cancelled_id);
+                if (it != latest.end()) {
+                    it->second.status = OrderStatus::Cancelled;
+                }
             }
         }
 
@@ -268,6 +276,14 @@ public:
         for (const uint64_t order_id : order_sequence) {
             const Order& order = latest[order_id];
             if (order.status != OrderStatus::Open && order.status != OrderStatus::PartiallyFilled) {
+                continue;
+            }
+
+            // A market order never rests, so any remainder is cancelled by
+            // definition. The recorded type is authoritative for that, since an
+            // order that ran out of liquidity has filled == 0 and would
+            // otherwise be restored as a resting limit order at price 0.
+            if (order.type == OrderType::Market) {
                 continue;
             }
 
@@ -376,6 +392,8 @@ std::string reason_name(RejectReason reason) {
         case RejectReason::UnknownOrder: return "unknown_order";
         case RejectReason::NotOrderOwner: return "not_order_owner";
         case RejectReason::AlreadyClosed: return "already_closed";
+        case RejectReason::TooManyOpenOrders: return "too_many_open_orders";
+        case RejectReason::SelfTradePrevented: return "self_trade_prevented";
     }
     return "unknown";
 }
@@ -567,7 +585,13 @@ Router build_router(EngineService& service) {
                 "{\"error\":\"rejected\",\"reason\":\"" + reason_name(result.report.reason) + "\"}", 400);
         }
 
-        service.log_order(order, result.report);
+        // Log the book's authoritative state, not the request: the request
+        // still carries status Open, so an IOC remainder cancelled during
+        // matching would be replayed as a resting order after a restart.
+        const Order* stored = service.engine().find_order(pair_id, result.report.order_id);
+        if (stored != nullptr) {
+            service.log_order(*stored, result.report);
+        }
         // Resting makers changed size, so persist their new state as well.
         // Recovery keeps the last record per order id, which restores the exact
         // remaining quantity.

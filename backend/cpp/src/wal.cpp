@@ -73,6 +73,12 @@ bool WriteAheadLog::append(WalEventType type, const std::vector<uint8_t>& payloa
         return false;
     }
 
+    // Recovery refuses records larger than kMaxRecordSize, so writing one would
+    // silently truncate the log at that point and drop every later record.
+    if (payload.size() > kMaxRecordSize - (2 + 8 + 8)) {
+        return false;
+    }
+
     std::vector<uint8_t> record;
     record.reserve(kHeaderSize + 2 + 8 + 8 + payload.size());
 

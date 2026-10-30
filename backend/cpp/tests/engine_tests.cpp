@@ -115,7 +115,53 @@ void test_ioc_cancels_remainder() {
     const auto result = book.submit(make_limit(2, 101, 50'000, 20, Side::Buy), TimeInForce::Ioc);
     CHECK_EQ(result.trades.size(), 1u);
     CHECK_EQ(result.report.remaining, 0u);
+    // Only the 5 that traded count as filled; the cancelled 15 must not.
+    CHECK_EQ(result.report.filled, 5u);
     CHECK(book.depth(5).empty());
+    CHECK_EQ(book.open_orders(), 0u);
+}
+
+// A market order that cannot be fully filled must report the executed quantity,
+// not the requested size, and must not rest the remainder.
+void test_market_partial_reports_executed_quantity() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 50'000, 12, Side::Sell));
+
+    const auto result = book.submit(make_market(2, 200, 20, Side::Buy));
+    CHECK(result.report.accepted);
+    CHECK_EQ(result.report.filled, 12u);
+    CHECK_EQ(result.report.remaining, 0u);
+    CHECK_EQ(book.open_orders(), 0u);
+    CHECK(book.depth(5).empty());
+    CHECK_EQ(book.total_volume(), 12u);
+}
+
+// An IOC that fills nothing is cancelled outright, never resting.
+void test_ioc_with_no_fill_does_not_rest() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 60'000, 10, Side::Sell));
+
+    const auto result = book.submit(make_limit(2, 200, 50'000, 20, Side::Buy), TimeInForce::Ioc);
+    CHECK(result.report.accepted);
+    CHECK(result.trades.empty());
+    CHECK_EQ(result.report.filled, 0u);
+    // The untouched resting sell remains; the IOC itself never rested.
+    CHECK_EQ(book.open_orders(), 1u);
+}
+
+// open_orders must reflect resting quantity, not every order ever seen.
+void test_open_orders_counts_only_resting() {
+    OrderBook book(1, 1, 0, 2);
+    book.submit(make_limit(1, 100, 50'000, 10, Side::Sell));
+    CHECK_EQ(book.open_orders(), 1u);
+
+    book.submit(make_limit(2, 200, 50'000, 10, Side::Buy));
+    CHECK_EQ(book.open_orders(), 0u);
+
+    book.submit(make_limit(3, 100, 50'000, 10, Side::Sell));
+    CHECK_EQ(book.open_orders(), 1u);
+    book.cancel(3, 100);
+    CHECK_EQ(book.open_orders(), 0u);
 }
 
 void test_fok_rejects_thin_book() {
@@ -364,6 +410,40 @@ void test_engine_rejects_oversized_order() {
 
     const auto ok = engine.submit(1, make_limit(2, 100, 50'000, 50, Side::Buy), TimeInForce::Gtc);
     CHECK(ok.report.accepted);
+}
+
+void test_engine_enforces_max_open_orders() {
+    MatchingEngine engine;
+    PairConfig config = pair(1, "BTC-RUSD");
+    config.risk.max_open_orders = 2;
+    engine.add_pair(config);
+
+    CHECK(engine.submit(1, make_limit(1, 100, 50'000, 1, Side::Buy), TimeInForce::Gtc).report.accepted);
+    CHECK(engine.submit(1, make_limit(2, 100, 49'900, 1, Side::Buy), TimeInForce::Gtc).report.accepted);
+
+    const auto blocked = engine.submit(1, make_limit(3, 100, 49'800, 1, Side::Buy), TimeInForce::Gtc);
+    CHECK(blocked.report.accepted);
+    CHECK(blocked.report.reason == RejectReason::TooManyOpenOrders);
+    CHECK_EQ(blocked.report.filled, 0u);
+    uint64_t resting = 0;
+    for (const auto& level : engine.depth(1, 5)) {
+        resting += level.quantity;
+    }
+    CHECK_EQ(resting, 2u);
+
+    // Cancelling frees a slot.
+    CHECK(engine.cancel(1, 1, 100).accepted);
+    CHECK(engine.submit(1, make_limit(4, 100, 49'800, 1, Side::Buy), TimeInForce::Gtc).report.accepted);
+
+    // An order that fills without resting is not blocked by the limit.
+    MatchingEngine taker;
+    PairConfig taker_config = pair(2, "ETH-RUSD");
+    taker_config.risk.max_open_orders = 1;
+    taker.add_pair(taker_config);
+    taker.submit(2, make_limit(1, 100, 50'000, 5, Side::Sell), TimeInForce::Gtc);
+    const auto crossing = taker.submit(2, make_limit(2, 200, 50'000, 5, Side::Buy), TimeInForce::Gtc);
+    CHECK(crossing.report.accepted);
+    CHECK_EQ(crossing.report.filled, 5u);
 }
 
 void test_engine_stats() {
@@ -884,6 +964,9 @@ int main() {
     test_maker_price_execution();
     test_partial_fill_rests();
     test_ioc_cancels_remainder();
+    test_market_partial_reports_executed_quantity();
+    test_ioc_with_no_fill_does_not_rest();
+    test_open_orders_counts_only_resting();
     test_fok_rejects_thin_book();
     test_fok_fills_when_liquid();
     test_post_only();
@@ -904,6 +987,7 @@ int main() {
 
     test_engine_pair_lifecycle();
     test_engine_rejects_oversized_order();
+    test_engine_enforces_max_open_orders();
     test_engine_stats();
     test_engine_cancel();
     test_recovered_trade_restores_market_data();

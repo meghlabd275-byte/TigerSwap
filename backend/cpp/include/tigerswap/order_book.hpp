@@ -221,16 +221,19 @@ public:
     }
 
     /// Subtracts a fill from the front node, removing it when exhausted.
-    void reduce_front(uint64_t filled) {
+    /// Returns true when the node was fully consumed and unlinked.
+    bool reduce_front(uint64_t filled) {
         if (head_ == nullptr) {
-            return;
+            return false;
         }
         const uint64_t applied = filled > head_->quantity ? head_->quantity : filled;
         head_->quantity -= applied;
         total_quantity_ -= applied;
         if (head_->quantity == 0) {
             erase(head_);
+            return true;
         }
+        return false;
     }
 
     Node* front() const { return head_; }
@@ -291,11 +294,12 @@ public:
     using AskMap = std::map<uint64_t, Level, std::less<uint64_t>>;
 
     OrderBook(uint64_t pair_id, uint64_t tick_size, uint32_t maker_fee_bps,
-              uint32_t taker_fee_bps)
+              uint32_t taker_fee_bps, size_t max_open_orders = 0)
         : pair_id_(pair_id),
           tick_size_(tick_size == 0 ? 1 : tick_size),
           maker_fee_bps_(maker_fee_bps),
-          taker_fee_bps_(taker_fee_bps) {}
+          taker_fee_bps_(taker_fee_bps),
+          max_open_orders_(max_open_orders) {}
 
     uint64_t pair_id() const { return pair_id_; }
 
@@ -347,20 +351,22 @@ public:
                 result.report.reason = RejectReason::NoLiquidity;
                 return result;
             }
+            // A market order never rests: an unfilled remainder is cancelled.
+            // `filled` must stay the executed quantity; overwriting it with the
+            // requested size books volume and fees for quantity never traded.
             working.status = remaining == 0 ? OrderStatus::Filled : OrderStatus::Cancelled;
-            working.filled = working.quantity;
             index_.insert(working);
             result.report.accepted = true;
             result.report.order_id = working.id;
-            result.report.filled = working.quantity;
+            result.report.filled = working.filled;
             result.report.remaining = 0;
             return result;
         }
 
         if (remaining > 0 && (tif == TimeInForce::Ioc || tif == TimeInForce::Fok)) {
-            working.status =
-                working.filled > 0 ? OrderStatus::PartiallyFilled : OrderStatus::Cancelled;
-            working.filled = working.quantity;
+            // The remainder is cancelled, so the order is not left resting and
+            // only the executed quantity is reported as filled.
+            working.status = OrderStatus::Cancelled;
             index_.insert(working);
             result.report.accepted = true;
             result.report.order_id = working.id;
@@ -378,6 +384,20 @@ public:
                 index_.insert(working);
                 result.report.accepted = true;
                 result.report.reason = RejectReason::SelfTradePrevented;
+                result.report.order_id = working.id;
+                result.report.filled = working.filled;
+                result.report.remaining = 0;
+                return result;
+            }
+
+            if (at_open_order_limit()) {
+                // The book is full. Any quantity that already traded stands, but
+                // the remainder cannot rest and is cancelled.
+                working.status =
+                    working.filled > 0 ? OrderStatus::PartiallyFilled : OrderStatus::Cancelled;
+                index_.insert(working);
+                result.report.accepted = true;
+                result.report.reason = RejectReason::TooManyOpenOrders;
                 result.report.order_id = working.id;
                 result.report.filled = working.filled;
                 result.report.remaining = 0;
@@ -469,7 +489,12 @@ public:
     uint64_t last_price() const { return last_price_; }
     uint64_t total_volume() const { return total_volume_; }
     uint64_t total_trades() const { return total_trades_; }
-    size_t open_orders() const { return index_.size(); }
+    /// Number of orders currently resting on the book.
+    ///
+    /// Closed orders stay in the index so they can still be looked up by id
+    /// after they finish, so index size is not the open count. This counter is
+    /// maintained by rest/detach.
+    size_t open_orders() const { return resting_count_; }
 
     uint32_t maker_fee_bps() const { return maker_fee_bps_; }
     uint32_t taker_fee_bps() const { return taker_fee_bps_; }
@@ -601,7 +626,10 @@ private:
             trades.push_back(trade);
 
             taker.filled += fill;
-            level.queue.reduce_front(fill);
+            if (level.queue.reduce_front(fill)) {
+                // The maker was fully consumed and unlinked from the level.
+                --resting_count_;
+            }
 
             if (maker != nullptr) {
                 maker->filled += fill;
@@ -629,27 +657,30 @@ private:
             level.price = order.price;
             level.queue.push_back(order.id, order.remaining(), order.trader);
         }
+        ++resting_count_;
     }
 
     /// Removes an order from its level queue.
     void detach(Order& order) {
-        if (order.side == Side::Buy) {
-            detach_from(bids_, order);
-        } else {
-            detach_from(asks_, order);
+        const bool removed = order.side == Side::Buy ? detach_from(bids_, order)
+                                                     : detach_from(asks_, order);
+        if (removed) {
+            --resting_count_;
         }
     }
 
     template <typename Book>
-    void detach_from(Book& book, Order& order) {
+    bool detach_from(Book& book, Order& order) {
         auto it = book.find(order.price);
         if (it == book.end()) {
-            return;
+            return false;
         }
 
+        bool removed = false;
         for (LevelQueue::Node* node = it->second.queue.front(); node != nullptr; node = node->next) {
             if (node->order_id == order.id) {
                 it->second.queue.erase(node);
+                removed = true;
                 break;
             }
         }
@@ -657,6 +688,8 @@ private:
         if (it->second.queue.empty()) {
             book.erase(it);
         }
+
+        return removed;
     }
 
     uint64_t pair_id_;
@@ -667,6 +700,18 @@ private:
     BidMap bids_;
     AskMap asks_;
     OrderIndex index_{1 << 16};
+
+    /// Orders currently resting on a level. Closed orders remain in `index_`
+    /// for lookup, so this is tracked separately.
+    size_t resting_count_ = 0;
+
+    /// Cap on resting orders. Zero means unlimited.
+    size_t max_open_orders_ = 0;
+
+    /// True when no further order may rest on this book.
+    bool at_open_order_limit() const {
+        return max_open_orders_ != 0 && resting_count_ >= max_open_orders_;
+    }
 
     uint64_t last_price_ = 0;
     uint64_t total_volume_ = 0;

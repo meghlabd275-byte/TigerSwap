@@ -90,7 +90,8 @@ public:
         auto state = std::make_unique<PairState>();
         state->config = config;
         state->book = std::make_unique<OrderBook>(config.pair_id, config.tick_size,
-                                                  config.maker_fee_bps, config.taker_fee_bps);
+                                                  config.maker_fee_bps, config.taker_fee_bps,
+                                                  config.risk.max_open_orders);
         pairs_.emplace(config.pair_id, std::move(state));
         return true;
     }

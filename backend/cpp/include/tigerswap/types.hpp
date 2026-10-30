@@ -80,6 +80,8 @@ enum class RejectReason : uint8_t {
     UnknownOrder,
     NotOrderOwner,
     AlreadyClosed,
+    // The pair is already holding the maximum number of resting orders.
+    TooManyOpenOrders,
     // The order could only have matched the trader's own resting liquidity, so
     // resting it would leave the book crossed.
     SelfTradePrevented,
