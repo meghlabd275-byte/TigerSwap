@@ -806,10 +806,45 @@ func (s *AuthService) Register(c *gin.Context) {
 		return
 	}
 
+	// The username is stored verbatim and rendered back to users, so it must be
+	// restricted to a safe character set. Anything else (markup, control
+	// characters, zero-width joiners used to spoof another account) is rejected
+	// at the boundary.
+	username := strings.TrimSpace(req.Username)
+	if len(username) < 3 || len(username) > 32 {
+		c.JSON(400, gin.H{"error": "Username must be between 3 and 32 characters"})
+		return
+	}
+	for _, character := range username {
+		isAllowed := (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '_' || character == '-' || character == '.'
+		if !isAllowed {
+			c.JSON(400, gin.H{"error": "Username may only contain letters, digits, underscore, hyphen and dot"})
+			return
+		}
+	}
+	req.Username = username
+
+	// bcrypt ignores every byte after the 72nd, so two distinct long passwords
+	// would otherwise authenticate the same account.
+	if len(req.Password) > 72 {
+		c.JSON(400, gin.H{"error": "Password must be at most 72 bytes"})
+		return
+	}
+
 	// Check if user exists
 	var existingUser models.User
 	if err := s.db.Where("email = ?", req.Email).First(&existingUser).Error; err == nil {
 		c.JSON(400, gin.H{"error": "Email already registered"})
+		return
+	}
+
+	// A duplicate username would otherwise surface as a 500 from the unique index.
+	var existingUsername models.User
+	if err := s.db.Where("username = ?", req.Username).First(&existingUsername).Error; err == nil {
+		c.JSON(400, gin.H{"error": "Username already taken"})
 		return
 	}
 
