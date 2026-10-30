@@ -46,7 +46,19 @@ pub fn verify_signature(
         )));
     }
 
-    let sig = Signature::from_slice(signature)
+    // Accept both the bare 64-byte (r || s) form and the 65-byte Ethereum form
+    // (r || s || v) produced by `KeyManager::sign`.
+    let compact = match signature.len() {
+        65 => &signature[..64],
+        64 => signature,
+        other => {
+            return Err(SignatureError::InvalidLength(format!(
+                "signature must be 64 or 65 bytes, got {other}"
+            )))
+        }
+    };
+
+    let sig = Signature::from_slice(compact)
         .map_err(|e| SignatureError::InvalidSignature(e.to_string()))?;
 
     let pk = VerifyingKey::from_sec1_bytes(public_key)
@@ -228,11 +240,28 @@ mod tests {
         assert!(!verify_typed_data(&domain, &struct_hash, &raw, &other).unwrap());
     }
 
+    /// A 65-byte Ethereum signature must verify against the same prehash path.
+    #[test]
+    fn test_accepts_65_byte_ethereum_signature() {
+        let sk = signing_key();
+        let digest = personal_message_hash(b"tigerswap");
+        let raw = sign_recoverable(&sk, &digest);
+        assert_eq!(raw.len(), 65);
+
+        let vk_bytes = sk.verifying_key().to_encoded_point(false);
+        assert!(verify_signature(vk_bytes.as_bytes(), &digest, &raw).unwrap());
+        assert!(verify_signature(vk_bytes.as_bytes(), &digest, &raw[..64]).unwrap());
+    }
+
     #[test]
     fn test_invalid_lengths_rejected() {
         let digest = [0u8; 32];
         assert!(matches!(
             recover_address(&digest, &[0u8; 10]),
+            Err(SignatureError::InvalidLength(_))
+        ));
+        assert!(matches!(
+            verify_signature(&[0u8; 33], &digest, &[0u8; 10]),
             Err(SignatureError::InvalidLength(_))
         ));
     }

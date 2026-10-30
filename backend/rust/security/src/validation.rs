@@ -45,38 +45,52 @@ pub fn validate_address(address: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
-/// Validate a token amount
+/// Validate a token amount.
+///
+/// The string must be a plain base-10 decimal: a run of digits, an optional
+/// single fractional part, no sign, no exponent and no surrounding whitespace.
 pub fn validate_amount(amount: &str, decimals: u8) -> Result<(), ValidationError> {
-    // Check if it's a valid number
-    let parts: Vec<&str> = amount.split('.').collect();
-    
-    if parts.len() > 2 {
+    if amount.is_empty() {
+        return Err(ValidationError::InvalidAmount("Amount is required".to_string()));
+    }
+    if amount.trim() != amount {
         return Err(ValidationError::InvalidAmount(
-            "Invalid number format".to_string()
+            "Amount must not contain whitespace".to_string(),
         ));
     }
-    
-    // Check integer part
-    if parts[0].len() > (78 - decimals as usize) {
+
+    let mut parts = amount.split('.');
+    let integer_part = parts.next().unwrap_or_default();
+    let fractional_part = parts.next();
+    if parts.next().is_some() {
+        return Err(ValidationError::InvalidAmount("Invalid number format".to_string()));
+    }
+
+    // Reject a bare "." and any empty integer part such as ".5".
+    if integer_part.is_empty() || !integer_part.chars().all(|c| c.is_ascii_digit()) {
         return Err(ValidationError::InvalidAmount(
-            "Amount too large".to_string()
+            "Amount must be a base-10 decimal".to_string(),
         ));
     }
-    
-    // Check decimal part
-    if parts.len() == 2 && parts[1].len() > decimals as usize {
-        return Err(ValidationError::InvalidAmount(
-            format!("Too many decimals (max {})", decimals)
-        ));
+
+    if let Some(frac) = fractional_part {
+        if frac.is_empty() || !frac.chars().all(|c| c.is_ascii_digit()) {
+            return Err(ValidationError::InvalidAmount(
+                "Amount must be a base-10 decimal".to_string(),
+            ));
+        }
+        if frac.len() > decimals as usize {
+            return Err(ValidationError::InvalidAmount(format!(
+                "Too many decimals (max {decimals})"
+            )));
+        }
     }
-    
-    // Check for negative
-    if amount.starts_with('-') {
-        return Err(ValidationError::InvalidAmount(
-            "Amount cannot be negative".to_string()
-        ));
+
+    // A u256 has 78 decimal digits; leave room for the fractional part.
+    if integer_part.len() > 78 - decimals as usize {
+        return Err(ValidationError::InvalidAmount("Amount too large".to_string()));
     }
-    
+
     Ok(())
 }
 
@@ -124,13 +138,11 @@ pub fn sanitize_string(input: &str, max_length: usize) -> String {
         }
     }
     
-    // Trim and truncate
-    sanitized = sanitized.trim().to_string();
-    if sanitized.len() > max_length {
-        sanitized.truncate(max_length);
-    }
-    
-    sanitized
+    // Trim, then truncate without splitting a multi-byte character. Slicing by
+    // byte offset would panic when `max_length` lands inside a code point.
+    let trimmed = sanitized.trim();
+    let truncated: String = trimmed.chars().take(max_length).collect();
+    truncated
 }
 
 /// Validate token symbols
@@ -162,8 +174,10 @@ pub fn validate_swap_request(
     to_token: &str,
     amount: &str,
 ) -> Result<(), ValidationError> {
-    validate_address(from_token)?;
-    validate_address(to_token)?;
+    // Tokens are identified by symbol, so validate them as symbols. Requiring
+    // addresses here rejected every legitimate request.
+    validate_token_symbol(from_token)?;
+    validate_token_symbol(to_token)?;
     validate_amount(amount, 18)?;
     
     if from_token == to_token {
@@ -191,6 +205,38 @@ mod tests {
         assert!(validate_amount("100.5", 18).is_ok());
         assert!(validate_amount("0.000000000000000001", 18).is_ok());
         assert!(validate_amount("-100", 18).is_err());
+        assert!(validate_amount("0", 18).is_ok());
+    }
+
+    /// A non-numeric amount used to pass validation because only the shape of
+    /// the split was checked, never the characters themselves.
+    #[test]
+    fn test_validate_amount_rejects_non_numeric() {
+        for bad in ["abc", "", "1e18", "0x10", " 5", "5 ", "1..2", ".5", "5.", "1,000", "NaN", "inf"] {
+            assert!(
+                validate_amount(bad, 18).is_err(),
+                "amount {bad:?} must be rejected"
+            );
+        }
+        assert!(validate_amount("1000000000000000000", 18).is_ok());
+    }
+
+    /// Truncating a multi-byte string at a byte offset used to panic.
+    #[test]
+    fn test_sanitize_string_multibyte_truncation() {
+        assert_eq!(sanitize_string("\u{4e2d}\u{4e2d}\u{4e2d}", 1), "\u{4e2d}");
+        assert_eq!(sanitize_string("ab\u{4e2d}cd", 3), "ab\u{4e2d}");
+        assert_eq!(sanitize_string("  hello  ", 100), "hello");
+    }
+
+    /// Token symbols were validated as addresses, so every swap request failed.
+    #[test]
+    fn test_validate_swap_request_accepts_symbols() {
+        assert!(validate_swap_request("RUSD", "TGR", "100").is_ok());
+        assert!(validate_swap_request("BTC", "ETH", "1.5").is_ok());
+        assert!(validate_swap_request("RUSD", "RUSD", "1").is_err());
+        assert!(validate_swap_request("rusd", "TGR", "1").is_err());
+        assert!(validate_swap_request("RUSD", "TGR", "abc").is_err());
     }
     
     #[test]

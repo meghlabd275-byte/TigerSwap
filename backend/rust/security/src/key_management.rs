@@ -4,7 +4,6 @@
 //! TigerSwap DEX. Private key material is held in a zeroizing buffer and never
 //! leaves the manager except through explicit accessor calls.
 
-use k256::ecdsa::signature::{Signer, Verifier};
 use k256::ecdsa::{Signature, SigningKey, VerifyingKey};
 use rand::rngs::OsRng;
 use sha3::{Digest, Keccak256};
@@ -154,9 +153,21 @@ impl KeyManager {
         Ok(address)
     }
 
-    /// Sign a 32-byte digest with a stored key. Returns a 64-byte compact
-    /// signature (r || s), matching the format used by the EVM precompiles.
+    /// Sign a 32-byte digest with a stored key.
+    ///
+    /// Returns a 65-byte Ethereum-style signature (r || s || v) where `v` is the
+    /// recovery parity offset by 27. The digest is treated as a prehash and is
+    /// not hashed again, so the result verifies against both
+    /// [`KeyManager::verify_signature`] and
+    /// [`crate::signature::verify_signature`].
     pub async fn sign(&self, address: &str, digest: &[u8]) -> Result<Vec<u8>, KeyError> {
+        if digest.len() != 32 {
+            return Err(KeyError::InvalidFormat(format!(
+                "Digest must be 32 bytes, got {}",
+                digest.len()
+            )));
+        }
+
         let keys = self.keys.read().await;
         let key = keys
             .get(address)
@@ -171,27 +182,51 @@ impl KeyManager {
         let signing_key = SigningKey::from_slice(key.as_bytes())
             .map_err(|e| KeyError::InvalidFormat(e.to_string()))?;
 
-        let signature: Signature = signing_key
-            .try_sign(digest)
+        let (signature, recovery_id) = signing_key
+            .sign_prehash_recoverable(digest)
             .map_err(|e| KeyError::SigningError(e.to_string()))?;
 
-        Ok(signature.to_bytes().to_vec())
+        let mut raw = signature.to_bytes().to_vec();
+        raw.push(recovery_id.to_byte() + 27);
+        Ok(raw)
     }
 
-    /// Verify a compact ECDSA signature against a public key and digest.
+    /// Verify an ECDSA signature against a public key and a 32-byte digest.
+    ///
+    /// Accepts both the 65-byte Ethereum form (r || s || v) produced by
+    /// [`KeyManager::sign`] and a bare 64-byte (r || s) signature. The digest is
+    /// a prehash and is not hashed again.
     pub fn verify_signature(
         public_key: &[u8],
         digest: &[u8],
         signature: &[u8],
     ) -> Result<bool, KeyError> {
+        if digest.len() != 32 {
+            return Err(KeyError::InvalidFormat(format!(
+                "Digest must be 32 bytes, got {}",
+                digest.len()
+            )));
+        }
+
         let verifying_key = VerifyingKey::from_sec1_bytes(public_key)
             .map_err(|_| KeyError::InvalidFormat("Invalid public key".to_string()))?;
 
-        let signature = Signature::from_slice(signature)
+        let compact = match signature.len() {
+            65 => &signature[..64],
+            64 => signature,
+            other => {
+                return Err(KeyError::InvalidFormat(format!(
+                    "Signature must be 64 or 65 bytes, got {other}"
+                )))
+            }
+        };
+
+        let signature = Signature::from_slice(compact)
             .map_err(|_| KeyError::InvalidFormat("Invalid signature".to_string()))?;
 
+        use k256::ecdsa::signature::hazmat::PrehashVerifier;
         verifying_key
-            .verify(digest, &signature)
+            .verify_prehash(digest, &signature)
             .map_err(|_| KeyError::VerificationFailed)?;
 
         Ok(true)
@@ -305,13 +340,17 @@ mod tests {
 
         let digest = keccak256(b"Hello, TigerSwap!");
         let signature = manager.sign(&address, &digest).await.unwrap();
-        assert_eq!(signature.len(), 64);
+        assert_eq!(signature.len(), 65, "r || s || v");
 
         let signing_key = SigningKey::from_slice(&private_key).unwrap();
         let public_key = signing_key.verifying_key().to_encoded_point(false);
 
         assert!(
             KeyManager::verify_signature(public_key.as_bytes(), &digest, &signature).unwrap()
+        );
+        // The sibling `signature` module must accept the same signature.
+        assert!(
+            crate::signature::verify_signature(public_key.as_bytes(), &digest, &signature).unwrap()
         );
 
         let tampered = keccak256(b"tampered");

@@ -246,8 +246,9 @@ impl FastOrderBook {
             return SubmitOutcome::Rejected(RejectReason::StopRequiresTrigger);
         }
 
+        // `tick_size` is clamped to at least 1 in `new`, so the modulo is safe.
         if matches!(order_type, OrderType::Limit)
-            && (order.price == 0 || !order.price.is_multiple_of(self.tick_size))
+            && (order.price == 0 || order.price % self.tick_size != 0)
         {
             return SubmitOutcome::Rejected(RejectReason::InvalidOrder);
         }

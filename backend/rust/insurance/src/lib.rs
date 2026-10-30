@@ -225,10 +225,12 @@ impl InsuranceFund {
             return Err(FundError::Overflow);
         }
 
-        self.reserve_daily_budget(&amount)?;
-
-        {
-            let mut holdings = self.holdings.write();
+        // Validate the balance and the daily budget before mutating either, so a
+        // rejected withdrawal leaves both the holdings and the day's allowance
+        // untouched. Reserving first let a caller burn the whole daily limit with
+        // requests that could never succeed.
+        let remaining = {
+            let holdings = self.holdings.read();
             let current = holdings
                 .get(token)
                 .copied()
@@ -237,9 +239,12 @@ impl InsuranceFund {
             if current.value < amount.value {
                 return Err(FundError::InsufficientBalance);
             }
+            current.sub(&amount)?
+        };
 
-            holdings.insert(token.to_string(), current.sub(&amount)?);
-        }
+        self.reserve_daily_budget(&amount)?;
+
+        self.holdings.write().insert(token.to_string(), remaining);
 
         self.record(
             InsuranceEventType::Withdraw,
@@ -716,5 +721,41 @@ mod tests {
         let key = new_key(vec![0x42u8; 32], KeyType::EthKey);
         store.store_secure_key("signer", &key).unwrap();
         assert_eq!(store.get_key("signer").unwrap(), vec![0x42u8; 32]);
+    }
+}
+
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+
+    /// A withdrawal rejected for insufficient balance must not consume the daily
+    /// spending allowance. It previously did, letting a caller exhaust the limit
+    /// with requests that could never succeed and block real coverage.
+    #[test]
+    fn failed_withdraw_does_not_consume_daily_budget() {
+        let fund = InsuranceFund::new(FixedDecimal::new(100, 18), FixedDecimal::new(1_000, 18));
+
+        assert_eq!(
+            fund.withdraw("TGR", FixedDecimal::new(500, 18), "oversize", None),
+            Err(FundError::InsufficientBalance)
+        );
+        assert_eq!(fund.spent_today().value, 0, "no budget consumed on failure");
+        assert_eq!(fund.balance("TGR").value, 100, "holdings untouched");
+
+        // The full allowance is still available for a legitimate withdrawal.
+        assert!(fund.withdraw("TGR", FixedDecimal::new(50, 18), "legit", None).is_ok());
+        assert_eq!(fund.spent_today().value, 50);
+        assert_eq!(fund.balance("TGR").value, 50);
+    }
+
+    /// An unknown token must also fail without spending budget.
+    #[test]
+    fn unknown_token_withdraw_does_not_consume_daily_budget() {
+        let fund = InsuranceFund::new(FixedDecimal::new(100, 18), FixedDecimal::new(1_000, 18));
+        assert_eq!(
+            fund.withdraw("NOPE", FixedDecimal::new(1, 18), "x", None),
+            Err(FundError::UnknownToken("NOPE".to_string()))
+        );
+        assert_eq!(fund.spent_today().value, 0);
     }
 }
