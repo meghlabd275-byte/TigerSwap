@@ -273,12 +273,14 @@ impl FastOrderBook {
             if order.filled == 0 {
                 return SubmitOutcome::Rejected(RejectReason::NoLiquidity);
             }
+            // `filled` must stay the executed quantity. Overwriting it with the
+            // requested size would report a partially filled market order as
+            // complete and book volume that never traded.
             order.status = if remaining > 0 {
-                OrderStatus::PartiallyFilled as u8
+                OrderStatus::Cancelled as u8
             } else {
                 OrderStatus::Filled as u8
             };
-            order.filled = order.quantity;
             remaining = 0;
             self.orders.write().insert(order_id, order);
             return SubmitOutcome::Accepted {
@@ -289,12 +291,9 @@ impl FastOrderBook {
         }
 
         if remaining > 0 && matches!(tif, TimeInForce::Ioc | TimeInForce::Fok) {
-            order.status = if order.filled > 0 {
-                OrderStatus::PartiallyFilled as u8
-            } else {
-                OrderStatus::Cancelled as u8
-            };
-            order.filled = order.quantity;
+            // The remainder is cancelled, so it must not be recorded as filled
+            // or as partially filled and resting.
+            order.status = OrderStatus::Cancelled as u8;
             self.orders.write().insert(order_id, order);
             return SubmitOutcome::Accepted {
                 order_id,
@@ -304,6 +303,18 @@ impl FastOrderBook {
         }
 
         if remaining > 0 {
+            if self.would_cross(&order, side) {
+                // Only the trader's own resting liquidity is left in the way.
+                // Resting here would leave a crossed book, so cancel instead.
+                order.status = OrderStatus::Cancelled as u8;
+                self.orders.write().insert(order_id, order);
+                return SubmitOutcome::Accepted {
+                    order_id,
+                    trades,
+                    remaining: 0,
+                };
+            }
+
             order.status = if order.filled > 0 {
                 OrderStatus::PartiallyFilled as u8
             } else {
@@ -336,8 +347,10 @@ impl FastOrderBook {
                 return false;
             }
 
+            // Only the status changes: overwriting `filled` with the full
+            // quantity would report a partially filled order as completely
+            // executed.
             order.status = OrderStatus::Cancelled as u8;
-            order.filled = order.quantity;
             *order
         };
 
@@ -468,11 +481,15 @@ impl FastOrderBook {
 
     fn fillable_quantity(&self, order: &FastOrder, side: Side) -> u64 {
         let mut available = 0u64;
+        // A market order has no price bound, so it can take every level. Applying
+        // the limit price here would make the check depend on the placeholder
+        // price and reject, for example, every fill-or-kill market buy.
+        let is_market = order.order_type == OrderType::Market as u8;
 
         match side {
             Side::Buy => {
                 for (price, resting) in self.asks.read().iter() {
-                    if price > &order.price {
+                    if !is_market && price > &order.price {
                         break;
                     }
                     available += resting.iter().map(|o| o.remaining()).sum::<u64>();
@@ -483,7 +500,7 @@ impl FastOrderBook {
             }
             Side::Sell => {
                 for (price, resting) in self.bids.read().iter().rev() {
-                    if price < &order.price {
+                    if !is_market && price < &order.price {
                         break;
                     }
                     available += resting.iter().map(|o| o.remaining()).sum::<u64>();
@@ -856,6 +873,124 @@ mod tests {
             book.submit_order(stop),
             SubmitOutcome::Rejected(RejectReason::StopRequiresTrigger)
         ));
+    }
+
+    /// A fill-or-kill market order must be evaluated against all available
+    /// liquidity, exactly like a fill-or-kill limit order that crosses.
+    #[test]
+    fn fok_market_order_is_symmetric_across_sides() {
+        let bids = FastOrderBook::new(1, 1, 0, 2);
+        bids.submit_order(limit(1, 100, 30, Side::Buy));
+        assert!(matches!(
+            bids.submit(market(2, 20, Side::Sell), TimeInForce::Fok),
+            SubmitOutcome::Accepted { remaining: 0, .. }
+        ));
+
+        let asks = FastOrderBook::new(1, 1, 0, 2);
+        asks.submit_order(limit(1, 100, 30, Side::Sell));
+        assert!(
+            matches!(
+                asks.submit(market(2, 20, Side::Buy), TimeInForce::Fok),
+                SubmitOutcome::Accepted { remaining: 0, .. }
+            ),
+            "a market buy has no price bound and must fill against the asks"
+        );
+    }
+
+    /// A fill-or-kill market order still fails when the book is too thin.
+    #[test]
+    fn fok_market_order_rejects_when_thin() {
+        let book = FastOrderBook::new(1, 1, 0, 2);
+        book.submit_order(limit(1, 100, 5, Side::Sell));
+        assert!(matches!(
+            book.submit(market(2, 20, Side::Buy), TimeInForce::Fok),
+            SubmitOutcome::Rejected(RejectReason::FillOrKillUnfillable)
+        ));
+        assert!(book.trades().is_empty());
+    }
+
+    /// A partially filled market order must report the quantity that actually
+    /// traded, not the quantity that was requested, and must leave no phantom
+    /// resting order behind.
+    #[test]
+    fn market_order_reports_only_the_filled_quantity() {
+        let book = book();
+        book.submit_order(limit(1, 100, 12, Side::Sell));
+
+        let order_id = match book.submit_order(market(2, 20, Side::Buy)) {
+            SubmitOutcome::Accepted { order_id, trades, .. } => {
+                assert_eq!(trades.iter().map(|t| t.quantity).sum::<u64>(), 12);
+                order_id
+            }
+            other => panic!("unexpected outcome {other:?}"),
+        };
+
+        let order = book.get_order(order_id).expect("order recorded");
+        assert_eq!(order.filled, 12, "filled must be the executed quantity");
+        assert_eq!(order.remaining(), 8);
+        assert!(!order.is_open(), "a market order never rests");
+        assert_eq!(book.total_volume(), 12);
+        assert_eq!(book.get_stats().open_orders, 0);
+        assert!(book.get_depth(5).is_empty());
+    }
+
+    /// The unfilled remainder of an IOC order is cancelled, so it must not be
+    /// counted as an open or partially filled resting order.
+    #[test]
+    fn ioc_cancelled_remainder_is_not_open() {
+        let book = book();
+        book.submit_order(limit(1, 100, 5, Side::Sell));
+
+        let order_id = match book.submit(limit(2, 100, 20, Side::Buy), TimeInForce::Ioc) {
+            SubmitOutcome::Accepted { order_id, trades, .. } => {
+                assert_eq!(trades.len(), 1);
+                order_id
+            }
+            other => panic!("unexpected outcome {other:?}"),
+        };
+
+        let order = book.get_order(order_id).expect("order recorded");
+        assert_eq!(order.filled, 5);
+        assert_eq!(order.status, OrderStatus::Cancelled as u8);
+        assert!(!order.is_open());
+        assert_eq!(book.get_stats().open_orders, 0);
+    }
+
+    /// A cancelled partially filled order must keep the quantity it executed.
+    #[test]
+    fn cancel_preserves_the_executed_quantity() {
+        let book = book();
+        book.submit_order(limit(1, 100, 10, Side::Sell));
+
+        let order_id = match book.submit(limit(2, 100, 25, Side::Buy), TimeInForce::Gtc) {
+            SubmitOutcome::Accepted { order_id, .. } => order_id,
+            other => panic!("unexpected outcome {other:?}"),
+        };
+
+        assert!(book.cancel_order(order_id, 2));
+        let order = book.get_order(order_id).expect("order recorded");
+        assert_eq!(order.filled, 10, "only 10 units traded");
+        assert_eq!(order.remaining(), 15);
+        assert_eq!(order.status, OrderStatus::Cancelled as u8);
+    }
+
+    /// Self-trade prevention must not leave a crossed book behind.
+    #[test]
+    fn self_trade_does_not_leave_a_crossed_book() {
+        let book = book();
+        book.submit_order(limit(1, 100, 10, Side::Sell));
+
+        match book.submit_order(limit(1, 100, 10, Side::Buy)) {
+            SubmitOutcome::Accepted { trades, .. } => assert!(trades.is_empty()),
+            other => panic!("unexpected outcome {other:?}"),
+        }
+
+        assert!(book.trades().is_empty());
+        assert_eq!(book.get_spread(), None, "the incoming order must not rest");
+        // The original resting sell is untouched.
+        let depth = book.get_depth(5);
+        assert_eq!(depth.len(), 1);
+        assert_eq!(depth[0].quantity, 10);
     }
 
     #[test]

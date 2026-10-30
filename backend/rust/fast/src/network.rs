@@ -306,8 +306,11 @@ impl EpollServer {
         if connections.remove(&fd).is_some() {
             unsafe {
                 libc::epoll_ctl(self.epoll_fd, libc::EPOLL_CTL_DEL, fd, std::ptr::null_mut());
-                libc::close(fd);
             }
+            // The `TcpStream` in the removed `Connection` owns `fd` and closes
+            // it on drop. Calling `close` here as well would release the
+            // descriptor a second time, and if another thread had meanwhile
+            // been assigned that number the wrong socket would be torn down.
         }
     }
 
