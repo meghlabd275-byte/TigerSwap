@@ -3,17 +3,23 @@ package services
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // LaunchpadService handles IEO/IDO/Launchpad functionality
 type LaunchpadService struct {
 	blockchain  *BlockchainClient
 	priceAgg    *PriceAggregator
+	db          *gorm.DB
 	mu          sync.RWMutex
 	projects    map[string]*LaunchpadProject // projectID -> project
 	allocations map[string][]*Allocation     // projectID -> allocations
@@ -82,10 +88,11 @@ type VestingSchedule struct {
 	ReleaseRate   string    `json:"release_rate"` // per period
 }
 
-func NewLaunchpadService(blockchain *BlockchainClient, priceAgg *PriceAggregator) *LaunchpadService {
+func NewLaunchpadService(db *gorm.DB, blockchain *BlockchainClient, priceAgg *PriceAggregator) *LaunchpadService {
 	return &LaunchpadService{
 		blockchain:  blockchain,
 		priceAgg:    priceAgg,
+		db:          db,
 		projects:    make(map[string]*LaunchpadProject),
 		allocations: make(map[string][]*Allocation),
 		tiers: map[string]*TierConfig{
@@ -203,19 +210,33 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 		return nil, fmt.Errorf("project has ended")
 	}
 
-	// Check min/max purchase
-	minPurchase := parseFloat(project.MinPurchase)
-	maxPurchase := parseFloat(project.MaxPurchase)
-	amountFloat := parseFloat(amount)
+	// Check min/max purchase with exact decimal arithmetic. A malformed amount
+	// must be rejected rather than coerced to zero by a permissive parse.
+	amountValue, err := parseDecimal(amount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount: %w", err)
+	}
+	if amountValue.Sign() <= 0 {
+		return nil, fmt.Errorf("amount must be positive")
+	}
 
-	if amountFloat < minPurchase {
+	minPurchase, err := parseDecimal(project.MinPurchase)
+	if err != nil {
+		return nil, fmt.Errorf("project minimum purchase is invalid: %w", err)
+	}
+	maxPurchase, err := parseDecimal(project.MaxPurchase)
+	if err != nil {
+		return nil, fmt.Errorf("project maximum purchase is invalid: %w", err)
+	}
+
+	if amountValue.Cmp(minPurchase) < 0 {
 		return nil, fmt.Errorf("amount below minimum purchase")
 	}
-	if amountFloat > maxPurchase {
+	if amountValue.Cmp(maxPurchase) > 0 {
 		return nil, fmt.Errorf("amount exceeds maximum purchase")
 	}
 
-	// Determine tier based on allocation
+	// Determine tier from the participant's veTGR voting power.
 	tier := s.determineTier(userAddress)
 
 	allocation := &Allocation{
@@ -229,13 +250,21 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 
 	s.allocations[projectID] = append(s.allocations[projectID], allocation)
 
-	// Update raised amount
-	raised := parseFloat(project.RaisedAmount)
-	project.RaisedAmount = fmt.Sprintf("%.2f", raised+amountFloat)
+	// Update the raised amount exactly; the stored value is a decimal string.
+	raised, err := parseDecimal(project.RaisedAmount)
+	if err != nil {
+		return nil, fmt.Errorf("project raised amount is invalid: %w", err)
+	}
+	newRaised := new(big.Rat).Add(raised, amountValue)
+	project.RaisedAmount = formatDecimal(newRaised, 8)
 	project.Participants++
 
-	// Check if hard cap reached
-	if parseFloat(project.RaisedAmount) >= parseFloat(project.HardCap) {
+	// Close the raise once the hard cap is met.
+	hardCap, err := parseDecimal(project.HardCap)
+	if err != nil {
+		return nil, fmt.Errorf("project hard cap is invalid: %w", err)
+	}
+	if newRaised.Cmp(hardCap) >= 0 {
 		project.Status = "completed"
 	}
 
@@ -274,12 +303,23 @@ func (s *LaunchpadService) ClaimTokens(userAddress, projectID string) (string, e
 		return "", fmt.Errorf("claim not available yet")
 	}
 
-	// Calculate token amount
-	price := parseFloat(project.TokenPrice)
-	paymentAmount := parseFloat(allocation.AllocatedAmount)
-	tokenAmount := paymentAmount / price
+	// Calculate the token amount exactly. A zero or malformed price must be
+	// rejected rather than producing an infinite or NaN amount.
+	price, err := parseDecimal(project.TokenPrice)
+	if err != nil {
+		return "", fmt.Errorf("project token price is invalid: %w", err)
+	}
+	if price.Sign() <= 0 {
+		return "", fmt.Errorf("project token price must be positive")
+	}
 
-	allocation.ClaimedAmount = fmt.Sprintf("%.8f", tokenAmount)
+	paymentAmount, err := parseDecimal(allocation.AllocatedAmount)
+	if err != nil {
+		return "", fmt.Errorf("allocation amount is invalid: %w", err)
+	}
+
+	tokenAmount := new(big.Rat).Quo(paymentAmount, price)
+	allocation.ClaimedAmount = formatDecimal(tokenAmount, 8)
 	now := time.Now()
 	allocation.ClaimedAt = &now
 	allocation.Status = "claimed"
@@ -329,10 +369,122 @@ func (s *LaunchpadService) GetUserAllocation(userAddress, projectID string) (*Al
 	return nil, fmt.Errorf("no allocation found")
 }
 
+// parseDecimal converts a base-10 decimal string to an exact rational. It
+// rejects empty input, signs, exponents and any non-digit content, so money
+// arithmetic never silently becomes zero the way fmt.Sscanf would.
+func parseDecimal(raw string) (*big.Rat, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty decimal value")
+	}
+	if strings.HasPrefix(trimmed, "-") || strings.HasPrefix(trimmed, "+") {
+		return nil, fmt.Errorf("decimal value must not be signed: %q", raw)
+	}
+
+	parts := strings.Split(trimmed, ".")
+	if len(parts) > 2 {
+		return nil, fmt.Errorf("invalid decimal value: %q", raw)
+	}
+
+	digits := parts[0]
+	if len(parts) == 2 {
+		digits += parts[1]
+	}
+	if digits == "" || !isAllDigits(digits) {
+		return nil, fmt.Errorf("invalid decimal value: %q", raw)
+	}
+
+	value, ok := new(big.Rat).SetString(trimmed)
+	if !ok {
+		return nil, fmt.Errorf("invalid decimal value: %q", raw)
+	}
+	return value, nil
+}
+
+func isAllDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// formatDecimal renders a rational as a plain decimal string with exactly
+// `places` fractional digits, truncating rather than rounding up.
+func formatDecimal(value *big.Rat, places int) string {
+	scaled := new(big.Rat).Mul(value, new(big.Rat).SetInt(pow10(places)))
+	floored := new(big.Int).Quo(scaled.Num(), scaled.Denom())
+
+	negative := floored.Sign() < 0
+	if negative {
+		floored.Neg(floored)
+	}
+
+	digits := floored.String()
+	if len(digits) <= places {
+		digits = strings.Repeat("0", places-len(digits)+1) + digits
+	}
+	out := digits[:len(digits)-places] + "." + digits[len(digits)-places:]
+	if negative {
+		out = "-" + out
+	}
+	return out
+}
+
+func pow10(n int) *big.Int {
+	return new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(n)), nil)
+}
+
+// determineTier returns the launchpad tier for a participant from the veTGR
+// voting power their wallet holds. Thresholds come from this service's own tier
+// configuration, so none is hardcoded here.
 func (s *LaunchpadService) determineTier(userAddress string) string {
-	// In production, this would check user's staked amount
-	// For now, return bronze as default
-	return "bronze"
+	power := s.stakedPower(userAddress)
+	if power.Sign() <= 0 {
+		return "bronze"
+	}
+
+	bestName := "bronze"
+	bestThreshold := big.NewInt(-1)
+	for name, tier := range s.tiers {
+		threshold, ok := new(big.Int).SetString(tier.MinStake, 10)
+		if !ok {
+			continue
+		}
+		if power.Cmp(threshold) >= 0 && threshold.Cmp(bestThreshold) > 0 {
+			bestName = name
+			bestThreshold = threshold
+		}
+	}
+	return bestName
+}
+
+// stakedPower returns the veTGR voting power of the user owning `userAddress`.
+// Addresses are compared case-insensitively because they are stored lowercase.
+func (s *LaunchpadService) stakedPower(userAddress string) *big.Int {
+	if s.db == nil || strings.TrimSpace(userAddress) == "" {
+		return big.NewInt(0)
+	}
+
+	var user models.User
+	if err := s.db.Where("LOWER(wallet_address) = ?", strings.ToLower(strings.TrimSpace(userAddress))).
+		First(&user).Error; err != nil {
+		return big.NewInt(0)
+	}
+
+	var locks []models.VeLock
+	if err := s.db.Where("user_id = ? AND withdrawn = ?", user.ID.String(), false).
+		Find(&locks).Error; err != nil {
+		return big.NewInt(0)
+	}
+
+	now := time.Now()
+	total := big.NewInt(0)
+	for _, lock := range locks {
+		total.Add(total, votingPower(lock, now))
+	}
+	return total
 }
 
 // GetTiers returns all tier configurations

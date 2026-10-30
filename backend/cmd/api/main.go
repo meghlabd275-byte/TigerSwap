@@ -145,7 +145,7 @@ func main() {
 	})
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
-	launchpadService := services.NewLaunchpadService(blockchainClient, priceAggregator)
+	launchpadService := services.NewLaunchpadService(db, blockchainClient, priceAggregator)
 	feeCollector := services.NewFeeCollectorService()
 	feeCollector.SetBlockchain(blockchainClient)
 	feeCollector.SetDB(db)
