@@ -1,4 +1,9 @@
 import type { Metadata } from 'next';
+
+// The middleware issues a per-request CSP nonce, and a prerendered page cannot
+// carry one. Rendering on demand is what lets Next stamp the nonce onto every
+// script tag, which in turn is what makes the CSP effective against XSS.
+export const dynamic = 'force-dynamic';
 import './globals.css';
 import { Providers } from '@/components/Providers';
 
