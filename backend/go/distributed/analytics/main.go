@@ -301,11 +301,17 @@ func main() {
 
 	go func() {
 		<-quit
-		srv.Shutdown(context.Background())
-		os.Exit(0)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Printf("analytics shutdown error: %v\n", err)
+		}
 	}()
 
-	srv.ListenAndServe()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("analytics server error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func getEnv(key, def string) string {

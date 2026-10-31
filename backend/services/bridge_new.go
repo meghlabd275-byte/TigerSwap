@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -566,9 +565,3 @@ func (s *BridgeService) GetSupportedChainsHandler(c *gin.Context) {
 		"chains": chains,
 	})
 }
-
-// unused import guards
-var (
-	_ = ethereum.NotFound
-	_ = sync.RWMutex{}
-)
