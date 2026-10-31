@@ -62,8 +62,20 @@ cd backend/python/ml && python3 -m pytest tests -q
 cd backend/python/sdk && python3 -m pytest tests -q
 ```
 
-`cargo`, `cmake` and `libssl-dev` are not preinstalled; install them (rustup,
-`apt-get install -y cmake libssl-dev`) before running those suites.
+`cargo`, `cmake` and `libssl-dev` are not preinstalled; install them before
+running those suites. What actually works in this container:
+
+```
+export PATH="$HOME/.cargo/bin:$PATH"     # cargo, rustc
+export PATH="/tmp/goroot/bin:$PATH"      # go, not on PATH by default
+pip install cmake                        # lands in ~/.local/bin, so add it to PATH
+sudo apt-get update && sudo apt-get install -y libssl-dev   # update first, the
+                                                            # package index starts stale
+cd backend/python && PYTHONPATH="ml:sdk" python3 -m pytest ml/tests sdk/tests -q
+```
+
+The Python packages are not installed into site-packages, so `PYTHONPATH` has
+to point at `ml` and `sdk` or collection fails with `ModuleNotFoundError`.
 
 The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
 
@@ -100,6 +112,24 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   the growth in `sqrt(k)`. While `feeTo` is unset the protocol fee is inert.
 - Liquidity and accounting math rounds in the protocol's favour: fee and share
   calculations divide last, and losses are clamped to the escrowed amount.
+- `forge test` builds with the IR pipeline and the optimizer, and a contract
+  that compiles on its own can still fail the whole build with
+  `Yul exception: Variable ... is 1 too deep in the stack`. The IR optimizer
+  runs out of reachable stack slots, and it does so on a contract that is only
+  one slot over. Grouping locals into a single memory struct and sharing one
+  helper between similar external functions is the fix; there is no flag to
+  raise the limit. When this happens, suspect the last function you touched,
+  not the whole file — removing unrelated functions will not make it compile.
+  Note that `solc ... test/X.t.sol` is not a valid cross-check: without the
+  import remappings it fails to find `forge-std` and exits successfully with an
+  error string, which reads like a pass if you only grep for the Yul message.
+- Signature recovery must range-check `v` (27/28) and reject `s` above
+  `0x7FFF...B20A0` before calling `ecrecover`. A high-s signature is malleable
+  and recovers to a different address; the precompile also returns the zero
+  address on bad input, which must be rejected rather than treated as a signer.
+- ERC-20 transfers to third-party tokens go through a call-based helper that
+  accepts a zero-length return (USDT returns nothing) and rejects an explicit
+  `false`. A direct `IERC20.transfer` reverts against the former.
 
 ## Ledger and funds
 
