@@ -200,11 +200,18 @@ Each language lives in its own tree, and two Go modules exist, so a plain
 | `backend/go/api_gateway/` | `go build ./...` | `go test ./...` |
 | `backend/rust/` | `cargo build --release` | `cargo test --release` |
 | `backend/cpp/` | `cmake -S . -B build && cmake --build build` | `ctest --output-on-failure` |
+| `backend/java/sdk/` | `./build.sh` | `./build.sh` (runs the suite) |
 | `frontend/` | `npm run build` | `npx tsc --noEmit` |
 
 `backend/go/api_gateway` is a **separate module** (its own `go.mod`). Go commands
 run in `backend/` skip it entirely. Always build and test it explicitly; a
 compile error there is invisible from the parent module.
+
+`backend/java/sdk` has **no third-party dependencies**: it uses the JDK's
+`HttpClient` and a small in-tree JSON codec (`Json.java`). `build.sh` compiles
+with `-Xlint:all -Werror` and then runs the suite, so any warning fails the
+build. Only a JDK is needed; there is no Maven or Gradle wrapper and none should
+be added.
 
 `contracts/lib/` is gitignored, so `forge-std` is not in the repository. On a
 clean checkout, clone it before running `forge test`:
