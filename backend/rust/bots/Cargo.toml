@@ -1,0 +1,14 @@
+[package]
+name = "tigerswap-bots"
+version = "1.0.0"
+edition = "2021"
+authors = ["TigerSwap Team <bots@tigerswap.io>"]
+description = "Self-built trading bots for TigerSwap: market maker, grid, DCA, arbitrage, sniper, TWAP, rebalance and liquidation"
+license = "MIT"
+
+[lib]
+name = "tigerswap_bots"
+crate-type = ["rlib"]
+
+[dependencies]
+parking_lot = "0.12"
