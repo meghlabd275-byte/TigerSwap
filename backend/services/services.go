@@ -2,8 +2,6 @@ package services
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1876,11 +1874,4 @@ func GetBankDetails(c *gin.Context) {
 	}
 
 	c.JSON(200, bankDetails)
-}
-
-// Helper function to generate random hex
-func generateRandomHex(length int) string {
-	bytes := make([]byte, length/2)
-	rand.Read(bytes)
-	return hex.EncodeToString(bytes)
 }
