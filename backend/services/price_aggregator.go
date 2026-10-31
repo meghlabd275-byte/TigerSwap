@@ -271,17 +271,21 @@ func (p *PriceAggregator) GetAggregatedQuote(ctx context.Context, chainID int64,
 		sourceQuotes[string(q.family)] = q.out.String()
 	}
 
-	// Price impact from the oracle's own USD prices, when both tokens are
-	// known on this chain.
+	// Price impact from the oracle's own USD prices, when both tokens are known
+	// on this chain. Each side is scaled by its own token's decimals: using a
+	// fixed 18 would misvalue a 6-decimal token like USDC by 1e12 and report a
+	// nonsense impact.
 	var priceImpact float64
 	fromSym, fromOK := config.TokenSymbol(chainID, fromToken)
 	toSym, toOK := config.TokenSymbol(chainID, toToken)
-	if fromOK && toOK {
+	fromDecimals, fromDecOK := config.TokenDecimals(chainID, fromToken)
+	toDecimals, toDecOK := config.TokenDecimals(chainID, toToken)
+	if fromOK && toOK && fromDecOK && toDecOK {
 		priceFrom, fromErr := p.PriceOnChain(ctx, chainID, fromSym)
 		priceTo, toErr := p.PriceOnChain(ctx, chainID, toSym)
 		if fromErr == nil && toErr == nil && priceFrom.USD > 0 && priceTo.USD > 0 {
-			inputValue := weiToFloat(amountIn, 18) * priceFrom.USD
-			outputValue := weiToFloat(best.out, 18) * priceTo.USD
+			inputValue := weiToFloat(amountIn, fromDecimals) * priceFrom.USD
+			outputValue := weiToFloat(best.out, toDecimals) * priceTo.USD
 			if inputValue > 0 {
 				priceImpact = ((inputValue - outputValue) / inputValue) * 100
 			}

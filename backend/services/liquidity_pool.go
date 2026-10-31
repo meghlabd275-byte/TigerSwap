@@ -371,12 +371,8 @@ const erc20DecimalsABIJSON = `[{"constant":true,"inputs":[],"name":"decimals","o
 // cannot be determined is an error, because scaling its amounts with a guessed
 // value would misprice volume.
 func (s *LiquidityPoolService) tokenDecimals(ctx context.Context, chainID int64, client *ethclient.Client, token common.Address) (int, error) {
-	if symbol, ok := config.TokenSymbol(chainID, token.Hex()); ok {
-		for _, t := range config.GetTokenConfigs()[chainID] {
-			if strings.EqualFold(t.Symbol, symbol) && t.Decimals > 0 {
-				return t.Decimals, nil
-			}
-		}
+	if decimals, ok := config.TokenDecimals(chainID, token.Hex()); ok && decimals > 0 {
+		return decimals, nil
 	}
 
 	parsedABI, err := abi.JSON(strings.NewReader(erc20DecimalsABIJSON))

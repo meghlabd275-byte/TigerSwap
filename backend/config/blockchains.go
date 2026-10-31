@@ -765,6 +765,33 @@ func TokenSymbol(chainID int64, tokenAddress string) (string, bool) {
 	return "", false
 }
 
+// TokenDecimals returns the decimals for a token address on a chain. The zero
+// address resolves to the chain's native asset. The boolean is false when the
+// token is unknown, so a caller never scales an amount by a guessed value.
+func TokenDecimals(chainID int64, tokenAddress string) (int, bool) {
+	addr := strings.TrimSpace(tokenAddress)
+	if addr == "" {
+		return 0, false
+	}
+
+	chain, known := GetBlockchainConfigs()[chainID]
+
+	isZero := strings.EqualFold(addr, "0x0000000000000000000000000000000000000000") || addr == "0"
+	if isZero {
+		if known && chain.NativeToken != nil {
+			return chain.NativeToken.Decimals, true
+		}
+		return 0, false
+	}
+
+	for _, t := range GetTokenConfigs()[chainID] {
+		if strings.EqualFold(t.Address, addr) {
+			return t.Decimals, true
+		}
+	}
+	return 0, false
+}
+
 // BigIntFromHex converts a hex string to big.Int
 func BigIntFromHex(hex string) *big.Int {
 	hex = strings.TrimPrefix(hex, "0x")

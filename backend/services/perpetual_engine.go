@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,7 +92,7 @@ type perpMarketConfig struct {
 	TakerFeeRate          float64
 	MaintenanceMarginRate float64
 	LiquidationFeeRate    float64
-	MaxOpenInterest       float64
+	MaxOpenInterest       string
 	PriceImpactRate       float64
 }
 
@@ -204,7 +206,7 @@ func perpsMarketConfig(m *models.PerpsMarket) *perpMarketConfig {
 		TakerFeeRate:          m.TakerFeeRate,
 		MaintenanceMarginRate: m.MaintenanceMarginRate,
 		LiquidationFeeRate:    m.LiquidationFeeRate,
-		MaxOpenInterest:       parseFloat(m.MaxOpenInterest),
+		MaxOpenInterest:       strings.TrimSpace(m.MaxOpenInterest),
 		PriceImpactRate:       m.PriceImpactRate,
 	}
 }
@@ -278,19 +280,51 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 	liquidationPrice := e.calculateLiquidationPrice(markPrice, leverage, side == "long")
 
 	// Validate numeric inputs and enforce leverage limits.
-	sizeFloat := parseFloat(size)
-	collateralFloat := parseFloat(collateral)
-	if sizeFloat <= 0 || collateralFloat <= 0 {
-		return nil, fmt.Errorf("size and collateral must be positive")
+	sizeRat, err := perpAmountValue(size)
+	if err != nil {
+		return nil, err
 	}
-	if markPrice <= 0 {
+	collateralRat, err := perpAmountValue(collateral)
+	if err != nil {
+		return nil, err
+	}
+	if markPrice <= 0 || math.IsNaN(markPrice) || math.IsInf(markPrice, 0) {
 		return nil, fmt.Errorf("no mark price available for %s", pair)
 	}
 	if leverage < 1 || leverage > cfg.MaxLeverage {
 		return nil, fmt.Errorf("leverage must be between 1 and %d for %s", cfg.MaxLeverage, cfg.Symbol)
 	}
-	if requiredMargin := sizeFloat / float64(leverage); collateralFloat+1e-9 < requiredMargin {
-		return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", requiredMargin, leverage, sizeFloat)
+
+	// Margin is size/leverage, computed exactly so a position sized to the limit
+	// is accepted rather than refused by binary rounding.
+	requiredMargin := new(big.Rat).Quo(sizeRat, new(big.Rat).SetInt64(int64(leverage)))
+	if collateralRat.Cmp(requiredMargin) < 0 {
+		need, err := rationalToFloat(requiredMargin)
+		if err != nil {
+			return nil, err
+		}
+		sizeValue, err := rationalToFloat(sizeRat)
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", need, leverage, sizeValue)
+	}
+
+	// Enforce the listing's open-interest cap. Without this a listed cap was
+	// accepted by the admin API and then never applied to trading.
+	if cap, limited, err := openInterestCapRat(cfg); err != nil {
+		return nil, err
+	} else if limited {
+		long, short, err := e.openInterestRat(pair)
+		if err != nil {
+			return nil, err
+		}
+		open := new(big.Rat).Add(long, short)
+		projected := new(big.Rat).Add(open, sizeRat)
+		if projected.Cmp(cap) > 0 {
+			return nil, fmt.Errorf("open interest cap reached for %s: %s open plus %s would exceed the %s cap",
+				cfg.Symbol, open.RatString(), sizeRat.RatString(), cap.RatString())
+		}
 	}
 
 	position := &PerpetualPosition{
@@ -334,6 +368,15 @@ func (e *PerpetualEngine) ClosePosition(ctx context.Context, ownerID, positionID
 		// endpoint cannot be used to probe which position ids exist.
 		return nil, fmt.Errorf("position not found: %s", positionID)
 	}
+	if position.Status == "liquidatable" {
+		// A position the risk engine has flagged must settle through
+		// LiquidatePosition, which applies the liquidation fee. Allowing a plain
+		// close here would let the trader escape that penalty.
+		return nil, fmt.Errorf("position %s is being liquidated and cannot be closed", positionID)
+	}
+	if position.Status != "open" {
+		return nil, fmt.Errorf("position %s is not open (status %s)", positionID, position.Status)
+	}
 
 	// Get current price
 	markPrice, err := e.getMarkPrice(ctx, position.Pair)
@@ -373,7 +416,7 @@ func (e *PerpetualEngine) GetUserPositions(userAddress string) []*PerpetualPosit
 
 	var userPositions []*PerpetualPosition
 	for _, pos := range e.positions {
-		if pos.UserAddress == userAddress && pos.Status == "open" {
+		if pos.UserAddress == userAddress && positionIsLive(pos.Status) {
 			userPositions = append(userPositions, pos)
 		}
 	}
@@ -381,13 +424,19 @@ func (e *PerpetualEngine) GetUserPositions(userAddress string) []*PerpetualPosit
 	return userPositions
 }
 
-// UpdatePositions updates all positions with current prices and checks liquidation
+// UpdatePositions refreshes mark prices and unrealised PnL for every open
+// position. A position that has crossed its liquidation price is marked so it
+// can no longer be traded against, but this method deliberately does not settle
+// it: liquidation moves funds and must be executed by an operator or liquidation
+// bot through LiquidatePosition. Detecting a liquidation here and silently
+// leaving the position open would let a trader close at a price the risk engine
+// has already declared invalid.
 func (e *PerpetualEngine) UpdatePositions(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	for _, position := range e.positions {
-		if position.Status != "open" {
+		if !positionIsLive(position.Status) {
 			continue
 		}
 
@@ -399,17 +448,125 @@ func (e *PerpetualEngine) UpdatePositions(ctx context.Context) error {
 
 		position.MarkPrice = markPrice
 
-		// Check liquidation
+		// A position that has crossed its liquidation price is flagged for
+		// settlement; one that has recovered is returned to open, so a temporary
+		// wick does not leave a healthy position permanently untradable.
 		if e.isLiquidatable(position) {
-			position.Status = "liquidated"
-			// In real implementation, would trigger liquidation transaction
-		} else {
-			// Update unrealized PNL
-			position.UnrealizedPNL = e.calculatePNL(position, markPrice)
+			position.Status = "liquidatable"
+		} else if position.Status == "liquidatable" {
+			position.Status = "open"
 		}
+		position.UnrealizedPNL = e.calculatePNL(position, markPrice)
 	}
 
 	return nil
+}
+
+// LiquidatablePositions returns every position whose mark price has crossed its
+// liquidation price and that has not yet been settled. A liquidation bot or an
+// operator acts on this list; detection is separate from execution.
+func (e *PerpetualEngine) LiquidatablePositions() []*PerpetualPosition {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var liquidatable []*PerpetualPosition
+	for _, position := range e.positions {
+		if position.Status == "liquidatable" {
+			liquidatable = append(liquidatable, position)
+		}
+	}
+	return liquidatable
+}
+
+// LiquidatePosition settles an under-collateralised position. The trader's
+// remaining margin, less the listing's liquidation fee, is returned to the
+// caller as the liquidator's reward and the position is closed. It refuses any
+// position that is not currently flagged liquidatable, so it cannot be used to
+// close a healthy position and seize its margin.
+//
+// Returns the liquidation fee owed to the caller.
+func (e *PerpetualEngine) LiquidatePosition(ctx context.Context, positionID string) (*big.Rat, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	position, exists := e.positions[positionID]
+	if !exists {
+		return nil, fmt.Errorf("position not found: %s", positionID)
+	}
+	if position.Status != "liquidatable" {
+		return nil, fmt.Errorf("position %s is not liquidatable (status %s)", positionID, position.Status)
+	}
+
+	cfg := e.market(position.Pair)
+	if cfg == nil {
+		return nil, fmt.Errorf("market %s is no longer listed", position.Pair)
+	}
+
+	// Re-price at settlement: the flag was set by an earlier update and the price
+	// may have recovered since, in which case the position is no longer
+	// liquidatable and must be left alone.
+	markPrice, err := e.getMarkPrice(ctx, position.Pair)
+	if err != nil {
+		return nil, err
+	}
+	position.MarkPrice = markPrice
+	if !e.isLiquidatable(position) {
+		position.Status = "open"
+		position.UnrealizedPNL = e.calculatePNL(position, markPrice)
+		return nil, fmt.Errorf("position %s is no longer liquidatable at mark %g", positionID, markPrice)
+	}
+
+	// The liquidator receives the remaining margin less the liquidation fee. A
+	// position whose loss exceeds its margin has nothing left to pay out.
+	collateral, err := parseDecimal(position.Collateral)
+	if err != nil {
+		return nil, fmt.Errorf("position %s has unreadable collateral %q: %w", positionID, position.Collateral, err)
+	}
+	pnl, err := notionalPNL(position.EntryPrice, markPrice, position.Size, position.Side)
+	if err != nil {
+		return nil, fmt.Errorf("position %s: %w", positionID, err)
+	}
+
+	fee, err := liquidationPayout(collateral, pnl, cfg.LiquidationFeeRate, cfg.Symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	position.Status = "liquidated"
+	position.ClosedAt = &now
+	position.UnrealizedPNL = formatDecimal(pnl, 8)
+
+	// The fee is the liquidator's reward; the remainder is the trader's returned
+	// margin. Both are reported in settlement terms.
+	return fee, nil
+}
+
+// liquidationPayout computes the fee a liquidator earns on a settled position.
+// The trader's remaining margin is the posted collateral plus the position's
+// PnL; a loss larger than the collateral leaves nothing to pay out, so the fee
+// floors at zero rather than going negative and charging the liquidator.
+//
+// It is a pure function so the funds arithmetic can be tested without a price
+// feed or a database.
+func liquidationPayout(collateral, pnl *big.Rat, feeRate float64, symbol string) (*big.Rat, error) {
+	if collateral == nil || pnl == nil {
+		return nil, errors.New("liquidation payout requires a collateral and PnL value")
+	}
+
+	rate, err := rationalFromFloat(feeRate)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s has an unreadable liquidation fee rate %g: %w", symbol, feeRate, err)
+	}
+	if rate.Sign() < 0 || rate.Cmp(big.NewRat(1, 1)) > 0 {
+		return nil, fmt.Errorf("listing %s has an out-of-range liquidation fee rate %g", symbol, feeRate)
+	}
+
+	remaining := new(big.Rat).Add(collateral, pnl)
+	if remaining.Sign() < 0 {
+		remaining = new(big.Rat)
+	}
+	return new(big.Rat).Mul(remaining, rate), nil
 }
 
 // CreateOrder creates a new perpetual order
@@ -528,20 +685,41 @@ func (e *PerpetualEngine) isLiquidatable(position *PerpetualPosition) bool {
 // leverage a second time would report ten times the true profit, which is why
 // it is deliberately absent here.
 func (e *PerpetualEngine) calculatePNL(position *PerpetualPosition, currentPrice float64) string {
-	return fmt.Sprintf("%.8f", notionalPNL(position.EntryPrice, currentPrice, position.Size, position.Side))
+	pnl, err := notionalPNL(position.EntryPrice, currentPrice, position.Size, position.Side)
+	if err != nil {
+		// A position whose size cannot be read has no meaningful PnL. Reporting zero
+		// is the conservative choice: it never credits the trader with a gain.
+		return "0"
+	}
+	return formatDecimal(pnl, 8)
 }
 
-// notionalPNL computes the PnL of a position whose size is a notional amount.
-func notionalPNL(entryPrice, currentPrice float64, size, side string) float64 {
-	if entryPrice <= 0 {
-		return 0
+// notionalPNL computes the PnL of a position whose size is a notional amount,
+// using exact rational arithmetic so the reported figure is not distorted by
+// binary rounding. A zero or negative entry price yields zero: the position has
+// no cost basis to measure a move against.
+func notionalPNL(entryPrice, currentPrice float64, size, side string) (*big.Rat, error) {
+	if entryPrice <= 0 || math.IsNaN(entryPrice) || math.IsInf(entryPrice, 0) {
+		return new(big.Rat), nil
 	}
-	notional := parseFloat(size)
-	move := (currentPrice - entryPrice) / entryPrice
+	notional, err := parseDecimal(size)
+	if err != nil {
+		return nil, err
+	}
+	entry, err := rationalFromFloat(entryPrice)
+	if err != nil {
+		return nil, err
+	}
+	current, err := rationalFromFloat(currentPrice)
+	if err != nil {
+		return nil, err
+	}
+
+	move := new(big.Rat).Quo(new(big.Rat).Sub(current, entry), entry)
 	if strings.EqualFold(side, "short") {
-		move = -move
+		move.Neg(move)
 	}
-	return move * notional
+	return move.Mul(move, notional), nil
 }
 
 func (e *PerpetualEngine) isValidPair(pair string) bool {
@@ -764,7 +942,12 @@ func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
 			view.FundingRate = funding.LastFundingRate
 		}
 
-		long, short := e.openInterest(symbol)
+		long, short, err := e.openInterest(symbol)
+		if err != nil {
+			// A market whose positions cannot be valued is reported with zero open
+			// interest rather than a partial total that would understate it.
+			long, short = 0, 0
+		}
 		view.OpenInterestLong = long
 		view.OpenInterestShort = short
 
@@ -775,20 +958,18 @@ func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
 }
 
 // openInterest totals the notional of open positions on one symbol.
-func (e *PerpetualEngine) openInterest(symbol string) (float64, float64) {
-	var long, short float64
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	for _, position := range e.positions {
-		if position.Pair != symbol || position.Status != "open" {
-			continue
-		}
-		notional := parseFloat(position.Size)
-		if position.Side == "short" {
-			short += notional
-		} else {
-			long += notional
-		}
+func (e *PerpetualEngine) openInterest(symbol string) (float64, float64, error) {
+	long, short, err := e.openInterestRat(symbol)
+	if err != nil {
+		return 0, 0, err
 	}
-	return long, short
+	longValue, err := rationalToFloat(long)
+	if err != nil {
+		return 0, 0, err
+	}
+	shortValue, err := rationalToFloat(short)
+	if err != nil {
+		return 0, 0, err
+	}
+	return longValue, shortValue, nil
 }

@@ -337,7 +337,13 @@ func (e *CopyTradingEngine) getPriceForPair(ctx context.Context, pair string) (f
 // value of the copied position, so the leverage is already reflected in the
 // collateral and must not be applied again to the price move.
 func (e *CopyTradingEngine) calculateCopyPNL(position *CopyPosition) string {
-	return fmt.Sprintf("%.8f", notionalPNL(position.EntryPrice, position.CurrentPrice, position.Size, position.Side))
+	pnl, err := notionalPNL(position.EntryPrice, position.CurrentPrice, position.Size, position.Side)
+	if err != nil {
+		// A position whose size cannot be read has no meaningful PnL; reporting zero
+		// never credits the follower with a gain.
+		return "0"
+	}
+	return formatDecimal(pnl, 8)
 }
 
 // API Handlers

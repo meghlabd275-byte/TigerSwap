@@ -1130,7 +1130,9 @@ func (s *AdminService) GetDashboard(c *gin.Context) {
 	s.db.Model(&models.Token{}).Count(&tokenCount)
 	s.db.Model(&models.Pool{}).Count(&poolCount)
 	s.db.Model(&models.Order{}).Count(&orderCount)
-	s.db.Model(&models.PerpetualPosition{}).Where("status = ?", "open").Count(&positionCount)
+	// "liquidatable" positions are still live exposure, so they are counted
+	// alongside open ones; only closed and settled positions drop out.
+	s.db.Model(&models.PerpetualPosition{}).Where("status IN ?", []string{"open", "liquidatable"}).Count(&positionCount)
 
 	var tvl float64
 	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
