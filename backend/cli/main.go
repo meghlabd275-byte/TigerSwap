@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"tigerswap/backend/go/sdk"
 )
@@ -101,7 +102,7 @@ func printChains(chains []tigerswap.Chain) {
 	fmt.Println("Supported Chains:")
 	fmt.Println("-----------------")
 	for _, c := range chains {
-		fmt.Printf("%d: %s (%s) - %s\n", c.ChainID, c.Name, c.Symbol, c.Type)
+		fmt.Printf("%d: %s (%s) - %s\n", c.ID, c.Name, c.NativeSymbol, c.ChainType)
 	}
 }
 
@@ -109,36 +110,39 @@ func printTokens(tokens []tigerswap.Token) {
 	fmt.Println("Tokens:")
 	fmt.Println("-------")
 	for _, t := range tokens {
-		fmt.Printf("%s: %s (%s) - $%.2f\n", t.Symbol, t.Name, t.Address, t.Price)
+		price := "n/a"
+		if t.PriceUSD != nil {
+			price = fmt.Sprintf("$%.2f", *t.PriceUSD)
+		}
+		fmt.Printf("%s: %s (%s) - %s\n", t.Symbol, t.Name, t.Address, price)
 	}
 }
 
 func printQuote(quote *tigerswap.SwapQuote) {
 	fmt.Println("Swap Quote:")
 	fmt.Println("-----------")
-	fmt.Printf("From: %s\n", quote.FromToken)
-	fmt.Printf("To: %s\n", quote.ToToken)
-	fmt.Printf("Output: %s\n", quote.ToAmount)
-	fmt.Printf("Min Output: %s\n", quote.ToAmountMin)
-	fmt.Printf("Price Impact: %s\n", quote.PriceImpact)
+	fmt.Printf("Input: %s\n", quote.AmountIn)
+	fmt.Printf("Output: %s\n", quote.AmountOut)
+	fmt.Printf("Min Output: %s\n", quote.AmountOutMin)
+	fmt.Printf("Price Impact: %.4f\n", quote.PriceImpact)
+	fmt.Printf("Route: %s\n", strings.Join(quote.Route, " -> "))
 }
 
 func printStats(stats *tigerswap.MarketStats) {
 	fmt.Println("Market Statistics:")
 	fmt.Println("------------------")
-	fmt.Printf("Total TVL: %s\n", stats.TotalTVL)
-	fmt.Printf("24h Volume: %s\n", stats.Volume24h)
-	fmt.Printf("7d Volume: %s\n", stats.Volume7d)
-	fmt.Printf("24h Fees: %s\n", stats.Fees24h)
-	fmt.Printf("Pools: %d\n", stats.PoolCount)
-	fmt.Printf("Tokens: %d\n", stats.TokenCount)
+	fmt.Printf("Total TVL: $%.2f\n", stats.TotalTVL)
+	fmt.Printf("24h Volume: $%.2f\n", stats.Volume24h)
+	fmt.Printf("Pairs: %d\n", stats.TotalPairs)
+	fmt.Printf("Users: %d\n", stats.TotalUsers)
 }
 
 func printPools(pools []tigerswap.Pool) {
 	fmt.Println("Liquidity Pools:")
 	fmt.Println("----------------")
 	for _, p := range pools {
-		fmt.Printf("%s/%s: %s\n", p.TokenAAddress[:10], p.TokenBAddress[:10], p.TotalLiquidity)
+		fmt.Printf("%s/%s: %.6f / %.6f (fee %d bps)\n",
+			p.Symbol0, p.Symbol1, p.Reserve0, p.Reserve1, p.FeeBps)
 	}
 }
 

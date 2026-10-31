@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/big"
 	"net/http"
 	"net/url"
 	"os"
@@ -66,20 +65,22 @@ func seedChains(db *gorm.DB) {
 	log.Println("Seeded blockchain data")
 }
 
+// GetSupportedChains lists active chains as a bare array of camelCase objects,
+// which is the shape the frontend's chain validator requires.
 func (s *BlockchainService) GetSupportedChains(c *gin.Context) {
 	var chains []models.Blockchain
-	s.db.Where("is_active = ?", true).Find(&chains)
-	c.JSON(200, gin.H{"chains": chains, "count": len(chains)})
+	s.db.Where("is_active = ?", true).Order("chain_id ASC").Find(&chains)
+	c.JSON(http.StatusOK, newChainDTOs(chains))
 }
 
 func (s *BlockchainService) GetChain(c *gin.Context) {
 	id := c.Param("id")
 	var chain models.Blockchain
 	if err := s.db.Where("chain_id = ?", id).First(&chain).Error; err != nil {
-		c.JSON(404, gin.H{"error": "Chain not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Chain not found"})
 		return
 	}
-	c.JSON(200, chain)
+	c.JSON(http.StatusOK, newChainDTO(chain))
 }
 
 // TokenService handles token operations
@@ -116,32 +117,41 @@ func seedTokens(db *gorm.DB) {
 	log.Println("Seeded token data")
 }
 
+// GetTokens lists active tokens as a bare array of camelCase objects.
+//
+// The chain filter accepts either `chain_id` (internal callers) or `chainId`
+// (the browser client), so the public endpoint serves both without the frontend
+// having to know the internal spelling.
 func (s *TokenService) GetTokens(c *gin.Context) {
 	chainID := c.Query("chain_id")
+	if chainID == "" {
+		chainID = c.Query("chainId")
+	}
 	query := s.db.Where("is_active = ?", true)
 	if chainID != "" {
 		query = query.Where("chain_id = ?", chainID)
 	}
 	var tokens []models.Token
-	query.Find(&tokens)
-	c.JSON(200, gin.H{"tokens": tokens, "count": len(tokens)})
+	query.Order("chain_id ASC, symbol ASC").Find(&tokens)
+	c.JSON(http.StatusOK, newTokenDTOs(tokens))
 }
 
 func (s *TokenService) GetToken(c *gin.Context) {
 	address := c.Param("address")
 	var token models.Token
 	if err := s.db.Where("address = ?", address).First(&token).Error; err != nil {
-		c.JSON(404, gin.H{"error": "Token not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Token not found"})
 		return
 	}
-	c.JSON(200, token)
+	c.JSON(http.StatusOK, newTokenDTO(token))
 }
 
 func (s *TokenService) SearchTokens(c *gin.Context) {
 	query := c.Query("q")
 	var tokens []models.Token
-	s.db.Where("symbol ILIKE ? OR name ILIKE ?", "%"+query+"%", "%"+query+"%").Limit(20).Find(&tokens)
-	c.JSON(200, gin.H{"tokens": tokens})
+	s.db.Where("symbol ILIKE ? OR name ILIKE ?", "%"+query+"%", "%"+query+"%").
+		Order("symbol ASC").Limit(20).Find(&tokens)
+	c.JSON(http.StatusOK, newTokenDTOs(tokens))
 }
 
 // SwapService handles swap operations
@@ -161,81 +171,55 @@ func SetPriceAggregator(agg *PriceAggregator) {
 	globalPriceAggregator = agg
 }
 
+// GetQuote returns a swap quote produced by TigerSwap's own aggregator against
+// TigerSwap's own pools.
+//
+// There is deliberately no fallback that derives a price from two oracle values
+// and a fixed fee: that would publish an invented amount and a fabricated price
+// impact and gas estimate. When no real route can be priced, the endpoint says
+// so instead of returning a number the caller could act on.
 func (s *SwapService) GetQuote(c *gin.Context) {
 	var req struct {
 		TokenIn  string `json:"token_in" binding:"required"`
 		TokenOut string `json:"token_out" binding:"required"`
-		Amount   string `json:"amount" binding:"required"`
+		AmountIn string `json:"amount_in" binding:"required"`
 		ChainID  int64  `json:"chain_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if _, ok := parseBaseUnits(req.AmountIn, 0); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_in must be a non-negative integer string"})
 		return
 	}
 
-	// Use price aggregator for real quotes
-	if globalPriceAggregator != nil {
-		quote, err := globalPriceAggregator.GetAggregatedQuote(c.Request.Context(), req.ChainID, req.TokenIn, req.TokenOut, req.Amount, nil)
-		if err == nil {
-			c.JSON(200, quote)
-			return
-		}
+	if globalPriceAggregator == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "TigerAggregator not configured"})
+		return
 	}
 
-	// Fallback: calculate from individual prices
-	tokenInSymbol := s.getSymbolFromAddress(req.TokenIn)
-	tokenOutSymbol := s.getSymbolFromAddress(req.TokenOut)
-
-	var tokenInPrice, tokenOutPrice float64 = 1.0, 1.0
-
-	if globalPriceAggregator != nil {
-		if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), tokenInSymbol); err == nil {
-			tokenInPrice = pd.USD
-		}
-		if pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), tokenOutSymbol); err == nil {
-			tokenOutPrice = pd.USD
-		}
+	quote, err := globalPriceAggregator.GetAggregatedQuote(
+		c.Request.Context(), req.ChainID, req.TokenIn, req.TokenOut, req.AmountIn, nil,
+	)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "no TigerSwap route available", "details": err.Error()})
+		return
 	}
 
-	rate := tokenOutPrice / tokenInPrice
-	amountFloat, _ := new(big.Float).SetString(req.Amount)
-	amountOut := new(big.Float).Mul(amountFloat, big.NewFloat(rate))
-
-	// Apply 0.3% fee
-	amountOutMin := new(big.Float).Mul(amountOut, big.NewFloat(0.997))
-
-	quote := gin.H{
-		"token_in":       req.TokenIn,
-		"token_out":      req.TokenOut,
-		"amount_in":      req.Amount,
-		"amount_out":     amountOut.String(),
-		"amount_out_min": amountOutMin.String(),
-		"rate":           fmt.Sprintf("%f", rate),
-		"price_impact":   "0.1",
-		"gas_estimate":   "21000",
-		"chain_id":       req.ChainID,
-		"route":          []string{req.TokenIn, req.TokenOut},
+	route := quote.Route
+	if route == nil {
+		route = []string{quote.FromToken, quote.ToToken}
 	}
 
-	c.JSON(200, quote)
-}
-
-func (s *SwapService) getSymbolFromAddress(address string) string {
-	symbols := map[string]string{
-		"0x0000000000000000000000000000000000000000": "ETH",
-		"0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48": "USDC",
-		"0xdac17f958d2ee523a2206206994597c13d831ec7": "USDT",
-		"0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": "WBTC",
-		"0x514910771af9ca656af840dff83e8264ecf986ca": "LINK",
-		"0x1f9840a85d5af5bf1d1762f925bdaddc4201f984": "UNI",
-		"0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9": "AAVE",
-	}
-	for addr, sym := range symbols {
-		if strings.EqualFold(addr, address) {
-			return sym
-		}
-	}
-	return "UNKNOWN"
+	c.JSON(http.StatusOK, swapQuoteDTO{
+		AmountIn:     quote.AmountIn,
+		AmountOut:    quote.AmountOut,
+		AmountOutMin: quote.AmountOutMin,
+		PriceImpact:  quote.PriceImpact,
+		Route:        route,
+		GasEstimate:  int64(quote.GasEstimate),
+	})
 }
 
 // BuildTransaction returns an unsigned TigerSwap router call for the client
@@ -283,10 +267,13 @@ func (s *SwapService) BuildTransaction(c *gin.Context) {
 	})
 }
 
+// GetPairs lists active pools as a bare array of camelCase objects. Reserves are
+// reported in human units using each token's own decimals, and the token symbols
+// are resolved from the tokens table rather than guessed.
 func (s *SwapService) GetPairs(c *gin.Context) {
 	var pools []models.Pool
-	s.db.Where("is_active = ?", true).Limit(50).Find(&pools)
-	c.JSON(200, gin.H{"pairs": pools})
+	s.db.Where("is_active = ?", true).Order("tvl_usd DESC").Limit(50).Find(&pools)
+	c.JSON(http.StatusOK, s.newPoolDTOs(pools))
 }
 
 func (s *SwapService) GetPool(c *gin.Context) {
@@ -295,10 +282,10 @@ func (s *SwapService) GetPool(c *gin.Context) {
 	var pool models.Pool
 	if err := s.db.Where("(token_a_address = ? AND token_b_address = ?) OR (token_a_address = ? AND token_b_address = ?)",
 		tokenA, tokenB, tokenB, tokenA).First(&pool).Error; err != nil {
-		c.JSON(404, gin.H{"error": "Pool not found"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "Pool not found"})
 		return
 	}
-	c.JSON(200, pool)
+	c.JSON(http.StatusOK, s.newPoolDTO(pool))
 }
 
 func (s *SwapService) GetPrices(c *gin.Context) {
@@ -307,7 +294,7 @@ func (s *SwapService) GetPrices(c *gin.Context) {
 	// frontend validator requires.
 	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "FIL", "ATOM", "XTZ", "ADA", "ALGO", "XLM", "HBAR", "FTM", "EGLD", "GRT", "CRO", "ONE", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "COMP", "DAI"}
 
-	entries := make([]gin.H, 0, len(symbols))
+	entries := make([]priceDTO, 0, len(symbols))
 
 	if globalPriceAggregator != nil {
 		for _, symbol := range symbols {
@@ -315,15 +302,15 @@ func (s *SwapService) GetPrices(c *gin.Context) {
 			if err != nil || pd.USD <= 0 {
 				continue
 			}
-			entries = append(entries, gin.H{
-				"symbol":    pd.Symbol,
-				"priceUSD":  pd.USD,
-				"change24h": pd.USDChange24h,
+			entries = append(entries, priceDTO{
+				Symbol:    pd.Symbol,
+				PriceUSD:  pd.USD,
+				Change24h: pd.USDChange24h,
 			})
 		}
 	}
 
-	c.JSON(200, entries)
+	c.JSON(http.StatusOK, entries)
 }
 
 func (s *SwapService) GetPrice(c *gin.Context) {
@@ -339,44 +326,36 @@ func (s *SwapService) GetPrice(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"symbol":    priceData.Symbol,
-		"priceUSD":  priceData.USD,
-		"change24h": priceData.USDChange24h,
-	})
+	// The frontend validates `/prices/:symbol` with the same list validator it
+	// uses for `/prices`, so a single price is returned as a one-element array
+	// rather than a bare object.
+	c.JSON(http.StatusOK, []priceDTO{{
+		Symbol:    priceData.Symbol,
+		PriceUSD:  priceData.USD,
+		Change24h: priceData.USDChange24h,
+	}})
 }
 
 // GetMarketStats aggregates real platform activity. Volume and fee figures are
 // derived from confirmed swap transactions in the window; they are never
 // reported as a constant.
 func (s *SwapService) GetMarketStats(c *gin.Context) {
-	var poolCount int64
-	var tokenCount int64
-	var chainCount int64
-	var userCount int64
+	var poolCount, userCount int64
 
 	s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount)
-	s.db.Model(&models.Token{}).Where("is_active = ?", true).Count(&tokenCount)
-	s.db.Model(&models.Blockchain{}).Where("is_active = ?", true).Count(&chainCount)
 	s.db.Model(&models.User{}).Count(&userCount)
 
 	var tvl float64
 	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
 
-	now := time.Now()
-	volume24h, fees24h, swaps24h := s.swapTotals(now.Add(-24 * time.Hour))
-	volume7d, _, _ := s.swapTotals(now.Add(-7 * 24 * time.Hour))
+	volume24h, _, _ := s.swapTotals(time.Now().Add(-24 * time.Hour))
 
-	c.JSON(http.StatusOK, gin.H{
-		"total_tvl":   tvl,
-		"volume_24h":  volume24h,
-		"volume_7d":   volume7d,
-		"fees_24h":    fees24h,
-		"swaps_24h":   swaps24h,
-		"user_count":  userCount,
-		"pool_count":  poolCount,
-		"token_count": tokenCount,
-		"chain_count": chainCount,
+	c.JSON(http.StatusOK, marketStatsDTO{
+		TotalTVL:   tvl,
+		Volume24h:  volume24h,
+		TotalPairs: poolCount,
+		TotalUsers: userCount,
+		UpdatedAt:  timestampPtr(time.Now().UTC()),
 	})
 }
 
@@ -426,22 +405,48 @@ func (s *SwapService) GetRecentTrades(c *gin.Context) {
 		Limit(limit).
 		Find(&txs)
 
-	trades := make([]gin.H, 0, len(txs))
+	decimals := s.tokenDecimals(txs)
+	trades := make([]tradeDTO, 0, len(txs))
 	for _, tx := range txs {
-		trades = append(trades, gin.H{
-			"id":         tx.ID.String(),
-			"hash":       tx.Hash,
-			"pair":       tx.Pair,
-			"from":       tx.FromToken,
-			"to":         tx.ToToken,
-			"amount":     tx.FromAmount,
-			"amount_usd": tx.AmountUSD,
-			"status":     tx.Status,
-			"timestamp":  tx.Timestamp,
+		fromDecimals := decimals[strings.ToLower(tx.FromToken)]
+		toDecimals := decimals[strings.ToLower(tx.ToToken)]
+
+		quantity := scaleToFloat(tx.FromAmount, fromDecimals)
+		amountOut := scaleToFloat(tx.ToAmount, toDecimals)
+
+		// Price is the output amount per unit of input. When the output is not
+		// recorded, the USD value is the only real basis available, so it is used
+		// rather than inventing a number.
+		price := 0.0
+		if quantity > 0 {
+			price = amountOut / quantity
+		}
+		if price == 0 && quantity > 0 && tx.AmountUSD > 0 {
+			price = tx.AmountUSD / quantity
+		}
+
+		side := tx.Side
+		if side != "buy" && side != "sell" {
+			// Legacy rows predate the Side column. A swap that produced output is
+			// a buy of the output token; anything else is treated as a sell so the
+			// frontend's oneOf(["buy","sell"]) validator always has a valid value.
+			side = "sell"
+			if amountOut > 0 {
+				side = "buy"
+			}
+		}
+
+		trades = append(trades, tradeDTO{
+			ID:        tx.ID.String(),
+			Pair:      tx.Pair,
+			Side:      side,
+			Price:     price,
+			Quantity:  quantity,
+			Timestamp: timeString(tx.Timestamp),
 		})
 	}
 
-	c.JSON(http.StatusOK, gin.H{"trades": trades})
+	c.JSON(http.StatusOK, trades)
 }
 
 // Global swap executor instance
@@ -496,8 +501,11 @@ func (s *SwapService) ExecuteSwap(c *gin.Context) {
 		FromToken:  req.TokenIn,
 		ToToken:    req.TokenOut,
 		FromAmount: req.Amount,
-		Status:     "submitted",
-		Timestamp:  time.Now(),
+		// The taker pays TokenIn and receives TokenOut, so from the taker's
+		// perspective this is a buy of TokenOut.
+		Side:      "buy",
+		Status:    "submitted",
+		Timestamp: time.Now(),
 	}
 	if err := s.db.Create(&tx).Error; err != nil {
 		log.Printf("failed to record swap transaction %s: %v", txHash, err)
@@ -1121,37 +1129,26 @@ func NewAdminService(db *gorm.DB) *AdminService {
 
 // GetDashboard reports real aggregate counts from the database.
 func (s *AdminService) GetDashboard(c *gin.Context) {
-	var userCount, txCount, tokenCount, poolCount, orderCount, positionCount int64
+	var userCount, txCount, poolCount int64
 
 	s.db.Model(&models.User{}).Count(&userCount)
 	s.db.Model(&models.Transaction{}).Count(&txCount)
-	s.db.Model(&models.Token{}).Count(&tokenCount)
-	s.db.Model(&models.Pool{}).Count(&poolCount)
-	s.db.Model(&models.Order{}).Count(&orderCount)
-	// "liquidatable" positions are still live exposure, so they are counted
-	// alongside open ones; only closed and settled positions drop out.
-	s.db.Model(&models.PerpetualPosition{}).Where("status IN ?", []string{"open", "liquidatable"}).Count(&positionCount)
-
-	var tvl float64
-	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
+	s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount)
 
 	// 24h volume and fees come from confirmed swaps, not a constant.
-	var volume24h, fees24h float64
+	var volume24h float64
 	s.db.Model(&models.Transaction{}).
 		Where("type = ? AND status = ? AND timestamp >= ?", "swap", "confirmed", time.Now().Add(-24*time.Hour)).
 		Select("COALESCE(SUM(amount_usd), 0)").Scan(&volume24h)
-	fees24h = volume24h * float64(DefaultFeeBps) / 10000
+	fees24h := volume24h * float64(DefaultFeeBps) / 10000
 
-	c.JSON(http.StatusOK, gin.H{
-		"users":          userCount,
-		"transactions":   txCount,
-		"tokens":         tokenCount,
-		"pools":          poolCount,
-		"orders":         orderCount,
-		"open_positions": positionCount,
-		"tvl":            tvl,
-		"volume_24h":     volume24h,
-		"fees_24h":       fees24h,
+	c.JSON(http.StatusOK, adminDashboardDTO{
+		TotalUsers:        userCount,
+		TotalTransactions: txCount,
+		TotalVolume:       volume24h,
+		TotalRevenue:      fees24h,
+		ActivePools:       poolCount,
+		UpdatedAt:         timestampPtr(time.Now().UTC()),
 	})
 }
 

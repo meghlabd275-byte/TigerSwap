@@ -100,18 +100,20 @@ type Pool struct {
 
 // Transaction represents a swap transaction
 type Transaction struct {
-	ID          uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
-	UserID      uuid.UUID      `gorm:"type:uuid;index" json:"user_id"`
-	Hash        string         `gorm:"size:66;uniqueIndex" json:"hash"`
-	ChainID     int64          `gorm:"index" json:"chain_id"`
-	Type        string         `gorm:"size:20" json:"type"` // swap, add_liquidity, remove_liquidity, bridge
-	FromToken   string         `gorm:"size:42" json:"from_token"`
-	ToToken     string         `gorm:"size:42" json:"to_token"`
-	FromAmount  string         `gorm:"size:50" json:"from_amount"`
-	ToAmount    string         `gorm:"size:50" json:"to_amount"`
-	FromAddress string         `gorm:"size:42" json:"from_address"`
-	ToAddress   string         `gorm:"size:42" json:"to_address"`
-	Pair        string         `gorm:"size:40;index" json:"pair"`
+	ID          uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID      uuid.UUID `gorm:"type:uuid;index" json:"user_id"`
+	Hash        string    `gorm:"size:66;uniqueIndex" json:"hash"`
+	ChainID     int64     `gorm:"index" json:"chain_id"`
+	Type        string    `gorm:"size:20" json:"type"` // swap, add_liquidity, remove_liquidity, bridge
+	FromToken   string    `gorm:"size:42" json:"from_token"`
+	ToToken     string    `gorm:"size:42" json:"to_token"`
+	FromAmount  string    `gorm:"size:50" json:"from_amount"`
+	ToAmount    string    `gorm:"size:50" json:"to_amount"`
+	FromAddress string    `gorm:"size:42" json:"from_address"`
+	ToAddress   string    `gorm:"size:42" json:"to_address"`
+	Pair        string    `gorm:"size:40;index" json:"pair"`
+	// Side is the taker's direction: "buy" means the taker received ToToken.
+	Side        string         `gorm:"size:10;index" json:"side"`
 	AmountUSD   float64        `gorm:"index" json:"amount_usd"`
 	GasUsed     string         `gorm:"size:30" json:"gas_used"`
 	GasPrice    string         `gorm:"size:30" json:"gas_price"`

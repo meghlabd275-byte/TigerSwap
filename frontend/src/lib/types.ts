@@ -14,6 +14,7 @@ import {
   hex,
   integer,
   literalTrue,
+  marketSymbol,
   nonNegative,
   nullable,
   number,
@@ -241,7 +242,7 @@ export interface PerpMarket {
 
 export const perpMarketValidator = object<PerpMarket>({
   marketId: string,
-  symbol,
+  symbol: marketSymbol,
   markPrice: nonNegative,
   indexPrice: nonNegative,
   fundingRate: number,
@@ -618,7 +619,7 @@ export interface FuturesMarket {
 export const futuresMarketValidator = object<FuturesMarket>(
   {
     id: string,
-    symbol,
+    symbol: marketSymbol,
     contract_type: string,
     base_asset: string,
     quote_asset: string,
@@ -676,7 +677,7 @@ export interface PerpsListing {
 export const perpsListingValidator = object<PerpsListing>(
   {
     id: string,
-    symbol,
+    symbol: marketSymbol,
     market_type: string,
     collateral_assets: withDefault(string, ""),
     max_open_interest: withDefault(string, "0"),
@@ -729,7 +730,7 @@ export interface MarginListing {
 export const marginListingValidator = object<MarginListing>(
   {
     id: string,
-    pair: symbol,
+    pair: marketSymbol,
     base_asset: string,
     quote_asset: string,
     margin_mode: string,

@@ -251,3 +251,29 @@ need a `trader` field. The engine binds `TIGERSWAP_BIND`/`TIGERSWAP_PORT` and
 writes its write-ahead log to `TIGERSWAP_WAL` (default
 `/var/lib/tigerswap/engine.wal`, which does not exist on a clean machine — set it
 to a writable path when running locally).
+
+## Frontend API contract validators
+
+`frontend/src/lib/validation.ts` and `types.ts` validate every API response
+before a component sees it. Two rules matter when adding a validator.
+
+- A field wrapped in `withDefault` may be absent from the payload. The `object`
+  helper detects this via the marker `withDefault` sets, so such a field does
+  not need to be listed in `optional` as well. Before that marker existed the
+  required-field guard fired first and every default was dead code, which
+  silently dropped whole rows instead of filling in a fallback.
+- Market symbols (`BTC/RUSD`) must use `marketSymbol`, not `symbol`. The
+  `symbol` validator is single-token only, so using it for a derivatives or
+  margin listing drops every row and the UI renders empty.
+
+`frontend/src/lib/serverContract.test.ts` pins these validators to payloads
+captured from a running server. When a listing shape changes, capture the real
+body from `127.0.0.1:8080` and update the fixture, rather than hand-writing the
+JSON — a hand-written fixture is what let the `total_supply` field go missing.
+
+To check a live server end to end, build the validators with the test tsconfig
+and run each real response through its validator:
+
+```
+cd frontend && npm test            # compiles to .test-build and runs the suite
+```

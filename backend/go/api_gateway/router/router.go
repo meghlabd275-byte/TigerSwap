@@ -1,31 +1,16 @@
-// Package router provides routing utilities for the API Gateway
+// Package router provides routing utilities for the API Gateway.
+//
+// The gateway's route table lives in main.go's Server.SetupRouter, which wires
+// the configured handlers and middleware. This package only exposes the group
+// helper.
 package router
 
 import (
 	"github.com/gin-gonic/gin"
-	"tigerswap/backend/go/api_gateway/middleware"
 )
 
-// Group creates a new route group
+// Group creates a new route group on its own engine.
 func Group(prefix string, handlers ...gin.HandlerFunc) *gin.RouterGroup {
 	engine := gin.New()
 	return engine.Group(prefix, handlers...)
-}
-
-// RegisterRoutes registers all API routes
-func RegisterRoutes(r *gin.Engine) {
-	// Health check routes
-	r.GET("/health", func(c *gin.Context) {
-		c.JSON(200, gin.H{"status": "ok"})
-	})
-
-	// API v1 routes
-	v1 := r.Group("/api/v1")
-	v1.Use(middleware.Logger())
-	v1.Use(middleware.RequestID())
-	v1.Use(middleware.Recovery())
-	v1.Use(middleware.Secure())
-	{
-		// Routes will be registered here
-	}
 }

@@ -72,10 +72,13 @@ func TestMarketStatsReportsZeroWhenThereIsNoActivity(t *testing.T) {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
 	stats := decodeStats(t, rec)
-	for _, key := range []string{"volume_24h", "volume_7d", "fees_24h"} {
+	for _, key := range []string{"totalTVL", "volume24h"} {
 		if stats[key].(float64) != 0 {
 			t.Fatalf("expected %s to be 0 with no activity, got %v", key, stats[key])
 		}
+	}
+	if stats["totalPairs"].(float64) != 0 {
+		t.Fatalf("expected totalPairs 0 with no pools, got %v", stats["totalPairs"])
 	}
 }
 
@@ -111,21 +114,32 @@ func TestMarketStatsAggregatesConfirmedSwaps(t *testing.T) {
 
 	stats := decodeStats(t, getJSON(t, svc.GetMarketStats, "/api/v1/market/stats"))
 
-	if got := stats["volume_24h"].(float64); got != 15000 {
+	if got := stats["volume24h"].(float64); got != 15000 {
 		t.Fatalf("expected 24h volume 15000, got %v", got)
 	}
-	if got := stats["volume_7d"].(float64); got != 35000 {
-		t.Fatalf("expected 7d volume 35000, got %v", got)
+	if got := stats["totalTVL"].(float64); got != 500000 {
+		t.Fatalf("expected tvl 500000, got %v", got)
+	}
+	if got := stats["totalPairs"].(float64); got != 1 {
+		t.Fatalf("expected 1 active pair, got %v", got)
+	}
+
+	// Fees and swap counts are not part of the public stats contract, so they are
+	// asserted against the aggregation itself rather than through the endpoint.
+	volume24h, fees24h, swaps24h := svc.swapTotals(time.Now().Add(-24 * time.Hour))
+	if volume24h != 15000 {
+		t.Fatalf("expected 24h volume 15000, got %v", volume24h)
 	}
 	// 15000 at 0.3% is 45.
-	if got := stats["fees_24h"].(float64); got != 45 {
-		t.Fatalf("expected 24h fees 45, got %v", got)
+	if fees24h != 45 {
+		t.Fatalf("expected 24h fees 45, got %v", fees24h)
 	}
-	if got := stats["swaps_24h"].(float64); got != 2 {
-		t.Fatalf("expected 2 swaps in 24h, got %v", got)
+	if swaps24h != 2 {
+		t.Fatalf("expected 2 swaps in 24h, got %v", swaps24h)
 	}
-	if got := stats["total_tvl"].(float64); got != 500000 {
-		t.Fatalf("expected tvl 500000, got %v", got)
+	volume7d, _, _ := svc.swapTotals(time.Now().Add(-7 * 24 * time.Hour))
+	if volume7d != 35000 {
+		t.Fatalf("expected 7d volume 35000, got %v", volume7d)
 	}
 }
 
@@ -145,13 +159,13 @@ func TestAdminDashboardAggregatesVolume(t *testing.T) {
 	}
 
 	stats := decodeStats(t, getJSON(t, svc.GetDashboard, "/api/v1/admin/dashboard"))
-	if got := stats["volume_24h"].(float64); got != 5000 {
+	if got := stats["totalVolume"].(float64); got != 5000 {
 		t.Fatalf("expected 5000 volume, got %v", got)
 	}
-	if got := stats["transactions"].(float64); got != 3 {
+	if got := stats["totalTransactions"].(float64); got != 3 {
 		t.Fatalf("expected 3 transactions, got %v", got)
 	}
-	if stats["users"] == nil || stats["pools"] == nil {
+	if stats["totalUsers"] == nil || stats["activePools"] == nil {
 		t.Fatal("expected the dashboard to report every aggregate")
 	}
 }

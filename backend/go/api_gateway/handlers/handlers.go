@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -83,28 +84,56 @@ func NewSwapHandler(cfg *config.Config) *SwapHandler {
 
 // QuoteRequest represents a quote request
 type QuoteRequest struct {
-	ChainID   int64  `json:"chain_id" binding:"required"`
-	FromToken string `json:"from_token" binding:"required"`
-	ToToken   string `json:"to_token" binding:"required"`
-	Amount    string `json:"amount" binding:"required"`
-	Slippage  string `json:"slippage"`
-	DEX       string `json:"dex"`
+	ChainID     int64  `json:"chain_id" binding:"required"`
+	FromToken   string `json:"from_token" binding:"required"`
+	ToToken     string `json:"to_token" binding:"required"`
+	AmountIn    string `json:"amount_in" binding:"required"`
+	SlippageBps int    `json:"slippage_bps"`
 }
 
 // QuoteResponse represents a quote response
-type QuoteResponse struct {
-	FromToken    string   `json:"from_token"`
-	ToToken      string   `json:"to_token"`
-	AmountIn     string   `json:"amount_in"`
-	AmountOut    string   `json:"amount_out"`
-	AmountOutMin string   `json:"amount_out_min"`
-	PriceImpact  string   `json:"price_impact"`
-	Route        []string `json:"route"`
-	GasEstimate  string   `json:"gas_estimate"`
-	DEX          string   `json:"dex"`
+// aggregatorQuote mirrors the TigerAggregator's quote response.
+//
+// The aggregator encodes its amounts as `*big.Int`, which JSON renders as a
+// number, so they are decoded with json.Number. Decoding them into a string
+// fails outright and would make every quote request return a 500.
+type aggregatorQuote struct {
+	FromToken    string      `json:"from_token"`
+	ToToken      string      `json:"to_token"`
+	AmountIn     json.Number `json:"amount_in"`
+	AmountOut    json.Number `json:"amount_out"`
+	AmountOutMin json.Number `json:"amount_out_min"`
+	PriceImpact  float64     `json:"price_impact"`
+	GasEstimate  uint64      `json:"gas_estimate"`
+	BestRoute    *routeInfo  `json:"best_route"`
 }
 
-// GetQuote handles quote requests
+// routeInfo is one evaluated route from the aggregator.
+type routeInfo struct {
+	Family      string      `json:"family"`
+	Path        []string    `json:"path"`
+	AmountIn    json.Number `json:"amount_in"`
+	AmountOut   json.Number `json:"amount_out"`
+	FeeBps      uint32      `json:"fee_bps"`
+	GasEstimate uint64      `json:"gas_estimate"`
+}
+
+// QuoteResponse is the quote shape returned to the browser client. Amounts stay
+// as decimal strings so integer base units survive JSON without precision loss.
+type QuoteResponse struct {
+	AmountIn     string   `json:"amountIn"`
+	AmountOut    string   `json:"amountOut"`
+	AmountOutMin string   `json:"amountOutMin"`
+	PriceImpact  float64  `json:"priceImpact"`
+	Route        []string `json:"route"`
+	GasEstimate  uint64   `json:"gasEstimate"`
+}
+
+// GetQuote proxies a quote from TigerAggregator, TigerSwap's own router.
+//
+// The client speaks camelCase with basis-point slippage; the aggregator speaks
+// snake_case with a fractional slippage and integer amounts. The translation
+// happens here so neither side has to know the other's spelling.
 func (h *SwapHandler) GetQuote(c *gin.Context) {
 	var req QuoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -112,9 +141,31 @@ func (h *SwapHandler) GetQuote(c *gin.Context) {
 		return
 	}
 
-	// Call DEX aggregator service
+	amountIn, ok := new(big.Int).SetString(req.AmountIn, 10)
+	if !ok || amountIn.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_in must be a positive integer string"})
+		return
+	}
+
+	slippageBps := req.SlippageBps
+	if slippageBps <= 0 {
+		slippageBps = 50
+	}
+	if slippageBps > 10000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "slippage_bps must not exceed 10000"})
+		return
+	}
+
+	payload := map[string]interface{}{
+		"chain_id":   req.ChainID,
+		"from_token": req.FromToken,
+		"to_token":   req.ToToken,
+		"amount_in":  amountIn,
+		"slippage":   float64(slippageBps) / 10000.0,
+	}
+
 	url := fmt.Sprintf("%s/api/v1/quote", h.config.Upstream.DEXAggregator)
-	resp, err := callUpstreamService(c, url, req)
+	resp, err := callUpstreamService(c, url, payload)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator upstream unavailable", "details": err.Error()})
 		return
@@ -122,17 +173,29 @@ func (h *SwapHandler) GetQuote(c *gin.Context) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		c.JSON(resp.StatusCode, gin.H{"error": "Failed to get quote"})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator could not price this swap"})
 		return
 	}
 
-	var quote QuoteResponse
+	var quote aggregatorQuote
 	if err := json.NewDecoder(resp.Body).Decode(&quote); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator returned a malformed quote"})
 		return
 	}
 
-	c.JSON(http.StatusOK, quote)
+	route := []string{quote.FromToken, quote.ToToken}
+	if quote.BestRoute != nil && len(quote.BestRoute.Path) > 0 {
+		route = quote.BestRoute.Path
+	}
+
+	c.JSON(http.StatusOK, QuoteResponse{
+		AmountIn:     quote.AmountIn.String(),
+		AmountOut:    quote.AmountOut.String(),
+		AmountOutMin: quote.AmountOutMin.String(),
+		PriceImpact:  quote.PriceImpact,
+		Route:        route,
+		GasEstimate:  quote.GasEstimate,
+	})
 }
 
 // ExecuteSwap handles swap execution requests
@@ -170,7 +233,12 @@ func (h *SwapHandler) ExecuteSwap(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetRoutes handles route discovery requests
+// GetRoutes returns the routes TigerAggregator actually found across
+// TigerSwap's own pools.
+//
+// The list is whatever the aggregator evaluated; nothing is synthesised, and a
+// pair with no route yields an empty list rather than an invented one. Only
+// TigerSwap pool families appear, because the aggregator quotes nothing else.
 func (h *SwapHandler) GetRoutes(c *gin.Context) {
 	fromToken := c.Query("from")
 	toToken := c.Query("to")
@@ -180,21 +248,50 @@ func (h *SwapHandler) GetRoutes(c *gin.Context) {
 		return
 	}
 
-	// Return available routes
-	routes := []map[string]interface{}{
-		{
-			"route":     []string{fromToken, toToken},
-			"dex":       "uniswap_v3",
-			"estimated": true,
-		},
-		{
-			"route":     []string{fromToken, "USDC", toToken},
-			"dex":       "sushiswap",
-			"estimated": true,
-		},
+	chainID, err := strconv.ParseInt(c.Query("chain_id"), 10, 64)
+	if err != nil || chainID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "chain_id must be a positive integer"})
+		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"routes": routes})
+	amountIn, ok := new(big.Int).SetString(c.DefaultQuery("amount_in", "1"), 10)
+	if !ok || amountIn.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_in must be a positive integer string"})
+		return
+	}
+
+	payload := map[string]interface{}{
+		"chain_id":  chainID,
+		"path":      []string{fromToken, toToken},
+		"amount_in": amountIn,
+		"slippage":  0.005,
+	}
+
+	url := fmt.Sprintf("%s/api/v1/quote/multihop", h.config.Upstream.DEXAggregator)
+	resp, err := callUpstreamService(c, url, payload)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator upstream unavailable", "details": err.Error()})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator could not price this route"})
+		return
+	}
+
+	var quote struct {
+		Routes []routeInfo `json:"routes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&quote); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator returned a malformed response"})
+		return
+	}
+
+	if quote.Routes == nil {
+		quote.Routes = []routeInfo{}
+	}
+	c.JSON(http.StatusOK, gin.H{"routes": quote.Routes})
 }
 
 // MultiHopSwap handles multi-hop swap requests

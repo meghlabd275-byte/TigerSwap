@@ -29,82 +29,66 @@ func NewClient(baseURL string, apiKey string) *Client {
 
 // Token represents a cryptocurrency token
 type Token struct {
-	Address    string  `json:"address"`
-	Symbol     string  `json:"symbol"`
-	Name       string  `json:"name"`
-	Decimals   int     `json:"decimals"`
-	ChainID    int64   `json:"chain_id"`
-	LogoURI    string  `json:"logo_uri"`
-	Price      float64 `json:"price"`
-	IsActive   bool    `json:"is_active"`
-	IsVerified bool    `json:"is_verified"`
+	Address  string   `json:"address"`
+	Symbol   string   `json:"symbol"`
+	Name     string   `json:"name"`
+	Decimals int      `json:"decimals"`
+	ChainID  int64    `json:"chainId"`
+	LogoURI  *string  `json:"logoURI"`
+	PriceUSD *float64 `json:"priceUSD"`
 }
 
 // Chain represents a blockchain
 type Chain struct {
-	ChainID     int64  `json:"chain_id"`
-	Name        string `json:"name"`
-	Symbol      string `json:"symbol"`
-	Icon        string `json:"icon"`
-	RPCURL      string `json:"rpc_url"`
-	ExplorerURL string `json:"explorer_url"`
-	Type        string `json:"type"`
-	IsActive    bool   `json:"is_active"`
-	IsTestnet   bool   `json:"is_testnet"`
+	ID           int64   `json:"id"`
+	Name         string  `json:"name"`
+	ChainType    string  `json:"chainType"`
+	NativeSymbol string  `json:"nativeSymbol"`
+	ExplorerURL  *string `json:"explorerURL"`
+	IsActive     bool    `json:"isActive"`
 }
 
 // SwapQuote represents a swap quote
 type SwapQuote struct {
-	FromToken   string   `json:"from_token"`
-	ToToken     string   `json:"to_token"`
-	FromAmount  string   `json:"from_amount"`
-	ToAmount    string   `json:"to_amount"`
-	ToAmountMin string   `json:"to_amount_min"`
-	Rate        string   `json:"rate"`
-	PriceImpact string   `json:"price_impact"`
-	GasEstimate string   `json:"gas_estimate"`
-	ChainID     int64    `json:"chain_id"`
-	Route       []string `json:"route"`
+	AmountIn     string   `json:"amountIn"`
+	AmountOut    string   `json:"amountOut"`
+	AmountOutMin string   `json:"amountOutMin"`
+	PriceImpact  float64  `json:"priceImpact"`
+	Route        []string `json:"route"`
+	GasEstimate  uint64   `json:"gasEstimate"`
 }
 
 // Pool represents a liquidity pool
 type Pool struct {
-	ID             uint64 `json:"id"`
-	TokenAAddress  string `json:"token_a_address"`
-	TokenBAddress  string `json:"token_b_address"`
-	ChainID        int64  `json:"chain_id"`
-	PoolAddress    string `json:"pool_address"`
-	ReserveA       string `json:"reserve_a"`
-	ReserveB       string `json:"reserve_b"`
-	TotalLiquidity string `json:"total_liquidity"`
-	Fee            int    `json:"fee"`
-	Volume24h      string `json:"volume_24h"`
+	PairAddress string  `json:"pairAddress"`
+	Token0      string  `json:"token0"`
+	Token1      string  `json:"token1"`
+	Symbol0     string  `json:"symbol0"`
+	Symbol1     string  `json:"symbol1"`
+	Reserve0    float64 `json:"reserve0"`
+	Reserve1    float64 `json:"reserve1"`
+	FeeBps      int     `json:"feeBps"`
 }
 
 // MarketStats represents market statistics
 type MarketStats struct {
-	TotalTVL   string `json:"total_tvl"`
-	Volume24h  string `json:"volume_24h"`
-	Volume7d   string `json:"volume_7d"`
-	Fees24h    string `json:"fees_24h"`
-	UserCount  uint64 `json:"user_count"`
-	PoolCount  uint64 `json:"pool_count"`
-	TokenCount uint64 `json:"token_count"`
-	ChainCount uint64 `json:"chain_count"`
+	TotalTVL   float64 `json:"totalTVL"`
+	Volume24h  float64 `json:"volume24h"`
+	TotalPairs int64   `json:"totalPairs"`
+	TotalUsers int64   `json:"totalUsers"`
+	UpdatedAt  *string `json:"updatedAt"`
 }
 
 // Transaction represents a swap transaction
 type Transaction struct {
-	ID         string `json:"id"`
-	Hash       string `json:"hash"`
-	ChainID    int64  `json:"chain_id"`
-	Type       string `json:"type"`
-	FromToken  string `json:"from_token"`
-	ToToken    string `json:"to_token"`
-	FromAmount string `json:"from_amount"`
-	ToAmount   string `json:"to_amount"`
-	Status     string `json:"status"`
-	Timestamp  int64  `json:"timestamp"`
+	ID        string `json:"id"`
+	Hash      string `json:"hash"`
+	ChainID   int64  `json:"chain_id"`
+	Type      string `json:"type"`
+	FromToken string `json:"from_token"`
+	ToToken   string `json:"to_token"`
+	Status    string `json:"status"`
+	Timestamp string `json:"timestamp"`
 }
 
 // GetChains returns all supported chains
@@ -125,20 +109,17 @@ func (c *Client) GetChains(ctx context.Context) ([]Chain, error) {
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		Chains []Chain `json:"chains"`
-		Count  int     `json:"count"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var chains []Chain
+	if err := json.NewDecoder(resp.Body).Decode(&chains); err != nil {
 		return nil, err
 	}
 
-	return result.Chains, nil
+	return chains, nil
 }
 
 // GetTokens returns all tokens for a chain
 func (c *Client) GetTokens(ctx context.Context, chainID int64) ([]Token, error) {
-	url := fmt.Sprintf("%s/api/v1/tokens?chain_id=%d", c.baseURL, chainID)
+	url := fmt.Sprintf("%s/api/v1/tokens?chainId=%d", c.baseURL, chainID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return nil, err
@@ -155,24 +136,21 @@ func (c *Client) GetTokens(ctx context.Context, chainID int64) ([]Token, error) 
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		Tokens []Token `json:"tokens"`
-		Count  int     `json:"count"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var tokens []Token
+	if err := json.NewDecoder(resp.Body).Decode(&tokens); err != nil {
 		return nil, err
 	}
 
-	return result.Tokens, nil
+	return tokens, nil
 }
 
 // GetQuote returns a swap quote
 func (c *Client) GetQuote(ctx context.Context, fromToken, toToken, amount string, chainID int64) (*SwapQuote, error) {
-	reqBody := map[string]string{
+	reqBody := map[string]interface{}{
 		"token_in":  fromToken,
 		"token_out": toToken,
-		"amount":    amount,
-		"chain_id":  fmt.Sprintf("%d", chainID),
+		"amount_in": amount,
+		"chain_id":  chainID,
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -223,14 +201,12 @@ func (c *Client) GetPools(ctx context.Context) ([]Pool, error) {
 	}
 	defer resp.Body.Close()
 
-	var result struct {
-		Pairs []Pool `json:"pairs"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	var pools []Pool
+	if err := json.NewDecoder(resp.Body).Decode(&pools); err != nil {
 		return nil, err
 	}
 
-	return result.Pairs, nil
+	return pools, nil
 }
 
 // GetMarketStats returns market statistics
@@ -261,11 +237,11 @@ func (c *Client) GetMarketStats(ctx context.Context) (*MarketStats, error) {
 
 // ExecuteSwap executes a swap transaction
 func (c *Client) ExecuteSwap(ctx context.Context, fromToken, toToken, amount, to string) (*Transaction, error) {
-	reqBody := map[string]string{
+	reqBody := map[string]interface{}{
 		"token_in":  fromToken,
 		"token_out": toToken,
-		"amount":    amount,
-		"to":        to,
+		"amount_in": amount,
+		"recipient": to,
 	}
 
 	body, err := json.Marshal(reqBody)

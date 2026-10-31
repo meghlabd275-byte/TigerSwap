@@ -8,12 +8,14 @@ import {
   boolean,
   displayText,
   integer,
+  marketSymbol,
   nonNegative,
   number,
   object,
   oneOf,
   string,
   symbol,
+  withDefault,
 } from "./validation";
 
 test("string accepts only strings", () => {
@@ -85,4 +87,43 @@ test("address requires a 20-byte hex value", () => {
 test("displayText strips control characters and caps length", () => {
   assert.equal(displayText("a\u0000b\u001fc"), "abc");
   assert.throws(() => displayText("x".repeat(300)), ValidationError);
+});
+
+// `object` must let a `withDefault` field supply its own value when the key is
+// absent. Before this was handled, the required-field guard fired first, so a
+// field the author had explicitly made optional behaved as required and its
+// default was dead code. That silently dropped rows in production.
+test("object applies withDefault for a missing key", () => {
+  const validator = object<{ a: string; b: string }>({
+    a: string,
+    b: withDefault(string, "fallback"),
+  });
+  assert.deepEqual(validator({ a: "x" }), { a: "x", b: "fallback" });
+  assert.deepEqual(validator({ a: "x", b: "given" }), { a: "x", b: "given" });
+  assert.throws(() => validator({}), ValidationError);
+});
+
+test("object still requires a field that has no default", () => {
+  const validator = object<{ a: string }>({ a: string });
+  assert.throws(() => validator({}), ValidationError);
+});
+
+// Market symbols use the BASE/QUOTE form; the single-token `symbol` validator
+// rejects the slash, which used to blank every derivatives and margin listing.
+test("marketSymbol accepts BASE/QUOTE and plain symbols", () => {
+  assert.equal(marketSymbol("BTC/RUSD"), "BTC/RUSD");
+  assert.equal(marketSymbol("EURUSD/RUSD"), "EURUSD/RUSD");
+  assert.equal(marketSymbol("TGR"), "TGR");
+});
+
+test("marketSymbol rejects markup and malformed pairs", () => {
+  assert.throws(() => marketSymbol("<script>"), ValidationError);
+  assert.throws(() => marketSymbol("BTC/"), ValidationError);
+  assert.throws(() => marketSymbol("/RUSD"), ValidationError);
+  assert.throws(() => marketSymbol("BTC/RUSD/ETH"), ValidationError);
+  assert.throws(() => marketSymbol(""), ValidationError);
+});
+
+test("symbol still rejects a slash, so token symbols stay single-token", () => {
+  assert.throws(() => symbol("BTC/RUSD"), ValidationError);
 });

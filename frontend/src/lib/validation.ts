@@ -113,7 +113,13 @@ export function object<T>(spec: {
         if (optional.has(key)) {
           continue;
         }
-        fail("required field is missing", fieldPath);
+        // A field wrapped in `withDefault` supplies its own value when the key
+        // is absent. Without this check the required-field guard would fire
+        // first and the default could never apply, so every such field would
+        // behave as if it were required.
+        if (!hasDefault(spec[key])) {
+          fail("required field is missing", fieldPath);
+        }
       }
       result[key] = spec[key](record[key as string], fieldPath);
     }
@@ -168,6 +174,25 @@ export const symbol = (value: unknown, path = "value"): string => {
 };
 
 /**
+ * Validates a market symbol such as `BTC/RUSD`.
+ *
+ * Derivatives listings, perpetual markets and margin pairs all use the
+ * `BASE/QUOTE` form, which the single-token `symbol` validator rejects. Both
+ * halves are drawn from the same allow-list as `symbol`, so a market symbol can
+ * no more carry markup into the DOM than a token symbol can.
+ */
+export const marketSymbol = (value: unknown, path = "value"): string => {
+  const parsed = string(value, path);
+  if (parsed.length === 0 || parsed.length > 41) {
+    fail("market symbol must be between 1 and 41 characters", path);
+  }
+  if (!/^[A-Za-z0-9._-]{1,20}(\/[A-Za-z0-9._-]{1,20})?$/.test(parsed)) {
+    fail("market symbol must be a symbol or a BASE/QUOTE pair", path);
+  }
+  return parsed;
+};
+
+/**
  * Validates free text that will be displayed.
  *
  * Length-capped and stripped of control characters. The value is returned as
@@ -207,14 +232,30 @@ export const timestamp = (value: unknown, path = "value"): string => {
   return parsed;
 };
 
+/**
+ * Marker set by `withDefault` so the object validator can tell a
+ * default-supplying field from a required one.
+ */
+const SUPPLIES_DEFAULT = Symbol("tigerswap.suppliesDefault");
+
+/** True when a validator supplies its own value for a missing key. */
+export function hasDefault(validator: unknown): boolean {
+  return (
+    typeof validator === "function" &&
+    (validator as unknown as Record<symbol, unknown>)[SUPPLIES_DEFAULT] === true
+  );
+}
+
 /** Wraps a validator so a missing value becomes a default. */
 export function withDefault<T>(inner: Validator<T>, fallback: T): Validator<T> {
-  return (value: unknown, path = "value"): T => {
+  const wrapped: Validator<T> = (value: unknown, path = "value"): T => {
     if (value === undefined || value === null) {
       return fallback;
     }
     return inner(value, path);
   };
+  Object.defineProperty(wrapped, SUPPLIES_DEFAULT, { value: true });
+  return wrapped;
 }
 
 /**
