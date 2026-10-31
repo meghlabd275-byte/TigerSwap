@@ -20,6 +20,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -157,7 +158,7 @@ func (s *BridgeService) GetQuote(ctx context.Context, srcChain, dstChain int64, 
 		return nil, fmt.Errorf("invalid amount %q", amount)
 	}
 
-	tokenSymbol := s.getSymbolFromAddress(token)
+	tokenSymbol := s.getSymbolFromAddress(srcChain, token)
 	priceData, err := s.priceAgg.GetRealPrice(ctx, tokenSymbol)
 	if err != nil {
 		return nil, fmt.Errorf("price unavailable for %s: %w", tokenSymbol, err)
@@ -462,19 +463,14 @@ func (s *BridgeService) GetSupportedBridges(chainID int64) []BridgeConfig {
 	return []BridgeConfig{}
 }
 
-func (s *BridgeService) getSymbolFromAddress(address string) string {
-	symbols := map[string]string{
-		"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": "USDC",
-		"0xdAC17F958D2ee523a2206206994597C13D831ec7": "USDT",
-		"0x0000000000000000000000000000000000000000": "ETH",
-		"0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599": "WBTC",
+// getSymbolFromAddress resolves a token address to its symbol from the shared
+// chain registry, keyed by the source chain, so a bridge quote prices the
+// token that is actually being bridged rather than a hardcoded list.
+func (s *BridgeService) getSymbolFromAddress(chainID int64, address string) string {
+	if symbol, ok := config.TokenSymbol(chainID, address); ok {
+		return symbol
 	}
-	for addr, symbol := range symbols {
-		if strings.EqualFold(addr, address) {
-			return symbol
-		}
-	}
-	return "UNKNOWN"
+	return ""
 }
 
 // API Handlers
@@ -501,11 +497,28 @@ func (s *BridgeService) GetQuoteHandler(c *gin.Context) {
 	c.JSON(200, quote)
 }
 
+// userWalletAddress resolves the custody wallet address bound to the
+// authenticated caller. Bridge identity is the caller's own custody wallet, so
+// a client can never claim another address as the sender of a transfer.
+func (s *BridgeService) userWalletAddress(userID string) (string, error) {
+	if s.db == nil {
+		return "", fmt.Errorf("database not configured")
+	}
+	var wallet models.MasterWallet
+	if err := s.db.Where("user_id = ?", userID).First(&wallet).Error; err != nil {
+		return "", fmt.Errorf("no custody wallet for this account")
+	}
+	if !common.IsHexAddress(wallet.Address) {
+		return "", fmt.Errorf("custody wallet address is not a valid address")
+	}
+	return wallet.Address, nil
+}
+
+// InitiateTransferHandler locks the caller's tokens on the source chain.
 func (s *BridgeService) InitiateTransferHandler(c *gin.Context) {
 	var req struct {
 		SrcChain  int64  `json:"src_chain" binding:"required"`
 		DstChain  int64  `json:"dst_chain" binding:"required"`
-		Sender    string `json:"sender" binding:"required"`
 		Recipient string `json:"recipient" binding:"required"`
 		Token     string `json:"token" binding:"required"`
 		Amount    string `json:"amount" binding:"required"`
@@ -516,7 +529,17 @@ func (s *BridgeService) InitiateTransferHandler(c *gin.Context) {
 		return
 	}
 
-	transfer, err := s.InitiateTransfer(c.Request.Context(), req.SrcChain, req.DstChain, req.Sender, req.Recipient, req.Token, req.Amount)
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+	sender, err := s.userWalletAddress(userID)
+	if err != nil {
+		c.JSON(403, gin.H{"error": err.Error()})
+		return
+	}
+
+	transfer, err := s.InitiateTransfer(c.Request.Context(), req.SrcChain, req.DstChain, sender, req.Recipient, req.Token, req.Amount)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -525,22 +548,46 @@ func (s *BridgeService) InitiateTransferHandler(c *gin.Context) {
 	c.JSON(200, transfer)
 }
 
+// GetTransferHandler returns one transfer, but only to a party of it.
 func (s *BridgeService) GetTransferHandler(c *gin.Context) {
 	transferID := c.Param("id")
+
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+	caller, err := s.userWalletAddress(userID)
+	if err != nil {
+		c.JSON(403, gin.H{"error": err.Error()})
+		return
+	}
 
 	transfer, err := s.GetTransfer(transferID)
 	if err != nil {
 		c.JSON(404, gin.H{"error": err.Error()})
 		return
 	}
+	if !strings.EqualFold(transfer.Sender, caller) && !strings.EqualFold(transfer.Recipient, caller) {
+		c.JSON(404, gin.H{"error": "transfer not found"})
+		return
+	}
 
 	c.JSON(200, transfer)
 }
 
+// GetUserTransfersHandler returns the caller's own transfers.
 func (s *BridgeService) GetUserTransfersHandler(c *gin.Context) {
-	userAddress := c.Query("user_address")
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+	caller, err := s.userWalletAddress(userID)
+	if err != nil {
+		c.JSON(403, gin.H{"error": err.Error()})
+		return
+	}
 
-	transfers := s.GetUserTransfers(userAddress)
+	transfers := s.GetUserTransfers(caller)
 	c.JSON(200, gin.H{
 		"transfers": transfers,
 		"count":     len(transfers),

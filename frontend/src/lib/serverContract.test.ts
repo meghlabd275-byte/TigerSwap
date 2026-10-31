@@ -12,7 +12,10 @@ import {
   botPerformanceListValidator,
   botStrategyListValidator,
   botsSummaryValidator,
+  bridgeChainsValidator,
+  bridgeQuoteValidator,
   chainListValidator,
+  copyTraderListValidator,
   futuresMarketListValidator,
   marginListingListValidator,
   marketStatsValidator,
@@ -87,6 +90,17 @@ const SERVER_OTC_ORDERS = `[${SERVER_OTC_ORDER}]`;
 const SERVER_TWAMM_ORDER = `{"id":1,"user_id":7,"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","filled_quantity":"0","limit_price":"0","start_time":"2026-10-31T16:17:02.428673919Z","end_time":"2026-11-01T16:17:02.428673919Z","status":"active","created_at":"2026-10-31T16:17:02.428691819Z","updated_at":"2026-10-31T16:17:02.428691819Z"}`;
 
 const SERVER_TWAMM_ORDERS = `[${SERVER_TWAMM_ORDER}]`;
+
+const SERVER_COPY_TRADER = `{"address":"0x1111111111111111111111111111111111111111","name":"Alpha Whale","avatar":"https://example.com/a.png","win_rate":0,"total_profit":"0","weekly_profit":0,"monthly_profit":0,"total_trades":0,"followers":0,"total_volume":"0","avg_holding_time":"","is_verified":false,"is_pro":false,"risk_score":"medium","strategies":null,"last_active":"2026-10-31T16:35:21.407518436Z"}`;
+
+const SERVER_COPY_TRADERS = `{"count":1,"traders":[${SERVER_COPY_TRADER}]}`;
+
+// Captured from `GET /bridge/chains` on a running server.
+const SERVER_BRIDGE_CHAINS = `{"chains":[8453,43114,1,137,56,42161,10]}`;
+
+// The quote handler emits this shape; captured verbatim from the handler's own
+// JSON in `services/copy_trading_contract_test.go`.
+const SERVER_BRIDGE_QUOTE = `{"src_chain":1,"dst_chain":137,"token":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","amount_in":"1000000","amount_out":"999000","fee":"1000","fee_usd":0.001,"estimated_time":"15 minutes","router":"0x1234567890123456789012345678901234567890","price_impact":0}`;
 
 function parse<T>(validator: (value: unknown, path?: string) => T, payload: string, label: string): T {
   try {
@@ -248,4 +262,26 @@ test("live /twamm/orders payload satisfies twammOrderListValidator", () => {
   assert.equal(orders.length, 1);
   assert.equal(orders[0].total_quantity, "10");
   assert.equal(orders[0].status, "active");
+});
+
+test("live /copy-trading/traders payload satisfies copyTraderListValidator", () => {
+  const traders = parse(copyTraderListValidator, SERVER_COPY_TRADERS, "copyTraders");
+  assert.equal(traders.length, 1);
+  assert.equal(traders[0].name, "Alpha Whale");
+  assert.equal(traders[0].address, "0x1111111111111111111111111111111111111111");
+  assert.deepEqual(traders[0].strategies, []);
+});
+
+test("live /bridge/chains payload satisfies bridgeChainsValidator", () => {
+  const chains = parse(bridgeChainsValidator, SERVER_BRIDGE_CHAINS, "bridgeChains");
+  assert.deepEqual(chains, [8453, 43114, 1, 137, 56, 42161, 10]);
+});
+
+test("live /bridge/quote payload satisfies bridgeQuoteValidator", () => {
+  const quote = parse(bridgeQuoteValidator, SERVER_BRIDGE_QUOTE, "bridgeQuote");
+  assert.equal(quote.src_chain, 1);
+  assert.equal(quote.dst_chain, 137);
+  assert.equal(quote.amount_in, "1000000");
+  assert.equal(quote.amount_out, "999000");
+  assert.equal(quote.estimated_time, "15 minutes");
 });

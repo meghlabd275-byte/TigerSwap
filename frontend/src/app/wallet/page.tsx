@@ -31,8 +31,9 @@ import {
 import { useWalletStore } from '@/store/walletStore';
 import { useChains, usePortfolio, useTokens } from '@/hooks/useApi';
 import { formatAddress, parseUnits } from '@/lib/wallet';
+import { DepositWithdraw } from '@/components/DepositWithdraw';
 
-type Tab = 'wallet' | 'send' | 'settings';
+type Tab = 'wallet' | 'deposit' | 'send' | 'settings';
 
 export default function WalletPage() {
   const {
@@ -208,7 +209,7 @@ export default function WalletPage() {
 
       {mobileMenuOpen && (
         <div className="lg:hidden bg-tiger-dark border-b border-white/5 p-4">
-          {([['wallet', 'Wallet'], ['send', 'Send'], ['settings', 'Settings']] as const).map(
+          {([['wallet', 'Wallet'], ['deposit', 'Deposit'], ['send', 'Send'], ['settings', 'Settings']] as const).map(
             ([id, label]) => (
               <button
                 key={id}
@@ -229,7 +230,7 @@ export default function WalletPage() {
 
       <nav className="hidden lg:flex border-b border-white/5 bg-tiger-dark/50">
         <div className="max-w-7xl mx-auto px-4 flex items-center space-x-1">
-          {([['wallet', 'Wallet'], ['send', 'Send'], ['settings', 'Settings']] as const).map(
+          {([['wallet', 'Wallet'], ['deposit', 'Deposit'], ['send', 'Send'], ['settings', 'Settings']] as const).map(
             ([id, label]) => (
               <button
                 key={id}
@@ -332,6 +333,29 @@ export default function WalletPage() {
                   Token list unavailable: {tokensError.message}
                 </p>
               )}
+            </motion.div>
+          )}
+
+          {activeTab === 'deposit' && (
+            <motion.div
+              key="deposit"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="max-w-xl"
+            >
+              <DepositWithdraw
+                currentWallet={{
+                  address: account.address,
+                  chainId,
+                  chainName: currentChain?.name ?? '',
+                }}
+                tokens={tokens ?? []}
+                chainId={chainId}
+                explorerURL={explorerURL}
+                onWithdraw={sendNative}
+                availableBalance={nativeBalance?.formatted}
+              />
             </motion.div>
           )}
 
