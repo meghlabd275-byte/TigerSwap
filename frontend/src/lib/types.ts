@@ -23,8 +23,10 @@ import {
   string,
   symbol,
   timestamp,
+  ValidationError,
   withDefault,
 } from "./validation";
+import type { Validator } from "./validation";
 
 /** A tradable token as returned by `/tokens`. */
 export interface Token {
@@ -1026,3 +1028,258 @@ export const governanceBoostValidator = object<GovernanceBoost>({
   boost_bps: withDefault(string, "10000"),
   boost_multiplier: withDefault(string, "1"),
 });
+
+/** A decimal integer formatted as a string, e.g. a balance or a PnL. */
+const decimal = string;
+
+/**
+ * An identifier the API may serialise as a number or a string.
+ *
+ * Go emits a `uint` primary key as a JSON number while a UUID key is a string,
+ * so both forms are accepted and normalised to a string.
+ */
+const identifier: Validator<string> = (value, path = "value") => {
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || !Number.isFinite(value)) {
+      throw new ValidationError("expected an integer identifier", path);
+    }
+    return String(value);
+  }
+  return string(value, path);
+};
+
+/**
+ * A configured trading bot.
+ *
+ * `config` is the strategy's validated parameters, held as JSON. It is
+ * deliberately typed as `unknown`: each strategy has its own schema, so the UI
+ * renders the known risk limits and never assumes a shape for `config`.
+ */
+export interface BotInstance {
+  id: string;
+  name: string;
+  strategy: string;
+  symbol: string;
+  status: string;
+  config: unknown;
+  max_order_size: string;
+  max_daily_loss: string;
+  max_open_orders: number;
+  realised_pnl: string;
+  filled_orders: number;
+  traded_volume: string;
+  last_run_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const botValidator = object<BotInstance>({
+  id: identifier,
+  name: displayText,
+  strategy: string,
+  symbol: marketSymbol,
+  status: string,
+  config: withDefault<unknown>((value) => value, {}),
+  max_order_size: decimal,
+  max_daily_loss: withDefault(decimal, "0"),
+  max_open_orders: withDefault(integer, 10),
+  realised_pnl: withDefault(decimal, "0"),
+  filled_orders: withDefault(integer, 0),
+  traded_volume: withDefault(decimal, "0"),
+  last_run_at: withDefault(timestamp, new Date(0).toISOString()),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const botListValidator = listingArray(botValidator);
+
+/** An order a bot engine decided to place. */
+export interface BotOrder {
+  id: string;
+  bot_id: string;
+  user_id: string;
+  symbol: string;
+  side: string;
+  order_kind: string;
+  price: string;
+  quantity: string;
+  reduce_only: boolean;
+  source: string;
+  status: string;
+  tx_hash: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export const botOrderValidator = object<BotOrder>({
+  id: identifier,
+  bot_id: identifier,
+  user_id: identifier,
+  symbol: marketSymbol,
+  side: oneOf(["buy", "sell", "long", "short"] as const),
+  order_kind: string,
+  price: decimal,
+  quantity: decimal,
+  reduce_only: withDefault(boolean, false),
+  source: withDefault(string, ""),
+  status: string,
+  tx_hash: withDefault(nullable(string), null),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const botOrderListValidator = listingArray(botOrderValidator);
+
+/** One day of a bot's realised performance. */
+export interface BotPerformance {
+  id: string;
+  bot_id: string;
+  day: string;
+  orders_placed: number;
+  orders_filled: number;
+  volume: string;
+  realised_pnl: string;
+  fees_paid: string;
+  max_drawdown: string;
+}
+
+export const botPerformanceValidator = object<BotPerformance>({
+  id: identifier,
+  bot_id: identifier,
+  day: timestamp,
+  orders_placed: withDefault(integer, 0),
+  orders_filled: withDefault(integer, 0),
+  volume: withDefault(decimal, "0"),
+  realised_pnl: withDefault(decimal, "0"),
+  fees_paid: withDefault(decimal, "0"),
+  max_drawdown: withDefault(decimal, "0"),
+});
+
+export const botPerformanceListValidator = listingArray(botPerformanceValidator);
+
+/** A strategy a client may configure, with the keys its config accepts. */
+export interface BotStrategy {
+  strategy: string;
+  config_keys: Record<string, string>;
+}
+
+export const botStrategyValidator = object<BotStrategy>({
+  strategy: string,
+  config_keys: withDefault<Record<string, string>>((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, string>;
+  }, {}),
+});
+
+export const botStrategyListValidator = listingArray(botStrategyValidator);
+
+/** Counts of the caller's bots, grouped by strategy and status. */
+export interface BotsSummary {
+  by_strategy: Record<string, number>;
+  by_status: Record<string, number>;
+  total: number;
+}
+
+export const botsSummaryValidator = object<BotsSummary>({
+  by_strategy: withDefault<Record<string, number>>((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    const out: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        out[key] = parsed;
+      }
+    }
+    return out;
+  }, {}),
+  by_status: withDefault<Record<string, number>>((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    const out: Record<string, number> = {};
+    for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        out[key] = parsed;
+      }
+    }
+    return out;
+  }, {}),
+  total: withDefault(integer, 0),
+});
+
+/** A private OTC block trade. */
+export interface OtcOrder {
+  id: string;
+  maker_id: string;
+  taker_id: string | null;
+  symbol: string;
+  side: string;
+  quantity: string;
+  price: string;
+  status: string;
+  min_fill: string;
+  counterparty: string | null;
+  escrow_tx_hash: string | null;
+  settle_tx_hash: string | null;
+  expires_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const otcOrderValidator = object<OtcOrder>({
+  id: identifier,
+  maker_id: identifier,
+  taker_id: withDefault(nullable(identifier), null),
+  symbol: marketSymbol,
+  side: oneOf(["buy", "sell"] as const),
+  quantity: decimal,
+  price: decimal,
+  status: string,
+  min_fill: withDefault(decimal, "0"),
+  counterparty: withDefault(nullable(string), null),
+  escrow_tx_hash: withDefault(nullable(string), null),
+  settle_tx_hash: withDefault(nullable(string), null),
+  expires_at: withDefault(timestamp, new Date(0).toISOString()),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const otcOrderListValidator = listingArray(otcOrderValidator);
+
+/** A TWAMM order that executes in slices across its lifetime. */
+export interface TwammOrder {
+  id: string;
+  user_id: string;
+  symbol: string;
+  side: string;
+  total_quantity: string;
+  filled_quantity: string;
+  limit_price: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const twammOrderValidator = object<TwammOrder>({
+  id: identifier,
+  user_id: identifier,
+  symbol: marketSymbol,
+  side: oneOf(["buy", "sell"] as const),
+  total_quantity: decimal,
+  filled_quantity: withDefault(decimal, "0"),
+  limit_price: withDefault(decimal, "0"),
+  start_time: timestamp,
+  end_time: timestamp,
+  status: string,
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const twammOrderListValidator = listingArray(twammOrderValidator);

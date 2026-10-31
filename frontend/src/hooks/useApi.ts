@@ -20,12 +20,18 @@ import type {
   AdminDashboard,
   AdminSettings,
   AdminToken,
+  BotInstance,
+  BotOrder,
+  BotPerformance,
+  BotsSummary,
+  BotStrategy,
   Chain,
   FeeConfig,
   LaunchpadProject,
   MarketStats,
   MarginAccountView,
   MarginListing,
+  OtcOrder,
   PerpMarket,
   PerpPosition,
   Pool,
@@ -34,6 +40,7 @@ import type {
   SwapQuote,
   Token,
   Trade,
+  TwammOrder,
   UserTransaction,
 } from "@/lib/types";
 
@@ -396,6 +403,214 @@ export function useExecuteSwap() {
       // Balances and history have changed.
       void queryClient.invalidateQueries({ queryKey: ["portfolio"] });
       void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    },
+  });
+}
+
+/** The authenticated caller's configured trading bots. */
+export function useBots(
+  filters: { strategy?: string; status?: string } = {},
+): UseQueryResult<BotInstance[], Error> {
+  return useQuery<BotInstance[], Error>({
+    queryKey: ["bots", filters.strategy ?? "all", filters.status ?? "all"],
+    queryFn: () => endpoints.listBots(filters),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Counts of the caller's bots, grouped by strategy and status. */
+export function useBotsSummary(): UseQueryResult<BotsSummary, Error> {
+  return useQuery<BotsSummary, Error>({
+    queryKey: ["bots", "summary"],
+    queryFn: () => endpoints.getBotsSummary(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The strategies a client may configure, with their accepted config keys. */
+export function useBotStrategies(): UseQueryResult<BotStrategy[], Error> {
+  return useQuery<BotStrategy[], Error>({
+    queryKey: ["bots", "strategies"],
+    queryFn: () => endpoints.getBotStrategies(),
+    enabled: isAuthenticated(),
+    staleTime: REFRESH.static,
+    retry: shouldRetry,
+  });
+}
+
+/** Creates a bot and refreshes the list and the summary. */
+export function useCreateBot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      name: string;
+      strategy: string;
+      symbol: string;
+      config: Record<string, unknown>;
+      max_order_size: string;
+      max_daily_loss: string;
+      max_open_orders: number;
+    }) => endpoints.createBot(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["bots"] });
+    },
+  });
+}
+
+/** Changes a bot's lifecycle status. */
+export function useSetBotStatus() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; status: "active" | "paused" | "stopped" }) =>
+      endpoints.setBotStatus(params.id, params.status),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["bots"] });
+    },
+  });
+}
+
+/** Deletes a paused or stopped bot. */
+export function useDeleteBot() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.deleteBot(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["bots"] });
+    },
+  });
+}
+
+/** The orders a bot decided to place. */
+export function useBotOrders(botId: string | null): UseQueryResult<BotOrder[], Error> {
+  return useQuery<BotOrder[], Error>({
+    queryKey: ["bots", botId, "orders"],
+    queryFn: () => {
+      if (!botId) throw new Error("a bot id is required");
+      return endpoints.getBotOrders(botId);
+    },
+    enabled: isAuthenticated() && botId !== null,
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The daily realised performance of a bot. */
+export function useBotPerformance(botId: string | null): UseQueryResult<BotPerformance[], Error> {
+  return useQuery<BotPerformance[], Error>({
+    queryKey: ["bots", botId, "performance"],
+    queryFn: () => {
+      if (!botId) throw new Error("a bot id is required");
+      return endpoints.getBotPerformance(botId);
+    },
+    enabled: isAuthenticated() && botId !== null,
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** The caller's own OTC block trades. */
+export function useOtcOrders(status?: string): UseQueryResult<OtcOrder[], Error> {
+  return useQuery<OtcOrder[], Error>({
+    queryKey: ["otc", "orders", status ?? "all"],
+    queryFn: () => endpoints.listOtcOrders(status),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Open OTC block trades the caller could take. */
+export function useOpenOtcOrders(symbol?: string): UseQueryResult<OtcOrder[], Error> {
+  return useQuery<OtcOrder[], Error>({
+    queryKey: ["otc", "open", symbol ?? "all"],
+    queryFn: () => endpoints.listOpenOtcOrders(symbol),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Publishes a private OTC block trade. */
+export function useCreateOtcOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      symbol: string;
+      side: "buy" | "sell";
+      quantity: string;
+      price: string;
+      min_fill?: string;
+      expires_in_seconds: number;
+    }) => endpoints.createOtcOrder(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["otc"] });
+    },
+  });
+}
+
+/** Fills an open OTC block trade. */
+export function useTakeOtcOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; quantity: string }) =>
+      endpoints.takeOtcOrder(params.id, params.quantity),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["otc"] });
+    },
+  });
+}
+
+/** Cancels one of the caller's open OTC block trades. */
+export function useCancelOtcOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.cancelOtcOrder(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["otc"] });
+    },
+  });
+}
+
+/** The caller's TWAMM schedules. */
+export function useTwammOrders(): UseQueryResult<TwammOrder[], Error> {
+  return useQuery<TwammOrder[], Error>({
+    queryKey: ["twamm", "orders"],
+    queryFn: () => endpoints.listTwammOrders(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Schedules a TWAMM order. */
+export function useCreateTwammOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: {
+      symbol: string;
+      side: "buy" | "sell";
+      total_quantity: string;
+      limit_price: string;
+      duration_hours: number;
+      start_delay_seconds: number;
+    }) => endpoints.createTwammOrder(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["twamm"] });
+    },
+  });
+}
+
+/** Cancels a TWAMM order that has not finished. */
+export function useCancelTwammOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.cancelTwammOrder(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["twamm"] });
     },
   });
 }

@@ -18,6 +18,11 @@ import {
   AdminToken,
   Bribe,
   BribeClaimResult,
+  BotInstance,
+  BotOrder,
+  BotPerformance,
+  BotsSummary,
+  BotStrategy,
   Chain,
   FeeConfig,
   FuturesMarket,
@@ -30,6 +35,7 @@ import {
   MarginListing,
   MarginListingInput,
   MarketStats,
+  OtcOrder,
   PerpMarket,
   PerpOpenResult,
   PerpPosition,
@@ -41,6 +47,7 @@ import {
   SwapQuote,
   Token,
   Trade,
+  TwammOrder,
   UserProfile,
   UserTransaction,
   VeLock,
@@ -59,6 +66,12 @@ import {
   bribeClaimResultValidator,
   bribeListValidator,
   bribeValidator,
+  botListValidator,
+  botOrderListValidator,
+  botPerformanceListValidator,
+  botStrategyListValidator,
+  botsSummaryValidator,
+  botValidator,
   gaugeListValidator,
   gaugeValidator,
   governanceBoostValidator,
@@ -69,6 +82,8 @@ import {
   marginListingListValidator,
   marginListingValidator,
   marketStatsValidator,
+  otcOrderListValidator,
+  otcOrderValidator,
   perpMarketListValidator,
   perpOpenResultValidator,
   perpPositionListValidator,
@@ -80,6 +95,8 @@ import {
   swapQuoteValidator,
   tokenListValidator,
   tradeListValidator,
+  twammOrderListValidator,
+  twammOrderValidator,
   userProfileValidator,
   userTransactionListValidator,
   veLockListValidator,
@@ -522,5 +539,122 @@ export const endpoints = {
 
   async setGaugeWeight(id: string, payload: { weight: string; active?: boolean }): Promise<void> {
     await api.put(`/admin/gauges/${encodeURIComponent(id)}/weight`, payload);
+  },
+
+  /** Trading bots: each strategy is an engine the Rust bots crate runs. */
+
+  async listBots(params: { strategy?: string; status?: string } = {}): Promise<BotInstance[]> {
+    const query: Record<string, string> = {};
+    if (params.strategy) query.strategy = params.strategy;
+    if (params.status) query.status = params.status;
+    const body = await api.get("/bots", { query: Object.keys(query).length ? query : undefined });
+    return botListValidator(body);
+  },
+
+  async getBot(id: string): Promise<BotInstance> {
+    const body = await api.get(`/bots/${encodeURIComponent(id)}`);
+    return botValidator(body);
+  },
+
+  async createBot(payload: {
+    name: string;
+    strategy: string;
+    symbol: string;
+    config: Record<string, unknown>;
+    max_order_size: string;
+    max_daily_loss: string;
+    max_open_orders: number;
+  }): Promise<BotInstance> {
+    const body = await api.post("/bots", payload);
+    return botValidator(body);
+  },
+
+  async setBotStatus(id: string, status: "active" | "paused" | "stopped"): Promise<BotInstance> {
+    const body = await api.put(`/bots/${encodeURIComponent(id)}/status`, { status });
+    return botValidator(body);
+  },
+
+  async deleteBot(id: string): Promise<void> {
+    await apiRequest(`/bots/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  async getBotOrders(id: string, limit = 100): Promise<BotOrder[]> {
+    const body = await api.get(`/bots/${encodeURIComponent(id)}/orders`, { query: { limit } });
+    return botOrderListValidator(body);
+  },
+
+  async getBotPerformance(id: string): Promise<BotPerformance[]> {
+    const body = await api.get(`/bots/${encodeURIComponent(id)}/performance`);
+    return botPerformanceListValidator(body);
+  },
+
+  async getBotStrategies(): Promise<BotStrategy[]> {
+    const body = await api.get("/bots/strategies");
+    return botStrategyListValidator(body);
+  },
+
+  async getBotsSummary(): Promise<BotsSummary> {
+    const body = await api.get("/bots/summary");
+    return botsSummaryValidator(body);
+  },
+
+  /** OTC private block trades. Identity comes from the session token. */
+
+  async listOtcOrders(status?: string): Promise<OtcOrder[]> {
+    const body = await api.get("/otc/orders", {
+      query: status ? { status } : undefined,
+    });
+    return otcOrderListValidator(body);
+  },
+
+  async listOpenOtcOrders(symbol?: string): Promise<OtcOrder[]> {
+    const body = await api.get("/otc/orders/open", {
+      query: symbol ? { symbol } : undefined,
+    });
+    return otcOrderListValidator(body);
+  },
+
+  async createOtcOrder(payload: {
+    symbol: string;
+    side: "buy" | "sell";
+    quantity: string;
+    price: string;
+    min_fill?: string;
+    expires_in_seconds: number;
+  }): Promise<OtcOrder> {
+    const body = await api.post("/otc/orders", payload);
+    return otcOrderValidator(body);
+  },
+
+  async takeOtcOrder(id: string, quantity: string): Promise<OtcOrder> {
+    const body = await api.post(`/otc/orders/${encodeURIComponent(id)}/take`, { quantity });
+    return otcOrderValidator(body);
+  },
+
+  async cancelOtcOrder(id: string): Promise<void> {
+    await apiRequest(`/otc/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** TWAMM schedules: large orders sliced over their lifetime. */
+
+  async listTwammOrders(): Promise<TwammOrder[]> {
+    const body = await api.get("/twamm/orders");
+    return twammOrderListValidator(body);
+  },
+
+  async createTwammOrder(payload: {
+    symbol: string;
+    side: "buy" | "sell";
+    total_quantity: string;
+    limit_price: string;
+    duration_hours: number;
+    start_delay_seconds: number;
+  }): Promise<TwammOrder> {
+    const body = await api.post("/twamm/orders", payload);
+    return twammOrderValidator(body);
+  },
+
+  async cancelTwammOrder(id: string): Promise<void> {
+    await apiRequest(`/twamm/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 };

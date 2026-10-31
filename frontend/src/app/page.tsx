@@ -25,7 +25,8 @@ import {
   Gauge,
   LineChart,
   Clock,
-  Vote
+  Vote,
+  Bot
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -39,8 +40,10 @@ import { PerpetualTrading } from '@/components/PerpetualTrading';
 import { CrossChain } from '@/components/CrossChain';
 import { Governance } from '@/components/Governance';
 import { MarginTrading } from '@/components/MarginTrading';
+import { Bots } from '@/components/Bots';
+import { OtcTwamm } from '@/components/OtcTwamm';
 
-type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance' | 'bots' | 'otc';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -71,6 +74,8 @@ export default function Home() {
     { id: 'cross-chain' as const, label: 'Cross-Chain', icon: Globe },
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
     { id: 'governance' as const, label: 'Governance', icon: Vote },
+    { id: 'otc' as const, label: 'OTC / TWAMM', icon: Clock },
+    { id: 'bots' as const, label: 'Bots', icon: Bot },
   ];
 
   return (
@@ -139,6 +144,8 @@ export default function Home() {
                 {activeTab === 'cross-chain' && <CrossChain />}
                 {activeTab === 'portfolio' && <Portfolio />}
                 {activeTab === 'governance' && <Governance />}
+                {activeTab === 'otc' && <OtcTwamm />}
+                {activeTab === 'bots' && <Bots />}
               </motion.div>
             </AnimatePresence>
           </div>

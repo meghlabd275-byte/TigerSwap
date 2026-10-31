@@ -7,10 +7,16 @@ import {
   adminDashboardValidator,
   adminSettingsValidator,
   adminTokenListValidator,
+  botListValidator,
+  botOrderListValidator,
+  botPerformanceListValidator,
+  botStrategyListValidator,
+  botsSummaryValidator,
   chainListValidator,
   futuresMarketListValidator,
   marginListingListValidator,
   marketStatsValidator,
+  otcOrderListValidator,
   perpMarketListValidator,
   perpsListingListValidator,
   poolListValidator,
@@ -18,6 +24,7 @@ import {
   swapQuoteValidator,
   tokenListValidator,
   tradeListValidator,
+  twammOrderListValidator,
 } from "./types";
 
 // Every payload below was captured verbatim from a running TigerSwap API
@@ -57,6 +64,29 @@ const SERVER_PERPS_LIST = `{"count":1,"markets":[{"id":"bbe4240e-bf10-443e-a295-
 const SERVER_MARGIN_LIST = `{"count":1,"markets":[{"id":"2f373904-0de5-4eeb-a2b4-3cf54c585f5d","pair":"BTC/RUSD","base_asset":"BTC","quote_asset":"RUSD","margin_mode":"cross","max_leverage":10,"collateral_assets":"BTC,ETH,RUSD,USDT,USDC","borrowable_assets":"RUSD,USDT,USDC","base_rate_apy":0.05,"kink_utilization":0.8,"jump_multiplier":1,"ltv":0.7,"liquidation_threshold":0.75,"liquidation_bonus":0.05,"close_factor":0.5,"supply_cap":"10000000","borrow_cap":"10000000","risk_tier":"low","status":"paused","created_at":"2026-10-31T04:07:50.490874Z","updated_at":"2026-10-31T04:07:50.490874Z"}]}`;
 
 const SERVER_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"2000000000000000000","amountOutMin":"1990000000000000000","priceImpact":0.12,"route":["0x1111111111111111111111111111111111111111","0x2222222222222222222222222222222222222222"],"gasEstimate":150000}`;
+
+// The bots, OTC and TWAMM payloads below were captured by running the real
+// handlers against an in-memory database in
+// `backend/services/contract_capture_test.go` and copying the logged JSON.
+const SERVER_BOT = `{"config":{"rebalance_threshold_bps":50,"spread_bps":25,"target_depth":"10000"},"created_at":"2026-10-31T16:17:02.420413229Z","filled_orders":0,"id":1,"last_run_at":"0001-01-01T00:00:00Z","max_daily_loss":"100","max_open_orders":10,"max_order_size":"5","name":"maker","realised_pnl":"0","status":"active","strategy":"market_maker","symbol":"BTC/RUSD","traded_volume":"0","updated_at":"2026-10-31T16:17:02.420413229Z"}`;
+
+const SERVER_BOT_LIST = `[${SERVER_BOT}]`;
+
+const SERVER_BOT_STRATEGIES = `[{"config_keys":{"max_spread_bps":"int","min_book_depth":"decimal","min_spread_bps":"int","rebalance_threshold_bps":"int","spread_bps":"int","target_depth":"decimal"},"strategy":"market_maker"},{"config_keys":{"interval_ms":"int","side":"side","slices":"int","total_quantity":"decimal"},"strategy":"twap"}]`;
+
+const SERVER_BOTS_SUMMARY = `{"by_status":{"active":1},"by_strategy":{"market_maker":1},"total":1}`;
+
+const SERVER_BOT_ORDERS = `[{"id":1,"bot_id":1,"user_id":7,"symbol":"BTC/RUSD","side":"buy","order_kind":"limit","price":"60000","quantity":"0.5","reduce_only":false,"source":"","status":"pending","created_at":"2026-10-31T16:17:16.218019274Z","updated_at":"2026-10-31T16:17:16.218019274Z"}]`;
+
+const SERVER_BOT_PERFORMANCE = `[{"id":1,"bot_id":1,"day":"2026-10-31T00:00:00Z","orders_placed":3,"orders_filled":2,"volume":"3000","realised_pnl":"12.5","fees_paid":"0.6","max_drawdown":"4"}]`;
+
+const SERVER_OTC_ORDER = `{"id":1,"maker_id":7,"symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000","status":"open","min_fill":"0.5","expires_at":"2026-11-01T16:17:02.425322999Z","created_at":"2026-10-31T16:17:02.425348979Z","updated_at":"2026-10-31T16:17:02.425348979Z"}`;
+
+const SERVER_OTC_ORDERS = `[${SERVER_OTC_ORDER}]`;
+
+const SERVER_TWAMM_ORDER = `{"id":1,"user_id":7,"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","filled_quantity":"0","limit_price":"0","start_time":"2026-10-31T16:17:02.428673919Z","end_time":"2026-11-01T16:17:02.428673919Z","status":"active","created_at":"2026-10-31T16:17:02.428691819Z","updated_at":"2026-10-31T16:17:02.428691819Z"}`;
+
+const SERVER_TWAMM_ORDERS = `[${SERVER_TWAMM_ORDER}]`;
 
 function parse<T>(validator: (value: unknown, path?: string) => T, payload: string, label: string): T {
   try {
@@ -168,4 +198,54 @@ test("live /swap/quote payload satisfies swapQuoteValidator", () => {
   assert.equal(quote.amountOutMin, "1990000000000000000");
   assert.equal(quote.priceImpact, 0.12);
   assert.equal(quote.gasEstimate, 150000);
+});
+
+test("live /bots payload satisfies botListValidator", () => {
+  const bots = parse(botListValidator, SERVER_BOT_LIST, "bots");
+  assert.equal(bots.length, 1);
+  assert.equal(bots[0].strategy, "market_maker");
+  assert.equal(bots[0].symbol, "BTC/RUSD");
+  assert.equal(bots[0].max_open_orders, 10);
+  assert.equal(bots[0].status, "active");
+});
+
+test("live /bots/strategies payload satisfies botStrategyListValidator", () => {
+  const strategies = parse(botStrategyListValidator, SERVER_BOT_STRATEGIES, "botStrategies");
+  assert.equal(strategies.length, 2);
+  assert.equal(strategies[0].config_keys.spread_bps, "int");
+});
+
+test("live /bots/summary payload satisfies botsSummaryValidator", () => {
+  const summary = parse(botsSummaryValidator, SERVER_BOTS_SUMMARY, "botsSummary");
+  assert.equal(summary.total, 1);
+  assert.equal(summary.by_status.active, 1);
+  assert.equal(summary.by_strategy.market_maker, 1);
+});
+
+test("live /bots/:id/orders payload satisfies botOrderListValidator", () => {
+  const orders = parse(botOrderListValidator, SERVER_BOT_ORDERS, "botOrders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].order_kind, "limit");
+  assert.equal(orders[0].price, "60000");
+});
+
+test("live /bots/:id/performance payload satisfies botPerformanceListValidator", () => {
+  const performance = parse(botPerformanceListValidator, SERVER_BOT_PERFORMANCE, "botPerformance");
+  assert.equal(performance.length, 1);
+  assert.equal(performance[0].realised_pnl, "12.5");
+  assert.equal(performance[0].orders_filled, 2);
+});
+
+test("live /otc/orders payload satisfies otcOrderListValidator", () => {
+  const orders = parse(otcOrderListValidator, SERVER_OTC_ORDERS, "otcOrders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].side, "buy");
+  assert.equal(orders[0].min_fill, "0.5");
+});
+
+test("live /twamm/orders payload satisfies twammOrderListValidator", () => {
+  const orders = parse(twammOrderListValidator, SERVER_TWAMM_ORDERS, "twammOrders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].total_quantity, "10");
+  assert.equal(orders[0].status, "active");
 });
