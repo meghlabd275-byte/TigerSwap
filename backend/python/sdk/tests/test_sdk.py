@@ -14,7 +14,6 @@ import pytest
 
 from tigerswap_sdk.chain import Chain, ChainManager
 from tigerswap_sdk.contracts import (
-    DEPLOYMENTS,
     DeploymentError,
     get_contract_address,
     get_deployment,
@@ -29,36 +28,74 @@ from tigerswap_sdk.tokens import Token, TokenList
 # --------------------------------------------------------------------------
 
 
-def test_get_deployment_returns_a_configured_chain():
+ROUTER = "0x1111111111111111111111111111111111111111"
+FACTORY = "0x2222222222222222222222222222222222222222"
+
+
+def test_get_deployment_is_empty_when_nothing_is_configured(monkeypatch):
+    monkeypatch.delenv("TIGERSWAP_ROUTER_1", raising=False)
+    monkeypatch.delenv("TIGERSWAP_FACTORY_1", raising=False)
+    monkeypatch.delenv("TIGERSWAP_WETH_1", raising=False)
+
+    # No TigerSwap contract is configured, so the chain counts as undeployed.
     deployment = get_deployment(1)
-    assert "router" in deployment
-    assert "factory" in deployment
+    assert "router" not in deployment
+    assert "factory" not in deployment
+    assert is_deployed(1) is False
 
 
-def test_get_deployment_raises_for_an_unknown_chain():
-    with pytest.raises(DeploymentError):
-        get_deployment(999_999)
+def test_get_deployment_reads_the_configured_addresses(monkeypatch):
+    monkeypatch.setenv("TIGERSWAP_ROUTER_1", ROUTER)
+    monkeypatch.setenv("TIGERSWAP_FACTORY_1", FACTORY)
+
+    deployment = get_deployment(1)
+    assert deployment["router"] == ROUTER
+    assert deployment["factory"] == FACTORY
+    # The wrapped-native default is available without extra configuration.
+    assert deployment["weth"].startswith("0x")
 
 
-def test_get_contract_address_rejects_the_zero_address():
-    # The shipped address book has placeholders, so this must raise rather than
-    # hand back a zero address that would burn funds.
+def test_chain_scoped_configuration_does_not_leak_across_chains(monkeypatch):
+    monkeypatch.setenv("TIGERSWAP_ROUTER_1", ROUTER)
+    monkeypatch.setenv("TIGERSWAP_ROUTER_56", FACTORY)
+
+    assert get_deployment(1)["router"] == ROUTER
+    assert get_deployment(56)["router"] == FACTORY
+    assert "router" not in get_deployment(137)
+
+
+def test_get_contract_address_raises_when_unconfigured(monkeypatch):
+    monkeypatch.delenv("TIGERSWAP_ROUTER_1", raising=False)
     with pytest.raises(DeploymentError):
         get_contract_address(1, "router")
 
 
-def test_get_contract_address_rejects_an_unknown_name():
+def test_get_contract_address_rejects_the_zero_address(monkeypatch):
+    monkeypatch.setenv("TIGERSWAP_ROUTER_1", "0x0000000000000000000000000000000000000000")
+    with pytest.raises(DeploymentError):
+        get_contract_address(1, "router")
+
+
+def test_get_contract_address_rejects_an_unknown_name(monkeypatch):
     with pytest.raises(DeploymentError):
         get_contract_address(1, "not_a_contract")
 
 
-def test_is_deployed_is_false_while_addresses_are_placeholders():
+def test_malformed_configured_address_raises(monkeypatch):
+    # A typo must fail loudly rather than be read as "not configured".
+    monkeypatch.setenv("TIGERSWAP_ROUTER_1", "0xnothex")
+    with pytest.raises(DeploymentError):
+        get_deployment(1)
+
+
+def test_is_deployed_tracks_router_and_factory(monkeypatch):
+    monkeypatch.setenv("TIGERSWAP_ROUTER_1", ROUTER)
+    monkeypatch.delenv("TIGERSWAP_FACTORY_1", raising=False)
     assert is_deployed(1) is False
+
+    monkeypatch.setenv("TIGERSWAP_FACTORY_1", FACTORY)
+    assert is_deployed(1) is True
     assert is_deployed(999_999) is False
-
-
-def test_placeholder_chain_ids_are_present_in_the_address_book():
-    assert {1, 56, 137}.issubset(set(DEPLOYMENTS))
 
 
 # --------------------------------------------------------------------------

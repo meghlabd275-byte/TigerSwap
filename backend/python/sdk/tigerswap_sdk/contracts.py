@@ -5,6 +5,7 @@ Every ABI here targets a TigerSwap contract deployed by this repository.
 No third-party DEX router, factory or quoter is referenced.
 """
 
+import os
 from typing import Dict, Optional
 
 # Minimal ERC-20 interface used for balances, allowances and approvals.
@@ -78,31 +79,22 @@ STAKING_ABI = [
     {"inputs": [], "name": "rewardRate", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
 ]
 
-# Per-chain TigerSwap deployment. Addresses are filled in per network at
-# deployment time; a chain absent from this table has no TigerSwap deployment
-# and the SDK raises rather than silently using a third-party contract.
-DEPLOYMENTS: Dict[int, Dict[str, str]] = {
-    1: {
-        "router": "0x0000000000000000000000000000000000000000",
-        "factory": "0x0000000000000000000000000000000000000000",
-        "staking": "0x0000000000000000000000000000000000000000",
-        "perpetuals": "0x0000000000000000000000000000000000000000",
-        "weth": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
-    },
-    56: {
-        "router": "0x0000000000000000000000000000000000000000",
-        "factory": "0x0000000000000000000000000000000000000000",
-        "staking": "0x0000000000000000000000000000000000000000",
-        "perpetuals": "0x0000000000000000000000000000000000000000",
-        "weth": "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
-    },
-    137: {
-        "router": "0x0000000000000000000000000000000000000000",
-        "factory": "0x0000000000000000000000000000000000000000",
-        "staking": "0x0000000000000000000000000000000000000000",
-        "perpetuals": "0x0000000000000000000000000000000000000000",
-        "weth": "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
-    },
+# The contracts a TigerSwap deployment is made of. Addresses are read from the
+# operator's environment rather than baked in, so a release carries no address
+# that is wrong on some network. A chain with no configured address is treated
+# as undeployed and the SDK raises instead of silently using a third-party
+# contract.
+CONTRACT_NAMES = ("router", "factory", "staking", "perpetuals")
+
+ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+# Canonical wrapped-native token per chain. These are the chains' own wrapped
+# tokens, not a third-party service, and are only used when an operator has not
+# configured one.
+WRAPPED_NATIVE: Dict[int, str] = {
+    1: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    56: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c",
+    137: "0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270",
 }
 
 
@@ -110,34 +102,83 @@ class DeploymentError(RuntimeError):
     """Raised when a TigerSwap contract address is not configured."""
 
 
-def get_deployment(chain_id: int) -> Dict[str, str]:
-    """Return the TigerSwap address book for a chain."""
-    deployment = DEPLOYMENTS.get(chain_id)
-    if deployment is None:
+def _env_address(chain_id: int, name: str) -> Optional[str]:
+    """Read a contract address from the environment, rejecting non-addresses.
+
+    Accepts `TIGERSWAP_<NAME>_<CHAIN_ID>`, so one process can serve several
+    chains. A malformed value raises rather than being ignored, because a typo
+    in an address must never be interpreted as "not configured".
+    """
+    raw = os.getenv(f"TIGERSWAP_{name.upper()}_{chain_id}")
+    if raw is None or raw.strip() == "":
+        return None
+    value = raw.strip()
+    if not _is_address(value):
         raise DeploymentError(
-            f"TigerSwap is not deployed on chain {chain_id}. "
-            "Add the deployment addresses to contracts.DEPLOYMENTS."
+            f"TIGERSWAP_{name.upper()}_{chain_id} is not a 20-byte hex address"
         )
+    return value
+
+
+def _is_address(value: str) -> bool:
+    """Whether `value` is a 20-byte hex address."""
+    if not isinstance(value, str) or not value.startswith("0x") or len(value) != 42:
+        return False
+    try:
+        int(value[2:], 16)
+    except ValueError:
+        return False
+    return True
+
+
+def get_deployment(chain_id: int) -> Dict[str, str]:
+    """Return the TigerSwap address book for a chain.
+
+    Only contracts the operator has configured are present, so a caller can use
+    membership to tell whether an optional contract (staking, perpetuals) is
+    available on that chain.
+    """
+    deployment: Dict[str, str] = {}
+    for name in CONTRACT_NAMES:
+        address = _env_address(chain_id, name)
+        if address is not None:
+            deployment[name] = address
+
+    wrapped = os.getenv(f"TIGERSWAP_WETH_{chain_id}") or WRAPPED_NATIVE.get(chain_id)
+    if wrapped:
+        deployment["weth"] = wrapped
+
     return deployment
 
 
 def get_contract_address(chain_id: int, name: str) -> str:
-    """Return a single contract address, validating that it is configured."""
+    """Return a single configured contract address.
+
+    Raises when the contract is absent, so a caller can never send a
+    transaction to the zero address.
+    """
+    if name not in CONTRACT_NAMES and name != "weth":
+        raise DeploymentError(f"{name} is not a TigerSwap contract name")
+
     address = get_deployment(chain_id).get(name)
     if not address:
-        raise DeploymentError(f"{name} is not configured on chain {chain_id}")
-    if address == "0x0000000000000000000000000000000000000000":
+        raise DeploymentError(
+            f"{name} is not configured on chain {chain_id}. "
+            f"Set TIGERSWAP_{name.upper()}_{chain_id} to the deployed address."
+        )
+    if address == ZERO_ADDRESS:
         raise DeploymentError(
             f"{name} on chain {chain_id} is the zero address. "
-            "Deploy TigerSwap and set the real address before use."
+            "Set the real deployed address before use."
         )
     return address
 
 
 def is_deployed(chain_id: int) -> bool:
     """Whether the TigerSwap router and factory are configured for a chain."""
-    deployment = DEPLOYMENTS.get(chain_id)
-    if not deployment:
+    try:
+        router = get_contract_address(chain_id, "router")
+        factory = get_contract_address(chain_id, "factory")
+    except DeploymentError:
         return False
-    zero = "0x0000000000000000000000000000000000000000"
-    return deployment.get("router") != zero and deployment.get("factory") != zero
+    return router != ZERO_ADDRESS and factory != ZERO_ADDRESS
