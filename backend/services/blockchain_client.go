@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -730,8 +729,3 @@ func parseInt64(s string) (int64, error) {
 	return n, err
 }
 
-func init() {
-	// Import required packages in actual implementation
-	_ = hex.EncodeToString
-	_ = crypto.Keccak256Hash
-}

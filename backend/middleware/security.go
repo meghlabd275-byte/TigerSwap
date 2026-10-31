@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -78,45 +77,6 @@ func RequireScope(scope string) gin.HandlerFunc {
 		if !ok || (!scopes[scope] && !scopes["*"]) {
 			c.JSON(http.StatusForbidden, gin.H{"error": "Insufficient scope"})
 			c.Abort()
-			return
-		}
-
-		c.Next()
-	}
-}
-
-func CORS() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		origin := c.Request.Header.Get("Origin")
-
-		// Allowed origins (configure in production)
-		allowedOrigins := []string{
-			"https://tigerswap.io",
-			"https://www.tigerswap.io",
-			"https://app.tigerswap.io",
-			"http://localhost:3000",
-			"http://localhost:8080",
-		}
-
-		allowed := false
-		for _, o := range allowedOrigins {
-			if origin == o || strings.HasSuffix(origin, ".tigerswap.io") {
-				allowed = true
-				break
-			}
-		}
-
-		if allowed {
-			c.Header("Access-Control-Allow-Origin", origin)
-		}
-
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization, X-API-Key")
-		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Max-Age", "86400")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(http.StatusNoContent)
 			return
 		}
 

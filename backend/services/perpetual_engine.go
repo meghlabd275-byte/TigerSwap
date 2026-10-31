@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -87,6 +88,7 @@ type FundingInfo struct {
 type perpMarketConfig struct {
 	Symbol                string
 	OracleSymbol          string
+	IndexSymbol           string
 	MaxLeverage           int
 	MakerFeeRate          float64
 	TakerFeeRate          float64
@@ -94,6 +96,12 @@ type perpMarketConfig struct {
 	LiquidationFeeRate    float64
 	MaxOpenInterest       string
 	PriceImpactRate       float64
+
+	// Funding configuration comes from the listing so an operator controls the
+	// rate and cadence per market rather than every market sharing one constant.
+	FundingRate     float64
+	FundingInterval time.Duration
+	FundingRateCap  float64
 }
 
 // NewPerpetualEngine builds an engine with no markets. Markets are loaded from
@@ -174,11 +182,15 @@ func futuresMarketConfig(m *models.FuturesMarket) *perpMarketConfig {
 	return &perpMarketConfig{
 		Symbol:                symbol,
 		OracleSymbol:          base,
+		IndexSymbol:           base,
 		MaxLeverage:           clampLeverage(m.MaxLeverage),
 		MakerFeeRate:          m.MakerFeeRate,
 		TakerFeeRate:          m.TakerFeeRate,
 		MaintenanceMarginRate: m.MaintenanceMarginRate,
 		LiquidationFeeRate:    m.LiquidationFeeRate,
+		FundingRate:           decimalOrZero(m.FundingRate),
+		FundingInterval:       fundingInterval(m.FundingInterval),
+		FundingRateCap:        decimalOrDefault(m.FundingRateCap, defaultFundingRateCap),
 	}
 }
 
@@ -201,6 +213,7 @@ func perpsMarketConfig(m *models.PerpsMarket) *perpMarketConfig {
 	return &perpMarketConfig{
 		Symbol:                symbol,
 		OracleSymbol:          base,
+		IndexSymbol:           base,
 		MaxLeverage:           clampLeverage(m.MaxLeverage),
 		MakerFeeRate:          m.MakerFeeRate,
 		TakerFeeRate:          m.TakerFeeRate,
@@ -208,6 +221,9 @@ func perpsMarketConfig(m *models.PerpsMarket) *perpMarketConfig {
 		LiquidationFeeRate:    m.LiquidationFeeRate,
 		MaxOpenInterest:       strings.TrimSpace(m.MaxOpenInterest),
 		PriceImpactRate:       m.PriceImpactRate,
+		FundingRate:           defaultFundingRate,
+		FundingInterval:       defaultFundingInterval,
+		FundingRateCap:        defaultFundingRateCap,
 	}
 }
 
@@ -652,10 +668,28 @@ func (e *PerpetualEngine) getMarkPrice(ctx context.Context, pair string) (float6
 	return priceData.USD, nil
 }
 
+// getIndexPrice returns the underlying index price for a pair from the market's
+// configured index symbol. It falls back to the mark price only when the
+// listing does not name a separate index feed, so a listed index source is
+// always honoured and a missing one cannot silently reuse the mark.
 func (e *PerpetualEngine) getIndexPrice(ctx context.Context, pair string) (float64, error) {
-	// Index price is same as mark price in this implementation
-	// In production, would use different oracle
-	return e.getMarkPrice(ctx, pair)
+	cfg := e.market(pair)
+	if cfg == nil {
+		return 0, fmt.Errorf("market %s is not listed", pair)
+	}
+	symbol := cfg.IndexSymbol
+	if symbol == "" {
+		symbol = cfg.OracleSymbol
+	}
+
+	priceData, err := e.priceAgg.GetRealPrice(ctx, symbol)
+	if err != nil {
+		return 0, err
+	}
+	if priceData.USD <= 0 {
+		return 0, fmt.Errorf("oracle returned a non-positive price for %s", symbol)
+	}
+	return priceData.USD, nil
 }
 
 func (e *PerpetualEngine) calculateLiquidationPrice(entryPrice float64, leverage int, isLong bool) float64 {
@@ -726,8 +760,19 @@ func (e *PerpetualEngine) isValidPair(pair string) bool {
 	return e.market(pair) != nil
 }
 
-// GetFundingRate calculates the funding rate for a pair
+// GetFundingRate computes the current funding rate for a pair.
+//
+// The rate is the listing's configured interest component plus the mark/index
+// premium, bounded by the listing's funding cap. Both the interval and the cap
+// come from the market's admin listing, so an operator can tune funding per
+// market rather than every market sharing one constant. An unlisted pair is
+// rejected rather than priced with defaults.
 func (e *PerpetualEngine) GetFundingRate(ctx context.Context, pair string) (*FundingInfo, error) {
+	cfg := e.market(pair)
+	if cfg == nil {
+		return nil, fmt.Errorf("market %s is not listed", pair)
+	}
+
 	markPrice, err := e.getMarkPrice(ctx, pair)
 	if err != nil {
 		return nil, err
@@ -737,35 +782,46 @@ func (e *PerpetualEngine) GetFundingRate(ctx context.Context, pair string) (*Fun
 	if err != nil {
 		return nil, err
 	}
+	if indexPrice <= 0 {
+		return nil, fmt.Errorf("index price for %s is not positive", pair)
+	}
 
-	// Calculate premium
-	premium := (markPrice - indexPrice) / indexPrice * 100
+	// Premium is the mark/index deviation as a fraction of the index. It is
+	// added to the listing's interest component to form the funding rate.
+	premium := (markPrice - indexPrice) / indexPrice
 
-	// Interest rate (typically 0.01% per 8 hours)
-	interestRate := 0.01
+	interestRate := cfg.FundingRate
+	cap := cfg.FundingRateCap
+	if cap <= 0 {
+		cap = defaultFundingRateCap
+	}
 
-	// Funding rate = premium + interest (clamped)
 	fundingRate := premium + interestRate
-	if fundingRate > 1 {
-		fundingRate = 1
-	} else if fundingRate < -1 {
-		fundingRate = -1
+	if fundingRate > cap {
+		fundingRate = cap
+	} else if fundingRate < -cap {
+		fundingRate = -cap
 	}
 
 	return &FundingInfo{
 		Pair:            pair,
 		LastFundingRate: fundingRate,
-		NextFundingTime: e.nextFundingTime(),
+		NextFundingTime: e.nextFundingTime(cfg.FundingInterval),
 		InterestRate:    interestRate,
 	}, nil
 }
 
-func (e *PerpetualEngine) nextFundingTime() time.Time {
-	// Funding happens every 8 hours
-	now := time.Now()
-	next := now.Truncate(8 * time.Hour).Add(8 * time.Hour)
-	if now.After(next) {
-		next = next.Add(8 * time.Hour)
+// nextFundingTime returns the next funding settlement for the given interval,
+// aligned to the interval boundary. A non-positive interval falls back to the
+// default cadence.
+func (e *PerpetualEngine) nextFundingTime(interval time.Duration) time.Time {
+	if interval <= 0 {
+		interval = defaultFundingInterval
+	}
+	now := time.Now().UTC()
+	next := now.Truncate(interval).Add(interval)
+	if !next.After(now) {
+		next = next.Add(interval)
 	}
 	return next
 }
@@ -899,6 +955,46 @@ type PerpMarketView struct {
 	IsActive          bool    `json:"isActive"`
 }
 
+// Default funding parameters applied to a listing that does not name its own.
+// A futures listing may override the rate, cadence and cap; a perps listing
+// currently exposes only the engine defaults.
+const (
+	defaultFundingRate     = 0.0001        // 0.01% per interval
+	defaultFundingInterval = 8 * time.Hour // eight-hour settlement
+	defaultFundingRateCap  = 0.01          // 1% absolute cap
+)
+
+// fundingInterval converts a listing's funding interval in hours to a duration.
+// A zero or negative value falls back to the default cadence so a listing can
+// never disable settlement by omission.
+func fundingInterval(hours int) time.Duration {
+	if hours <= 0 {
+		return defaultFundingInterval
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// decimalOrZero parses a stored decimal into a float, yielding zero when the
+// value is absent or unparseable. It is only used for non-negative funding
+// parameters whose safe default is "no interest component".
+func decimalOrZero(value string) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return v
+}
+
+// decimalOrDefault parses a stored decimal into a float, yielding the supplied
+// default when the value is absent or unparseable.
+func decimalOrDefault(value string, def float64) float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return def
+	}
+	return v
+}
+
 // maxPerpLeverage is the absolute leverage ceiling for engine-priced perpetual
 // markets. It is the upper bound for a listing's own max_leverage; a listing may
 // set anything from 1 up to this value. It is also the fallback when a listing
@@ -935,7 +1031,14 @@ func (e *PerpetualEngine) GetMarketsHandler(c *gin.Context) {
 		}
 
 		view.MarkPrice = markPrice
-		view.IndexPrice = markPrice
+		// Report the market's own index price. Fall back to the mark only when
+		// the index feed is momentarily unavailable, so the two never diverge
+		// silently in the other direction.
+		if indexPrice, err := e.getIndexPrice(ctx, symbol); err == nil {
+			view.IndexPrice = indexPrice
+		} else {
+			view.IndexPrice = markPrice
+		}
 		view.IsActive = true
 
 		if funding, err := e.GetFundingRate(ctx, symbol); err == nil {
