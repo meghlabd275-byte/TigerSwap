@@ -556,11 +556,11 @@ func TestConcurrentSubmitIsRaceFree(t *testing.T) {
 					side = SideSell
 				}
 				_, _, _ = e.Submit(Order{
-					Trader: "trader",
-					Pair:   "BTC/RUSD",
-					Side:   side,
-					Type:   TypeLimit,
-					Price:  float64(59000 + (i % 20)),
+					Trader:   "trader",
+					Pair:     "BTC/RUSD",
+					Side:     side,
+					Type:     TypeLimit,
+					Price:    float64(59000 + (i % 20)),
 					Quantity: 1,
 				})
 			}

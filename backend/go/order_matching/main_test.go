@@ -79,8 +79,8 @@ func TestSubmitAndFillThroughAPI(t *testing.T) {
 
 	var placed struct {
 		Order struct {
-			OrderID uint64 `json:"order_id"`
-			Status  string `json:"status"`
+			OrderID uint64  `json:"order_id"`
+			Status  string  `json:"status"`
 			Leaves  float64 `json:"leaves"`
 		} `json:"order"`
 	}

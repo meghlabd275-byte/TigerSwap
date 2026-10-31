@@ -57,10 +57,16 @@ const routerABIJSON = `[
  {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
 ]`
 
+// quoterABIJSON calls TigerSwap's own concentrated-liquidity quoter.
+const quoterABIJSON = `[
+ {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint24","name":"fee","type":"uint24"},{"internalType":"uint256","name":"amountIn","type":"uint256"}],"name":"quoteExactInputSingle","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"view","type":"function"}
+]`
+
 var (
 	factoryABI = mustABI(factoryABIJSON)
 	poolABI    = mustABI(poolABIJSON)
 	routerABI  = mustABI(routerABIJSON)
+	quoterABI  = mustABI(quoterABIJSON)
 )
 
 func mustABI(s string) abi.ABI {
@@ -133,6 +139,7 @@ type chainDeployment struct {
 	client  *ethclient.Client
 	factory common.Address
 	router  common.Address
+	quoter  common.Address
 	signer  *ecdsa.PrivateKey
 	mu      sync.RWMutex
 	pools   map[string]common.Address
@@ -172,6 +179,7 @@ func NewAggregator() (*Aggregator, error) {
 			client:  client,
 			factory: common.HexToAddress(factory),
 			router:  common.HexToAddress(router),
+			quoter:  common.HexToAddress(os.Getenv("TIGERSWAP_QUOTER_" + suffix)),
 			signer:  signer,
 			pools:   make(map[string]common.Address),
 		}
@@ -406,6 +414,17 @@ func (a *Aggregator) quoteFamily(ctx context.Context, d *chainDeployment, family
 		if err != nil {
 			return nil, err
 		}
+		// Concentrated liquidity cannot be reproduced from two reserves, so it
+		// is quoted through the pool's own quoter, which walks the real tick
+		// bitmap. The other families expose reserves and are priced locally.
+		if family == amm.FamilyV3 {
+			current, err = d.quoteV3(ctx, path[i], path[i+1], current, fee)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+
 		st, err := d.loadState(ctx, pool, family)
 		if err != nil {
 			return nil, err
@@ -425,10 +444,6 @@ func (a *Aggregator) quoteFamily(ctx context.Context, d *chainDeployment, family
 			current, err = amm.AmountOutStable(current, reserveIn, reserveOut, st.amp, fee)
 		case amm.FamilyWeighted:
 			current, err = amm.AmountOutWeighted(current, reserveIn, reserveOut, weightIn, weightOut, fee)
-		case amm.FamilyV3:
-			// V3 pools report their effective reserves; the concentrated math is
-			// applied on-chain by the quoter, so use the xyK approximation here.
-			current, err = amm.AmountOutXY(current, reserveIn, reserveOut, fee)
 		default:
 			return nil, fmt.Errorf("unsupported family %s", family)
 		}
@@ -437,6 +452,43 @@ func (a *Aggregator) quoteFamily(ctx context.Context, d *chainDeployment, family
 		}
 	}
 	return current, nil
+}
+
+// quoteV3 prices one concentrated-liquidity hop by calling TigerSwap's own
+// quoter. The quoter walks the pool's real tick bitmap, so the result includes
+// the tick crossings and slippage that a reserves-only formula cannot express.
+func (d *chainDeployment) quoteV3(ctx context.Context, tokenIn, tokenOut common.Address, amountIn *big.Int, feeBps uint32) (*big.Int, error) {
+	if d.quoter == (common.Address{}) {
+		return nil, fmt.Errorf("chain %d has no TigerSwap quoter configured", d.chainID)
+	}
+
+	// The on-chain quoter takes the fee in hundredths of a bip, the same unit
+	// the pool stores.
+	data, err := quoterABI.Pack("quoteExactInputSingle", tokenIn, tokenOut, new(big.Int).SetUint64(uint64(feeBps)), amountIn)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := d.client.CallContract(ctx, ethereum.CallMsg{To: &d.quoter, Data: data}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("quoter.quoteExactInputSingle: %w", err)
+	}
+
+	vals, err := quoterABI.Unpack("quoteExactInputSingle", out)
+	if err != nil {
+		return nil, fmt.Errorf("unpack quote: %w", err)
+	}
+	if len(vals) == 0 {
+		return nil, errors.New("quoter returned no output")
+	}
+	amountOut, ok := vals[0].(*big.Int)
+	if !ok || amountOut == nil {
+		return nil, errors.New("quoter returned a non-numeric output")
+	}
+	if amountOut.Sign() <= 0 {
+		return nil, fmt.Errorf("quoter returned no output for %s -> %s", tokenIn.Hex(), tokenOut.Hex())
+	}
+	return amountOut, nil
 }
 
 // GetQuote returns the best quote across all TigerSwap families on a chain.
