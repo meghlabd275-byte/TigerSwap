@@ -63,6 +63,18 @@ jobs:
           mkdir -p build && cd build
           cmake .. && make && ctest --output-on-failure
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Build and test Java SDK
+        run: |
+          # The SDK has no third-party dependencies, so it compiles and tests
+          # with nothing but a JDK.
+          cd "$GITHUB_WORKSPACE/backend/java/sdk" && ./build.sh
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
