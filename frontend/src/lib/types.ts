@@ -789,9 +789,14 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.chains ??
         record.tokens ??
         record.logs ??
+        record.traders ??
+        record.transfers ??
+        record.positions ??
         record.projects;
       if (items !== undefined) {
-        return arrayLenient(element)(items, `${path}.items`);
+        // A Go nil slice serialises as `null`; treat it as an empty list
+        // rather than failing the whole response.
+        return arrayLenient(element)(items ?? [], `${path}.items`);
       }
     }
     return arrayLenient(element)(value, path);
@@ -1283,3 +1288,177 @@ export const twammOrderValidator = object<TwammOrder>({
 });
 
 export const twammOrderListValidator = listingArray(twammOrderValidator);
+
+/**
+ * A trader on the copy-trading leaderboard, as returned by
+ * `/copy-trading/traders` (shape: `{ traders: Trader[], count: number }`).
+ */
+export interface CopyTrader {
+  address: string;
+  name: string;
+  avatar: string;
+  win_rate: number;
+  total_profit: string;
+  weekly_profit: number;
+  monthly_profit: number;
+  total_trades: number;
+  followers: number;
+  total_volume: string;
+  avg_holding_time: string;
+  is_verified: boolean;
+  is_pro: boolean;
+  risk_score: string;
+  strategies: string[];
+  last_active: string;
+}
+
+export const copyTraderValidator = object<CopyTrader>({
+  address,
+  name: displayText,
+  avatar: withDefault(string, ""),
+  win_rate: nonNegative,
+  total_profit: withDefault(decimal, "0"),
+  weekly_profit: withDefault(number, 0),
+  monthly_profit: withDefault(number, 0),
+  total_trades: withDefault(nonNegative, 0),
+  followers: withDefault(nonNegative, 0),
+  total_volume: withDefault(decimal, "0"),
+  avg_holding_time: withDefault(string, ""),
+  is_verified: withDefault(boolean, false),
+  is_pro: withDefault(boolean, false),
+  risk_score: withDefault(string, "medium"),
+  strategies: withDefault(array(string), []),
+  last_active: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const copyTraderListValidator = listingArray(copyTraderValidator);
+
+/**
+ * A TigerBridge quote from `POST /bridge/quote`. The amounts are decimal
+ * strings in the bridged token's smallest unit.
+ */
+export interface BridgeQuote {
+  src_chain: number;
+  dst_chain: number;
+  token: string;
+  amount_in: string;
+  amount_out: string;
+  fee: string;
+  fee_usd: number;
+  estimated_time: string;
+  router: string;
+  price_impact: number;
+}
+
+export const bridgeQuoteValidator = object<BridgeQuote>({
+  src_chain: integer,
+  dst_chain: integer,
+  token: string,
+  amount_in: decimal,
+  amount_out: decimal,
+  fee: decimal,
+  fee_usd: withDefault(number, 0),
+  estimated_time: withDefault(string, ""),
+  router: withDefault(string, ""),
+  price_impact: withDefault(number, 0),
+});
+
+/**
+ * A position the caller has copied from a trader, from
+ * `/copy-trading/positions`.
+ */
+export interface CopyPosition {
+  id: string;
+  follower_address: string;
+  trader_address: string;
+  original_position: string;
+  pair: string;
+  side: string;
+  size: string;
+  entry_price: number;
+  current_price: number;
+  leverage: number;
+  pnl: string;
+  status: string;
+  opened_at: string;
+  closed_at: string | null;
+  copied_at: string;
+}
+
+export const copyPositionValidator = object<CopyPosition>({
+  id: identifier,
+  follower_address: address,
+  trader_address: address,
+  original_position: withDefault(string, ""),
+  pair: marketSymbol,
+  side: oneOf(["buy", "sell", "long", "short"] as const),
+  size: decimal,
+  entry_price: nonNegative,
+  current_price: nonNegative,
+  leverage: nonNegative,
+  pnl: withDefault(decimal, "0"),
+  status: oneOf(["open", "closed"] as const),
+  opened_at: timestamp,
+  closed_at: nullable(timestamp),
+  copied_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const copyPositionListValidator = listingArray(copyPositionValidator);
+
+/**
+ * A TigerBridge transfer. `src_tx_hash` is set once the lock is mined and
+ * `dst_tx_hash` once the destination mint confirms.
+ */
+export interface BridgeTransfer {
+  id: string;
+  src_chain: number;
+  dst_chain: number;
+  sender: string;
+  recipient: string;
+  token: string;
+  amount: string;
+  src_tx_hash: string;
+  dst_tx_hash: string;
+  nonce: number;
+  status: string;
+  fee: string;
+  fee_usd: number;
+  amount_received: string;
+  created_at: string;
+  confirmed_at: string | null;
+  delivered_at: string | null;
+}
+
+export const bridgeTransferValidator = object<BridgeTransfer>({
+  id: identifier,
+  src_chain: integer,
+  dst_chain: integer,
+  sender: address,
+  recipient: address,
+  token: string,
+  amount: decimal,
+  src_tx_hash: withDefault(hex, ""),
+  dst_tx_hash: withDefault(hex, ""),
+  nonce: nonNegative,
+  status: string,
+  fee: withDefault(decimal, "0"),
+  fee_usd: withDefault(number, 0),
+  amount_received: withDefault(decimal, "0"),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  confirmed_at: nullable(timestamp),
+  delivered_at: nullable(timestamp),
+});
+
+export const bridgeTransferListValidator = listingArray(bridgeTransferValidator);
+
+/** The chain ids TigerBridge supports, from `GET /bridge/chains`. */
+export const bridgeChainsValidator: Validator<number[]> = (value, path = "value") => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ValidationError("expected a bridge chains envelope", path);
+  }
+  const chains = (value as Record<string, unknown>).chains;
+  if (!Array.isArray(chains)) {
+    throw new ValidationError("expected a chains array", `${path}.chains`);
+  }
+  return chains.map((entry, index) => integer(entry, `${path}.chains[${index}]`));
+};

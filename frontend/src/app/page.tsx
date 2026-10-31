@@ -26,7 +26,8 @@ import {
   LineChart,
   Clock,
   Vote,
-  Bot
+  Bot,
+  Users,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -42,8 +43,9 @@ import { Governance } from '@/components/Governance';
 import { MarginTrading } from '@/components/MarginTrading';
 import { Bots } from '@/components/Bots';
 import { OtcTwamm } from '@/components/OtcTwamm';
+import { CopyTrading } from '@/components/CopyTrading';
 
-type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance' | 'bots' | 'otc';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance' | 'otc' | 'bots' | 'copy-trading';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -76,6 +78,7 @@ export default function Home() {
     { id: 'governance' as const, label: 'Governance', icon: Vote },
     { id: 'otc' as const, label: 'OTC / TWAMM', icon: Clock },
     { id: 'bots' as const, label: 'Bots', icon: Bot },
+    { id: 'copy-trading' as const, label: 'Copy Trading', icon: Users },
   ];
 
   return (
@@ -146,6 +149,7 @@ export default function Home() {
                 {activeTab === 'governance' && <Governance />}
                 {activeTab === 'otc' && <OtcTwamm />}
                 {activeTab === 'bots' && <Bots />}
+                {activeTab === 'copy-trading' && <CopyTrading />}
               </motion.div>
             </AnimatePresence>
           </div>

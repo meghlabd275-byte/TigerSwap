@@ -23,7 +23,11 @@ import {
   BotPerformance,
   BotsSummary,
   BotStrategy,
+  BridgeQuote,
+  BridgeTransfer,
   Chain,
+  CopyPosition,
+  CopyTrader,
   FeeConfig,
   FuturesMarket,
   FuturesMarketInput,
@@ -59,7 +63,14 @@ import {
   adminSettingsValidator,
   adminTokenListValidator,
   adminTokenValidator,
+  bridgeChainsValidator,
+  bridgeQuoteValidator,
+  bridgeTransferListValidator,
+  bridgeTransferValidator,
   chainListValidator,
+  copyPositionListValidator,
+  copyTraderListValidator,
+  copyTraderValidator,
   feeConfigValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
@@ -652,6 +663,76 @@ export const endpoints = {
   }): Promise<TwammOrder> {
     const body = await api.post("/twamm/orders", payload);
     return twammOrderValidator(body);
+  },
+
+  /** Copy trading: public leaderboard plus the caller's own follow state. */
+  async listCopyTraders(limit = 20): Promise<CopyTrader[]> {
+    const body = await api.get("/copy-trading/traders", { query: { limit } });
+    return copyTraderListValidator(body);
+  },
+
+  async getCopyTrader(address: string): Promise<CopyTrader> {
+    const body = await api.get(`/copy-trading/traders/${encodeURIComponent(address)}`);
+    return copyTraderValidator(body);
+  },
+
+  /** TigerBridge: a quote is priced per token and per source chain. */
+  async getBridgeQuote(payload: {
+    src_chain: number;
+    dst_chain: number;
+    token: string;
+    amount: string;
+  }): Promise<BridgeQuote> {
+    const body = await api.post("/bridge/quote", payload);
+    return bridgeQuoteValidator(body);
+  },
+
+  async getBridgeChains(): Promise<number[]> {
+    const body = await api.get("/bridge/chains");
+    return bridgeChainsValidator(body);
+  },
+
+  /**
+   * Locks the caller's tokens on the source chain via the TigerBridge
+   * relayer. The sender is the caller's custody wallet, resolved from the
+   * session, so it is not part of the request.
+   */
+  async initiateBridgeTransfer(payload: {
+    src_chain: number;
+    dst_chain: number;
+    token: string;
+    amount: string;
+    recipient: string;
+  }): Promise<BridgeTransfer> {
+    const body = await api.post("/bridge/transfer", payload);
+    return bridgeTransferValidator(body);
+  },
+
+  /** The caller's own bridge transfers. */
+  async listBridgeTransfers(): Promise<BridgeTransfer[]> {
+    const body = await api.get("/bridge/transfers");
+    return bridgeTransferListValidator(body);
+  },
+
+  /** The caller's copied positions and their live PnL. */
+  async getCopyPositions(): Promise<CopyPosition[]> {
+    const body = await api.get("/copy-trading/positions");
+    return copyPositionListValidator(body);
+  },
+
+  /** Starts copying a trader for the authenticated caller. */
+  async followTrader(payload: {
+    trader_address: string;
+    copy_ratio?: number;
+    stop_loss?: number;
+    take_profit?: number;
+  }): Promise<void> {
+    await api.post("/copy-trading/follow", payload);
+  },
+
+  /** Stops copying the trader the caller currently follows. */
+  async unfollowTrader(): Promise<void> {
+    await api.delete("/copy-trading/follow");
   },
 
   async cancelTwammOrder(id: string): Promise<void> {

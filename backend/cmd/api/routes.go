@@ -166,6 +166,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/bridge/quote", deps.bridgeService.GetQuoteHandler)
 			protected.POST("/bridge/transfer", deps.bridgeService.InitiateTransferHandler)
 			protected.GET("/bridge/transfers", deps.bridgeService.GetUserTransfersHandler)
+			protected.GET("/bridge/transfers/:id", deps.bridgeService.GetTransferHandler)
 
 			// Launchpad routes
 			protected.POST("/launchpad/projects", deps.launchpadService.CreateProjectHandler)
@@ -348,11 +349,12 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		public.GET("/chain/:chain_id/tx/:tx_hash", deps.blockchainClient.GetTransactionReceiptHandler)
 		protected.POST("/chain/broadcast", deps.blockchainClient.SendTransactionHandler)
 
-		// Bridge read routes. The supported-bridge list is per source chain, so
-		// the chain id is a path parameter.
+		// Bridge route metadata. This is static relayer configuration (which
+		// chains and routers TigerBridge supports), not per-user data, so it
+		// is public. A transfer itself is visible only to a party of it and
+		// lives in `protected` above.
 		public.GET("/bridge/chains", deps.bridgeService.GetSupportedChainsHandler)
 		public.GET("/bridge/chains/:chain_id/supported", deps.bridgeService.GetSupportedBridgesHandler)
-		public.GET("/bridge/transfers/:id", deps.bridgeService.GetTransferHandler)
 
 		// Copy-trading leaderboard. A trader is keyed by address.
 		public.GET("/copy-trading/traders", deps.copyTradingEngine.GetTopTradersHandler)
