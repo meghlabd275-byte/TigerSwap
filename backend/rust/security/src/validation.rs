@@ -86,8 +86,9 @@ pub fn validate_amount(amount: &str, decimals: u8) -> Result<(), ValidationError
         }
     }
 
-    // A u256 has 78 decimal digits; leave room for the fractional part.
-    if integer_part.len() > 78 - decimals as usize {
+    // A u256 holds 78 decimal digits. `decimals` is caller-supplied, so guard it
+    // before subtracting: `78 - decimals` underflows and panics for decimals > 78.
+    if decimals > 78 || integer_part.len() > 78 - decimals as usize {
         return Err(ValidationError::InvalidAmount("Amount too large".to_string()));
     }
 
@@ -219,6 +220,25 @@ mod tests {
             );
         }
         assert!(validate_amount("1000000000000000000", 18).is_ok());
+    }
+
+    /// `decimals` is caller-supplied. A value above 78 used to underflow the
+    /// `78 - decimals` bound and panic instead of returning an error.
+    #[test]
+    fn test_validate_amount_rejects_out_of_range_decimals_without_panicking() {
+        for decimals in [79u8, 100, 255] {
+            assert!(
+                validate_amount("1", decimals).is_err(),
+                "decimals {decimals} must be rejected, not panic"
+            );
+        }
+        // The boundary itself is valid: 78 integer digits with 0 decimals.
+        assert!(validate_amount(&"9".repeat(78), 0).is_ok());
+        assert!(validate_amount(&"9".repeat(79), 0).is_err());
+        // Integer digits plus decimals may not exceed 78 in total.
+        assert!(validate_amount(&"9".repeat(78), 78).is_err());
+        assert!(validate_amount("0", 78).is_err());
+        assert!(validate_amount("0", 77).is_ok());
     }
 
     /// Truncating a multi-byte string at a byte offset used to panic.

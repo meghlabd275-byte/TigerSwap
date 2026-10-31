@@ -349,8 +349,12 @@ impl TimingWheel {
 
     /// Schedules an id to be released after `delay_ms` milliseconds.
     pub fn schedule(&mut self, id: u64, delay_ms: u64) -> usize {
-        let ticks = (delay_ms / self.tick_ms).max(1) as usize;
-        let slot = (self.rotation + ticks) % self.buckets.len();
+        let len = self.buckets.len();
+        // Reduce before adding: a large `delay_ms` makes `ticks` approach
+        // usize::MAX, and `rotation + ticks` would overflow (panic in debug,
+        // silent mis-scheduling in release).
+        let ticks = ((delay_ms / self.tick_ms).max(1) % len as u64) as usize;
+        let slot = (self.rotation + ticks) % len;
         self.buckets[slot].push(id);
         slot
     }
@@ -605,6 +609,16 @@ mod tests {
         assert!(wheel.tick(1).contains(&1));
         assert!(wheel.tick(1).contains(&2));
         assert_eq!(wheel.current_tick(), 2);
+    }
+
+    /// A very large delay used to overflow `rotation + ticks` (panic in debug,
+    /// silent mis-scheduling in release). It must wrap within the bucket count.
+    #[test]
+    fn timing_wheel_handles_huge_delay_without_overflow() {
+        let mut wheel = TimingWheel::new(8, 1);
+        let slot = wheel.schedule(42, u64::MAX);
+        assert!(slot < 8, "slot must index a real bucket, got {slot}");
+        assert_eq!(wheel.current_tick(), 0);
     }
 
     #[test]

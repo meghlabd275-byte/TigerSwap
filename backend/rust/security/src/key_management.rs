@@ -13,6 +13,8 @@ use thiserror::Error;
 use tokio::sync::RwLock;
 use zeroize::Zeroize;
 
+use crate::encryption::{EncryptionError, Encryptor};
+
 /// Errors that can occur during key operations
 #[derive(Error, Debug)]
 pub enum KeyError {
@@ -28,6 +30,12 @@ pub enum KeyError {
     VerificationFailed,
     #[error("Permission denied: {0}")]
     PermissionDenied(String),
+}
+
+impl From<EncryptionError> for KeyError {
+    fn from(e: EncryptionError) -> Self {
+        KeyError::EncryptionError(e.to_string())
+    }
 }
 
 /// Type of cryptographic key
@@ -99,12 +107,36 @@ impl SecureKey {
     pub fn metadata(&self, key: &str) -> Option<&String> {
         self.metadata.get(key)
     }
+
+    /// Encrypts `key_data` in place with AES-256-GCM under `encryptor`.
+    ///
+    /// The stored buffer is replaced by `nonce || ciphertext || tag`, so a
+    /// memory dump taken after this call does not reveal the private key. The
+    /// original plaintext buffer is zeroized before being dropped.
+    pub fn encrypt_at_rest(&mut self, encryptor: &Encryptor) -> Result<(), EncryptionError> {
+        let sealed = encryptor.encrypt(&self.key_data)?;
+        self.key_data.zeroize();
+        self.key_data = sealed;
+        Ok(())
+    }
+
+    /// Reverses [`SecureKey::encrypt_at_rest`], replacing the stored ciphertext
+    /// with the recovered plaintext key material.
+    pub fn decrypt_at_rest(&mut self, encryptor: &Encryptor) -> Result<(), EncryptionError> {
+        let plaintext = encryptor.decrypt(&self.key_data)?;
+        self.key_data.zeroize();
+        self.key_data = plaintext;
+        Ok(())
+    }
 }
 
 /// Key manager for handling multiple keys
 pub struct KeyManager {
     keys: Arc<RwLock<HashMap<String, SecureKey>>>,
-    encryption_key: Option<SecureKey>,
+    /// AES-256-GCM encryptor used to seal private keys at rest. `None` keeps
+    /// keys in plaintext memory (the historical behaviour); setting an
+    /// encryption key makes the protection real rather than declarative.
+    encryptor: Option<Encryptor>,
 }
 
 impl KeyManager {
@@ -112,7 +144,7 @@ impl KeyManager {
     pub fn new() -> Self {
         Self {
             keys: Arc::new(RwLock::new(HashMap::new())),
-            encryption_key: None,
+            encryptor: None,
         }
     }
 
@@ -131,7 +163,12 @@ impl KeyManager {
         let public_key_bytes = verifying_key.to_encoded_point(false).as_bytes().to_vec();
         let address = derive_address(&public_key_bytes);
 
-        let key = SecureKey::new(private_key_bytes.clone(), KeyType::EthKey);
+        let mut key = SecureKey::new(private_key_bytes.clone(), KeyType::EthKey);
+        // Encrypt the private key before it enters the shared map when an
+        // encryption key is configured, so the key is never held as plaintext.
+        if let Some(enc) = &self.encryptor {
+            key.encrypt_at_rest(enc)?;
+        }
         self.keys.write().await.insert(address.clone(), key);
 
         Ok((address, private_key_bytes))
@@ -179,8 +216,19 @@ impl KeyManager {
             ));
         }
 
-        let signing_key = SigningKey::from_slice(key.as_bytes())
-            .map_err(|e| KeyError::InvalidFormat(e.to_string()))?;
+        // When the key is held encrypted at rest, decrypt a local copy for the
+        // signing operation only. The copy zeroizes itself when dropped.
+        let signing_key = if let Some(enc) = &self.encryptor {
+            let mut plain = SecureKey::new(key.as_bytes().to_vec(), key.key_type());
+            plain.decrypt_at_rest(enc)?;
+            let sk = SigningKey::from_slice(plain.as_bytes())
+                .map_err(|e| KeyError::InvalidFormat(e.to_string()))?;
+            drop(plain);
+            sk
+        } else {
+            SigningKey::from_slice(key.as_bytes())
+                .map_err(|e| KeyError::InvalidFormat(e.to_string()))?
+        };
 
         let (signature, recovery_id) = signing_key
             .sign_prehash_recoverable(digest)
@@ -251,9 +299,36 @@ impl KeyManager {
         self.keys.read().await.contains_key(address)
     }
 
-    /// Set encryption key for additional security
-    pub fn set_encryption_key(&mut self, key: SecureKey) {
-        self.encryption_key = Some(key);
+    /// Enables encryption of private keys at rest with AES-256-GCM.
+    ///
+    /// The supplied key must be exactly 32 bytes. Keys already held by the
+    /// manager are re-encrypted immediately, so the protection applies to the
+    /// whole store and not only to keys added afterwards.
+    pub async fn set_encryption_key(&mut self, key: &[u8; 32]) -> Result<(), KeyError> {
+        let encryptor = Encryptor::new(key);
+        let mut keys = self.keys.write().await;
+        for secure_key in keys.values_mut() {
+            secure_key.encrypt_at_rest(&encryptor)?;
+        }
+        self.encryptor = Some(encryptor);
+        Ok(())
+    }
+
+    /// Removes at-rest encryption, returning all keys to plaintext memory.
+    pub async fn clear_encryption_key(&mut self) -> Result<(), KeyError> {
+        if let Some(enc) = &self.encryptor {
+            let mut keys = self.keys.write().await;
+            for secure_key in keys.values_mut() {
+                secure_key.decrypt_at_rest(enc)?;
+            }
+        }
+        self.encryptor = None;
+        Ok(())
+    }
+
+    /// Whether private keys are encrypted at rest.
+    pub fn has_encryption_at_rest(&self) -> bool {
+        self.encryptor.is_some()
     }
 
     /// Number of stored keys
@@ -381,5 +456,63 @@ mod tests {
             derive_address(public_key.as_bytes()),
             "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
         );
+    }
+
+    #[tokio::test]
+    async fn test_encryption_at_rest_hides_private_key_and_still_signs() {
+        let mut manager = KeyManager::new();
+        let (address, private_key) = manager.generate_eth_key().await.unwrap();
+
+        let mut enc_key = [0u8; 32];
+        for (i, b) in enc_key.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        manager.set_encryption_key(&enc_key).await.unwrap();
+        assert!(manager.has_encryption_at_rest());
+
+        // The stored buffer must no longer equal the plaintext private key.
+        let stored = {
+            let keys = manager.keys.read().await;
+            keys.get(&address).unwrap().as_bytes().to_vec()
+        };
+        assert_ne!(stored, private_key, "private key must not be stored in the clear");
+        assert!(stored.len() > private_key.len(), "nonce and tag are prepended/appended");
+
+        // Signing must transparently decrypt and still produce a valid signature.
+        let digest = keccak256(b"encrypted at rest");
+        let signature = manager.sign(&address, &digest).await.unwrap();
+        let signing_key = SigningKey::from_slice(&private_key).unwrap();
+        let public_key = signing_key.verifying_key().to_encoded_point(false);
+        assert!(KeyManager::verify_signature(public_key.as_bytes(), &digest, &signature).unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_set_encryption_key_reencrypts_existing_keys() {
+        let mut manager = KeyManager::new();
+        let (address, private_key) = manager.generate_eth_key().await.unwrap();
+        // Key exists in plaintext before encryption is enabled.
+        {
+            let keys = manager.keys.read().await;
+            assert_eq!(keys.get(&address).unwrap().as_bytes(), &private_key[..]);
+        }
+
+        let mut enc_key = [7u8; 32];
+        enc_key[0] = 1;
+        manager.set_encryption_key(&enc_key).await.unwrap();
+
+        {
+            let keys = manager.keys.read().await;
+            assert_ne!(keys.get(&address).unwrap().as_bytes(), &private_key[..]);
+        }
+
+        // Clearing restores plaintext and signing keeps working.
+        manager.clear_encryption_key().await.unwrap();
+        assert!(!manager.has_encryption_at_rest());
+        {
+            let keys = manager.keys.read().await;
+            assert_eq!(keys.get(&address).unwrap().as_bytes(), &private_key[..]);
+        }
+        let digest = keccak256(b"after clear");
+        assert!(manager.sign(&address, &digest).await.is_ok());
     }
 }

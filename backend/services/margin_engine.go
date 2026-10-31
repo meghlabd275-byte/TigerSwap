@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -127,6 +129,50 @@ func assetSet(raw string) map[string]bool {
 	return set
 }
 
+// moneyValue parses a caller-supplied amount into an exact rational.
+//
+// Amounts must be positive plain decimals with no more than eight fractional
+// digits, the precision every ledger string column in this engine holds. This
+// is deliberately stricter than parseFloat, which parses garbage as zero and
+// lets a value below 1e-8 be stored as 0.00000000: a deposit would be accepted
+// and the caller's funds would vanish.
+func moneyValue(amount string) (*big.Rat, error) {
+	value, err := parseDecimal(amount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid amount %q: %w", amount, err)
+	}
+	if value.Sign() <= 0 {
+		return nil, errors.New("amount must be positive")
+	}
+	trimmed := strings.TrimSpace(amount)
+	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 && len(trimmed)-dot-1 > 8 {
+		return nil, fmt.Errorf("amount %q has more than 8 decimal places", amount)
+	}
+	return value, nil
+}
+
+// amountValueString renders a computed amount with the eight fractional digits
+// the storage columns hold, truncating toward zero. Caller-supplied amounts are
+// validated by moneyValue before they reach here; this function only rounds
+// engine-computed values (interest, liquidation remainders) to stored precision.
+func amountValueString(value *big.Rat) string {
+	return formatDecimal(value, 8)
+}
+
+// rationalFromFloat converts a float64 the engine derived from stored risk
+// parameters (an oracle price, an LTV, a growth factor) into an exact rational.
+//
+// SetFloat64 would capture the binary representation exactly, so 0.7 would
+// become 0.69999999999999995559 and a borrow sized precisely to the LTV would
+// be rejected. Going through the shortest decimal form keeps the comparison the
+// user expects while staying exact from that point on.
+func rationalFromFloat(value float64) (*big.Rat, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, errors.New("value is not a finite number")
+	}
+	return parseDecimal(strconv.FormatFloat(value, 'f', -1, 64))
+}
+
 // assetPriceUSD returns the oracle price of an asset in USD. A zero price or an
 // oracle failure is an error: the engine must never value collateral or debt at
 // a fabricated price.
@@ -166,26 +212,47 @@ func (e *MarginEngine) computeHealth(ctx context.Context, accountID uuid.UUID, c
 
 	health := &marginHealth{}
 	for i := range collaterals {
-		amount := parseFloat(collaterals[i].Amount)
-		if amount <= 0 {
+		amount, err := parseDecimal(collaterals[i].Amount)
+		if err != nil {
+			return nil, fmt.Errorf("collateral %s holds an unreadable amount %q: %w", collaterals[i].Asset, collaterals[i].Amount, err)
+		}
+		if amount.Sign() <= 0 {
 			continue
 		}
 		price, err := e.assetPriceUSD(ctx, collaterals[i].Asset)
 		if err != nil {
 			return nil, err
 		}
-		health.CollateralUSD += amount * price
+		usd, err := rationalFromFloat(price)
+		if err != nil {
+			return nil, fmt.Errorf("oracle price for %s is unusable: %w", collaterals[i].Asset, err)
+		}
+		collateralUSD, _ := new(big.Rat).Mul(amount, usd).Float64()
+		health.CollateralUSD += collateralUSD
 	}
 	for i := range borrows {
-		total := parseFloat(borrows[i].Principal) + parseFloat(borrows[i].AccruedInterest)
-		if total <= 0 {
+		principal, err := parseDecimal(borrows[i].Principal)
+		if err != nil {
+			return nil, fmt.Errorf("borrow %s holds an unreadable principal %q: %w", borrows[i].Asset, borrows[i].Principal, err)
+		}
+		interest, err := parseDecimal(borrows[i].AccruedInterest)
+		if err != nil {
+			return nil, fmt.Errorf("borrow %s holds unreadable interest %q: %w", borrows[i].Asset, borrows[i].AccruedInterest, err)
+		}
+		total := new(big.Rat).Add(principal, interest)
+		if total.Sign() <= 0 {
 			continue
 		}
 		price, err := e.assetPriceUSD(ctx, borrows[i].Asset)
 		if err != nil {
 			return nil, err
 		}
-		health.DebtUSD += total * price
+		usd, err := rationalFromFloat(price)
+		if err != nil {
+			return nil, fmt.Errorf("oracle price for %s is unusable: %w", borrows[i].Asset, err)
+		}
+		debtUSD, _ := new(big.Rat).Mul(total, usd).Float64()
+		health.DebtUSD += debtUSD
 	}
 
 	health.LiquidationValueUSD = health.CollateralUSD * cfg.LiquidationThreshold
@@ -235,15 +302,31 @@ func (e *MarginEngine) accrueAccountInterest(accountID uuid.UUID, cfg *marginMar
 		if elapsed <= 0 {
 			continue
 		}
-		principal := parseFloat(borrows[i].Principal)
-		interest := parseFloat(borrows[i].AccruedInterest)
+		principal, err := parseDecimal(borrows[i].Principal)
+		if err != nil {
+			return fmt.Errorf("borrow %s holds an unreadable principal %q: %w", borrows[i].Asset, borrows[i].Principal, err)
+		}
+		interest, err := parseDecimal(borrows[i].AccruedInterest)
+		if err != nil {
+			return fmt.Errorf("borrow %s holds unreadable interest %q: %w", borrows[i].Asset, borrows[i].AccruedInterest, err)
+		}
 		days := elapsed.Hours() / 24
 		growth := math.Pow(1+rate/365, days)
-		total := (principal + interest) * growth
-		newInterest := math.Max(0, total-principal)
+		// Interest is charged on principal plus interest already accrued, so the
+		// stored interest compounds exactly rather than drifting through float64.
+		growthRat, err := rationalFromFloat(growth)
+		if err != nil {
+			return fmt.Errorf("interest growth factor is unusable: %w", err)
+		}
+		total := new(big.Rat).Mul(new(big.Rat).Add(principal, interest), growthRat)
+		newInterest := new(big.Rat).Sub(total, principal)
+		if newInterest.Sign() < 0 {
+			newInterest = new(big.Rat)
+		}
+		storedInterest := amountValueString(newInterest)
 		if err := e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
 			Updates(map[string]interface{}{
-				"accrued_interest": fmt.Sprintf("%.8f", newInterest),
+				"accrued_interest": storedInterest,
 				"last_accrual":     now,
 			}).Error; err != nil {
 			return err
@@ -300,9 +383,9 @@ func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, acc
 		return fmt.Errorf("%w: %s cannot be used as collateral for %s", ErrMarginAssetNotAllowed, normalized, cfg.Pair)
 	}
 
-	value := parseFloat(amount)
-	if value <= 0 {
-		return errors.New("collateral amount must be positive")
+	value, err := moneyValue(amount)
+	if err != nil {
+		return err
 	}
 	if _, err := e.assetPriceUSD(ctx, normalized); err != nil {
 		return fmt.Errorf("cannot price collateral %s: %w", normalized, err)
@@ -311,19 +394,24 @@ func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, acc
 	var existing models.MarginCollateral
 	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		stored := amountValueString(value)
 		return e.db.Create(&models.MarginCollateral{
 			AccountID: accountID,
 			Asset:     normalized,
-			Amount:    fmt.Sprintf("%.8f", value),
+			Amount:    stored,
 		}).Error
 	}
 	if err != nil {
 		return err
 	}
 
-	total := parseFloat(existing.Amount) + value
+	current, err := parseDecimal(existing.Amount)
+	if err != nil {
+		return fmt.Errorf("stored collateral for %s is unreadable: %w", normalized, err)
+	}
+	stored := amountValueString(new(big.Rat).Add(current, value))
 	return e.db.Model(&models.MarginCollateral{}).Where("id = ?", existing.ID).
-		Update("amount", fmt.Sprintf("%.8f", total)).Error
+		Update("amount", stored).Error
 }
 
 // Borrow borrows an asset against the account's collateral, enforcing the
@@ -339,9 +427,9 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 		return fmt.Errorf("%w: %s is not borrowable for %s", ErrMarginAssetNotAllowed, normalized, cfg.Pair)
 	}
 
-	value := parseFloat(amount)
-	if value <= 0 {
-		return errors.New("borrow amount must be positive")
+	value, err := moneyValue(amount)
+	if err != nil {
+		return err
 	}
 	borrowPrice, err := e.assetPriceUSD(ctx, normalized)
 	if err != nil {
@@ -353,20 +441,41 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 		return err
 	}
 	// New debt may not exceed LTV * collateral. LTV is stricter than the
-	// liquidation threshold, so a fresh borrow leaves a safety buffer.
-	maxDebt := health.CollateralUSD * cfg.LTV
-	if health.DebtUSD+value*borrowPrice > maxDebt+1e-9 {
-		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, value, normalized, cfg.LTV)
+	// liquidation threshold, so a fresh borrow leaves a safety buffer. The
+	// comparison is exact, so a borrow that only fits because of binary
+	// rounding is refused.
+	priceRat, err := rationalFromFloat(borrowPrice)
+	if err != nil {
+		return fmt.Errorf("oracle price for %s is unusable: %w", normalized, err)
+	}
+	ltv, err := rationalFromFloat(cfg.LTV)
+	if err != nil {
+		return fmt.Errorf("listing LTV for %s is unusable: %w", cfg.Pair, err)
+	}
+	collateralUSD, err := rationalFromFloat(health.CollateralUSD)
+	if err != nil {
+		return fmt.Errorf("collateral value is unusable: %w", err)
+	}
+	debtUSD, err := rationalFromFloat(health.DebtUSD)
+	if err != nil {
+		return fmt.Errorf("debt value is unusable: %w", err)
+	}
+	maxDebt := new(big.Rat).Mul(collateralUSD, ltv)
+	debt := new(big.Rat).Add(debtUSD, new(big.Rat).Mul(value, priceRat))
+	if debt.Cmp(maxDebt) > 0 {
+		f, _ := value.Float64()
+		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, cfg.LTV)
 	}
 
 	now := time.Now().UTC()
 	var existing models.MarginBorrow
 	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
+		stored := amountValueString(value)
 		return e.db.Create(&models.MarginBorrow{
 			AccountID:       accountID,
 			Asset:           normalized,
-			Principal:       fmt.Sprintf("%.8f", value),
+			Principal:       stored,
 			AccruedInterest: "0",
 			LastAccrual:     now,
 		}).Error
@@ -377,17 +486,35 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 
 	// Settle interest first so the new principal does not earn interest for the
 	// time before this borrow.
-	interest := parseFloat(existing.AccruedInterest)
+	principal, err := parseDecimal(existing.Principal)
+	if err != nil {
+		return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
+	}
+	interest, err := parseDecimal(existing.AccruedInterest)
+	if err != nil {
+		return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
+	}
 	if elapsed := now.Sub(existing.LastAccrual); elapsed > 0 {
 		rate := borrowRateAPY(cfg, 0)
 		days := elapsed.Hours() / 24
-		interest += parseFloat(existing.Principal) * (math.Pow(1+rate/365, days) - 1)
+		growth := math.Pow(1+rate/365, days)
+		growthRat, err := rationalFromFloat(growth)
+		if err != nil {
+			return fmt.Errorf("interest growth factor is unusable: %w", err)
+		}
+		accrued := new(big.Rat).Mul(principal, new(big.Rat).Sub(growthRat, big.NewRat(1, 1)))
+		interest = new(big.Rat).Add(interest, accrued)
 	}
-	total := parseFloat(existing.Principal) + value
+	total := new(big.Rat).Add(principal, value)
+	newPrincipal := amountValueString(total)
+	if interest.Sign() < 0 {
+		interest = new(big.Rat)
+	}
+	newInterest := amountValueString(interest)
 	return e.db.Model(&models.MarginBorrow{}).Where("id = ?", existing.ID).
 		Updates(map[string]interface{}{
-			"principal":        fmt.Sprintf("%.8f", total),
-			"accrued_interest": fmt.Sprintf("%.8f", math.Max(0, interest)),
+			"principal":        newPrincipal,
+			"accrued_interest": newInterest,
 			"last_accrual":     now,
 		}).Error
 }
@@ -402,9 +529,9 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 	}
 
 	normalized := strings.ToUpper(strings.TrimSpace(asset))
-	value := parseFloat(amount)
-	if value <= 0 {
-		return errors.New("repay amount must be positive")
+	value, err := moneyValue(amount)
+	if err != nil {
+		return err
 	}
 
 	var borrow models.MarginBorrow
@@ -416,28 +543,42 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 		return err
 	}
 
-	owed := parseFloat(borrow.Principal) + parseFloat(borrow.AccruedInterest)
-	if value > owed+1e-9 {
-		return fmt.Errorf("repay amount %.8f exceeds debt %.8f", value, owed)
+	principal, err := parseDecimal(borrow.Principal)
+	if err != nil {
+		return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
 	}
-	if owed-value <= 1e-9 {
+	interest, err := parseDecimal(borrow.AccruedInterest)
+	if err != nil {
+		return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
+	}
+	owed := new(big.Rat).Add(principal, interest)
+	if value.Cmp(owed) > 0 {
+		f, _ := value.Float64()
+		owedF, _ := owed.Float64()
+		return fmt.Errorf("repay amount %.8f exceeds debt %.8f", f, owedF)
+	}
+	if value.Cmp(owed) == 0 {
 		return e.db.Delete(&models.MarginBorrow{}, "id = ?", borrow.ID).Error
 	}
 
 	// Repayment clears interest before principal.
-	interest := parseFloat(borrow.AccruedInterest)
-	var newInterest, newPrincipal float64
-	if value <= interest {
-		newInterest = interest - value
-		newPrincipal = parseFloat(borrow.Principal)
+	var newInterest, newPrincipal *big.Rat
+	if value.Cmp(interest) <= 0 {
+		newInterest = new(big.Rat).Sub(interest, value)
+		newPrincipal = principal
 	} else {
-		newInterest = 0
-		newPrincipal = parseFloat(borrow.Principal) - (value - interest)
+		newInterest = new(big.Rat)
+		newPrincipal = new(big.Rat).Sub(principal, new(big.Rat).Sub(value, interest))
 	}
+	if newPrincipal.Sign() < 0 {
+		newPrincipal = new(big.Rat)
+	}
+	storedPrincipal := amountValueString(newPrincipal)
+	storedInterest := amountValueString(newInterest)
 	return e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrow.ID).
 		Updates(map[string]interface{}{
-			"principal":        fmt.Sprintf("%.8f", math.Max(0, newPrincipal)),
-			"accrued_interest": fmt.Sprintf("%.8f", math.Max(0, newInterest)),
+			"principal":        storedPrincipal,
+			"accrued_interest": storedInterest,
 		}).Error
 }
 
@@ -552,15 +693,23 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, accountID uuid.UUID,
 	holdings := make([]holding, 0, len(collaterals))
 	var totalUSD float64
 	for i := range collaterals {
-		amount := parseFloat(collaterals[i].Amount)
-		if amount <= 0 {
+		amount, err := parseDecimal(collaterals[i].Amount)
+		if err != nil {
+			return fmt.Errorf("collateral %s holds an unreadable amount %q: %w", collaterals[i].Asset, collaterals[i].Amount, err)
+		}
+		if amount.Sign() <= 0 {
 			continue
 		}
 		price, err := e.assetPriceUSD(ctx, collaterals[i].Asset)
 		if err != nil {
 			return err
 		}
-		usd := amount * price
+		priceRat, err := rationalFromFloat(price)
+		if err != nil {
+			return fmt.Errorf("oracle price for %s is unusable: %w", collaterals[i].Asset, err)
+		}
+		usdRat := new(big.Rat).Mul(amount, priceRat)
+		usd, _ := usdRat.Float64()
 		totalUSD += usd
 		holdings = append(holdings, holding{row: collaterals[i], usd: usd})
 	}
@@ -572,13 +721,26 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, accountID uuid.UUID,
 	if fraction > 1 {
 		fraction = 1
 	}
+	// Seize proportionally: each holding loses `fraction` of its balance. The
+	// remainder is computed exactly so the sum of the kept balances matches the
+	// account's collateral rather than drifting with binary rounding.
+	fractionRat, err := rationalFromFloat(fraction)
+	if err != nil {
+		return fmt.Errorf("collateral seize fraction is unusable: %w", err)
+	}
+	keptFraction := new(big.Rat).Sub(big.NewRat(1, 1), fractionRat)
 	for _, h := range holdings {
-		remaining := parseFloat(h.row.Amount) * (1 - fraction)
-		if remaining < 0 {
-			remaining = 0
+		amount, err := parseDecimal(h.row.Amount)
+		if err != nil {
+			return fmt.Errorf("collateral %s holds an unreadable amount %q: %w", h.row.Asset, h.row.Amount, err)
 		}
+		remaining := new(big.Rat).Mul(amount, keptFraction)
+		if remaining.Sign() < 0 {
+			remaining = new(big.Rat)
+		}
+		stored := amountValueString(remaining)
 		if err := e.db.Model(&models.MarginCollateral{}).Where("id = ?", h.row.ID).
-			Update("amount", fmt.Sprintf("%.8f", remaining)).Error; err != nil {
+			Update("amount", stored).Error; err != nil {
 			return err
 		}
 	}
@@ -600,36 +762,62 @@ func (e *MarginEngine) reduceDebt(ctx context.Context, accountID uuid.UUID, valu
 		if err != nil {
 			return err
 		}
-		principal := parseFloat(borrows[i].Principal)
-		interest := parseFloat(borrows[i].AccruedInterest)
-		owed := (principal + interest) * price
-		if owed <= 0 {
+		principal, err := parseDecimal(borrows[i].Principal)
+		if err != nil {
+			return fmt.Errorf("borrow %s holds an unreadable principal %q: %w", borrows[i].Asset, borrows[i].Principal, err)
+		}
+		interest, err := parseDecimal(borrows[i].AccruedInterest)
+		if err != nil {
+			return fmt.Errorf("borrow %s holds unreadable interest %q: %w", borrows[i].Asset, borrows[i].AccruedInterest, err)
+		}
+		priceRat, err := rationalFromFloat(price)
+		if err != nil {
+			return fmt.Errorf("oracle price for %s is unusable: %w", borrows[i].Asset, err)
+		}
+		owed := new(big.Rat).Mul(new(big.Rat).Add(principal, interest), priceRat)
+		if owed.Sign() <= 0 {
 			continue
 		}
-		payUSD := math.Min(remaining, owed)
-		payAmount := payUSD / price
+		// Pay the lesser of what is left to repay and what this borrow owes.
+		remainingRat, err := rationalFromFloat(remaining)
+		if err != nil {
+			return fmt.Errorf("remaining liquidation value is unusable: %w", err)
+		}
+		payUSD := remainingRat
+		if owed.Cmp(payUSD) < 0 {
+			payUSD = owed
+		}
+		payAmount := new(big.Rat).Quo(payUSD, priceRat)
 
-		var newInterest, newPrincipal float64
-		if payAmount <= interest {
-			newInterest = interest - payAmount
+		var newInterest, newPrincipal *big.Rat
+		if payAmount.Cmp(interest) <= 0 {
+			newInterest = new(big.Rat).Sub(interest, payAmount)
 			newPrincipal = principal
 		} else {
-			newInterest = 0
-			newPrincipal = math.Max(0, principal-(payAmount-interest))
+			newInterest = new(big.Rat)
+			newPrincipal = new(big.Rat).Sub(principal, new(big.Rat).Sub(payAmount, interest))
+		}
+		if newPrincipal.Sign() < 0 {
+			newPrincipal = new(big.Rat)
 		}
 
-		if newPrincipal <= 1e-9 && newInterest <= 1e-9 {
+		if newPrincipal.Sign() == 0 && newInterest.Sign() == 0 {
 			if err := e.db.Delete(&models.MarginBorrow{}, "id = ?", borrows[i].ID).Error; err != nil {
 				return err
 			}
-		} else if err := e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
-			Updates(map[string]interface{}{
-				"principal":        fmt.Sprintf("%.8f", newPrincipal),
-				"accrued_interest": fmt.Sprintf("%.8f", newInterest),
-			}).Error; err != nil {
-			return err
+		} else {
+			storedPrincipal := amountValueString(newPrincipal)
+			storedInterest := amountValueString(newInterest)
+			if err := e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
+				Updates(map[string]interface{}{
+					"principal":        storedPrincipal,
+					"accrued_interest": storedInterest,
+				}).Error; err != nil {
+				return err
+			}
 		}
-		remaining -= payUSD
+		paid, _ := payUSD.Float64()
+		remaining -= paid
 	}
 	return nil
 }

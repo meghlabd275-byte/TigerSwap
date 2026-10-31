@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
 
 	"tigerswap/backend/config"
@@ -22,25 +24,23 @@ import (
 type LiquidityPoolService struct {
 	blockchain *BlockchainClient
 	priceAgg   *PriceAggregator
-	db         interface{} // Would be *gorm.DB
-	mu         sync.RWMutex
-	pools      map[string]*PoolData
 }
 
 // PoolData represents real pool data from blockchain
 type PoolData struct {
-	Address     string    `json:"address"`
-	Token0      string    `json:"token0"`
-	Token1      string    `json:"token1"`
-	Reserve0    string    `json:"reserve0"`
-	Reserve1    string    `json:"reserve1"`
-	TotalSupply string    `json:"total_supply"`
-	Token0Price float64   `json:"token0_price"`
-	Token1Price float64   `json:"token1_price"`
-	Volume24h   float64   `json:"volume_24h"`
-	Fees24h     float64   `json:"fees_24h"`
-	APY         float64   `json:"apy"`
-	LastUpdated time.Time `json:"last_updated"`
+	Address         string    `json:"address"`
+	Token0          string    `json:"token0"`
+	Token1          string    `json:"token1"`
+	Reserve0        string    `json:"reserve0"`
+	Reserve1        string    `json:"reserve1"`
+	TotalSupply     string    `json:"total_supply"`
+	Token0Price     float64   `json:"token0_price"`
+	Token1Price     float64   `json:"token1_price"`
+	ReserveValueUSD float64   `json:"reserve_value_usd"`
+	Volume24h       float64   `json:"volume_24h"`
+	Fees24h         float64   `json:"fees_24h"`
+	APY             float64   `json:"apy"`
+	LastUpdated     time.Time `json:"last_updated"`
 }
 
 // PoolOrder represents an order in the pool
@@ -62,7 +62,6 @@ func NewLiquidityPoolService(blockchain *BlockchainClient, priceAgg *PriceAggreg
 	return &LiquidityPoolService{
 		blockchain: blockchain,
 		priceAgg:   priceAgg,
-		pools:      make(map[string]*PoolData),
 	}
 }
 
@@ -155,6 +154,16 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	token0Price, _ := s.priceAgg.GetRealPrice(ctx, token0Symbol)
 	token1Price, _ := s.priceAgg.GetRealPrice(ctx, token1Symbol)
 
+	// Reserves are raw integer amounts; their decimals are needed to value them.
+	token0Decimals, err := s.tokenDecimals(ctx, chainID, client, token0)
+	if err != nil {
+		return nil, err
+	}
+	token1Decimals, err := s.tokenDecimals(ctx, chainID, client, token1)
+	if err != nil {
+		return nil, err
+	}
+
 	pool := &PoolData{
 		Address:     poolAddress,
 		Token0:      token0.Hex(),
@@ -166,10 +175,60 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 		LastUpdated: time.Now(),
 	}
 
-	// Calculate APY based on volume
-	pool.APY = s.calculateAPY(pool)
+	// Read totalSupply, which the APY denominator needs.
+	supplyData, err := parsedABI.Pack("totalSupply")
+	if err != nil {
+		return nil, err
+	}
+	supplyResult, err := client.CallContract(ctx, ethereum.CallMsg{
+		To:   &poolAddr,
+		Data: supplyData,
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get totalSupply: %v", err)
+	}
+	supplyVals, err := parsedABI.Unpack("totalSupply", supplyResult)
+	if err != nil || len(supplyVals) != 1 {
+		return nil, fmt.Errorf("decode totalSupply: %w", err)
+	}
+	supply, ok := supplyVals[0].(*big.Int)
+	if !ok {
+		return nil, fmt.Errorf("unexpected totalSupply type %T", supplyVals[0])
+	}
+	pool.TotalSupply = supply.String()
+
+	// Value the pool in USD from both reserves. Prices come from the oracle; a
+	// missing price leaves that side at zero rather than inventing a value.
+	reserve0, err := amountToFloat(res.Reserve0, token0Decimals)
+	if err != nil {
+		return nil, err
+	}
+	reserve1, err := amountToFloat(res.Reserve1, token1Decimals)
+	if err != nil {
+		return nil, err
+	}
+	pool.ReserveValueUSD = reserve0*token0Price.USD + reserve1*token1Price.USD
+
+	// Volume and fees come from the pool's own Swap logs over the last 24 hours.
+	volume, fees, err := s.CalculateVolume24h(ctx, chainID, poolAddress, token0Price.USD, token1Price.USD)
+	if err != nil {
+		return nil, err
+	}
+	pool.Volume24h = volume
+	pool.Fees24h = fees
+	pool.APY = apyFromFees(fees, pool.ReserveValueUSD)
 
 	return pool, nil
+}
+
+// apyFromFees annualises the fee revenue a pool generates against the value
+// locked in it. It returns 0 when the pool holds nothing, because a rate of
+// return on no capital is undefined rather than infinite.
+func apyFromFees(fees24h, reserveValueUSD float64) float64 {
+	if reserveValueUSD <= 0 {
+		return 0
+	}
+	return (fees24h * 365 / reserveValueUSD) * 100
 }
 
 // GetAllPools returns every pool registered in TigerSwap's own factory.
@@ -291,17 +350,192 @@ func mustPackABI(a abi.ABI, name string, args ...interface{}) []byte {
 	return data
 }
 
-func (s *LiquidityPoolService) calculateAPY(pool *PoolData) float64 {
-	// Simplified APY calculation
-	// Real implementation would calculate from fees and volume
-	if pool.Volume24h > 0 {
-		annualFees := pool.Fees24h * 365
-		reserveValue := pool.Token0Price * parseFloat(pool.Reserve0)
-		if reserveValue > 0 {
-			return (annualFees / reserveValue) * 100
+// swapEventABIJSON is the TigerSwap V2 pair Swap event, emitted by the pool
+// contracts this service itself deploys. Volume is derived from these logs.
+const swapEventABIJSON = `[{"anonymous":false,"inputs":[{"indexed":true,"name":"sender","type":"address"},{"indexed":false,"name":"amount0In","type":"uint256"},{"indexed":false,"name":"amount1In","type":"uint256"},{"indexed":false,"name":"amount0Out","type":"uint256"},{"indexed":false,"name":"amount1Out","type":"uint256"},{"indexed":true,"name":"to","type":"address"}],"name":"Swap","type":"event"}]`
+
+// tigerSwapSwapFeeBps is the swap fee configured on the TigerSwap V2 factory,
+// in basis points (30 = 0.3%). Fees are a fixed share of the trade notional.
+const tigerSwapSwapFeeBps = 30
+
+// poolQueryABIJSON reads the immutable pair identity plus live reserves and
+// supply from a TigerSwap V2 pool.
+const poolQueryABIJSON = `[{"constant":true,"inputs":[],"name":"token0","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":true,"inputs":[],"name":"token1","outputs":[{"name":"","type":"address"}],"type":"function"},{"constant":true,"inputs":[],"name":"getReserves","outputs":[{"name":"_reserve0","type":"uint112"},{"name":"_reserve1","type":"uint112"},{"name":"_blockTimestampLast","type":"uint32"}],"type":"function"},{"constant":true,"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"type":"function"}]`
+
+// erc20DecimalsABIJSON reads an ERC20's decimals. Only decimals are needed to
+// scale raw amounts; symbols come from the operator's token registry.
+const erc20DecimalsABIJSON = `[{"constant":true,"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"type":"function"}]`
+
+// tokenDecimals returns the decimals of an ERC20, preferring the operator's
+// token registry and falling back to the contract itself. A token whose decimals
+// cannot be determined is an error, because scaling its amounts with a guessed
+// value would misprice volume.
+func (s *LiquidityPoolService) tokenDecimals(ctx context.Context, chainID int64, client *ethclient.Client, token common.Address) (int, error) {
+	if symbol, ok := config.TokenSymbol(chainID, token.Hex()); ok {
+		for _, t := range config.GetTokenConfigs()[chainID] {
+			if strings.EqualFold(t.Symbol, symbol) && t.Decimals > 0 {
+				return t.Decimals, nil
+			}
 		}
 	}
-	return 0
+
+	parsedABI, err := abi.JSON(strings.NewReader(erc20DecimalsABIJSON))
+	if err != nil {
+		return 0, err
+	}
+	data, err := parsedABI.Pack("decimals")
+	if err != nil {
+		return 0, err
+	}
+	out, err := client.CallContract(ctx, ethereum.CallMsg{To: &token, Data: data}, nil)
+	if err != nil {
+		return 0, fmt.Errorf("token.decimals(%s): %w", token.Hex(), err)
+	}
+	values, err := parsedABI.Unpack("decimals", out)
+	if err != nil || len(values) != 1 {
+		return 0, fmt.Errorf("decode decimals for %s: %w", token.Hex(), err)
+	}
+	decimals, ok := values[0].(uint8)
+	if !ok {
+		return 0, fmt.Errorf("unexpected decimals type %T for %s", values[0], token.Hex())
+	}
+	return int(decimals), nil
+}
+
+// amountToFloat converts a raw token amount to a decimal value using the token's
+// decimals.
+func amountToFloat(raw *big.Int, decimals int) (float64, error) {
+	if raw == nil {
+		return 0, errors.New("nil token amount")
+	}
+	if decimals < 0 || decimals > 78 {
+		return 0, fmt.Errorf("token decimals %d out of range", decimals)
+	}
+	rat := new(big.Rat).SetInt(raw)
+	rat.Quo(rat, new(big.Rat).SetInt(pow10(decimals)))
+	value, _ := rat.Float64()
+	return value, nil
+}
+
+// CalculateVolume24h sums the USD value of every swap in a pool over the last 24
+// hours by reading the pool's own Swap logs. This is real on-chain data: when the
+// RPC cannot supply logs the error is returned instead of a fabricated volume.
+func (s *LiquidityPoolService) CalculateVolume24h(ctx context.Context, chainID int64, poolAddress string, token0Price, token1Price float64) (volumeUSD, feesUSD float64, err error) {
+	client, err := s.blockchain.GetClient(chainID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if token0Price < 0 || token1Price < 0 {
+		return 0, 0, errors.New("token prices must not be negative")
+	}
+
+	parsedPoolABI, err := abi.JSON(strings.NewReader(poolQueryABIJSON))
+	if err != nil {
+		return 0, 0, err
+	}
+	poolAddr := common.HexToAddress(poolAddress)
+
+	readAddress := func(method string) (common.Address, error) {
+		data, err := parsedPoolABI.Pack(method)
+		if err != nil {
+			return common.Address{}, err
+		}
+		out, err := client.CallContract(ctx, ethereum.CallMsg{To: &poolAddr, Data: data}, nil)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("pool.%s: %w", method, err)
+		}
+		values, err := parsedPoolABI.Unpack(method, out)
+		if err != nil || len(values) != 1 {
+			return common.Address{}, fmt.Errorf("decode %s: %w", method, err)
+		}
+		addr, ok := values[0].(common.Address)
+		if !ok {
+			return common.Address{}, fmt.Errorf("unexpected %s type %T", method, values[0])
+		}
+		return addr, nil
+	}
+
+	token0, err := readAddress("token0")
+	if err != nil {
+		return 0, 0, err
+	}
+	token1, err := readAddress("token1")
+	if err != nil {
+		return 0, 0, err
+	}
+	token0Decimals, err := s.tokenDecimals(ctx, chainID, client, token0)
+	if err != nil {
+		return 0, 0, err
+	}
+	token1Decimals, err := s.tokenDecimals(ctx, chainID, client, token1)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	latest, err := client.BlockNumber(ctx)
+	if err != nil {
+		return 0, 0, fmt.Errorf("latest block: %w", err)
+	}
+	if latest == 0 {
+		return 0, 0, nil
+	}
+
+	// A pool with no swaps is legitimately zero volume, so a window that reaches
+	// before genesis is clamped rather than rejected.
+	blockTime := int64(2)
+	if cfg := s.blockchain.getChainConfig(chainID); cfg != nil && cfg.BlockTime > 0 {
+		blockTime = int64(cfg.BlockTime)
+	}
+	windowBlocks := uint64(86400 / blockTime)
+	var fromBlock uint64
+	if latest > windowBlocks {
+		fromBlock = latest - windowBlocks
+	}
+
+	parsedEventABI, err := abi.JSON(strings.NewReader(swapEventABIJSON))
+	if err != nil {
+		return 0, 0, err
+	}
+	eventID := parsedEventABI.Events["Swap"].ID
+
+	logs, err := client.FilterLogs(ctx, ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(fromBlock),
+		ToBlock:   new(big.Int).SetUint64(latest),
+		Addresses: []common.Address{poolAddr},
+		Topics:    [][]common.Hash{{eventID}},
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("filter Swap logs: %w", err)
+	}
+
+	for _, lg := range logs {
+		values, err := parsedEventABI.Unpack("Swap", lg.Data)
+		if err != nil || len(values) != 4 {
+			return 0, 0, fmt.Errorf("decode Swap log %s: %w", lg.TxHash.Hex(), err)
+		}
+		amount0In, ok0 := values[0].(*big.Int)
+		amount1In, ok1 := values[1].(*big.Int)
+		amount0Out, ok2 := values[2].(*big.Int)
+		amount1Out, ok3 := values[3].(*big.Int)
+		if !ok0 || !ok1 || !ok2 || !ok3 {
+			return 0, 0, fmt.Errorf("unexpected Swap log value types in %s", lg.TxHash.Hex())
+		}
+
+		// A V2 swap moves value on one side of each token; the input and output
+		// legs are summed so each trade is counted once.
+		amount0, err := amountToFloat(new(big.Int).Add(amount0In, amount0Out), token0Decimals)
+		if err != nil {
+			return 0, 0, err
+		}
+		amount1, err := amountToFloat(new(big.Int).Add(amount1In, amount1Out), token1Decimals)
+		if err != nil {
+			return 0, 0, err
+		}
+		volumeUSD += amount0*token0Price + amount1*token1Price
+	}
+
+	feesUSD = volumeUSD * float64(tigerSwapSwapFeeBps) / 10000
+	return volumeUSD, feesUSD, nil
 }
 
 func (s *LiquidityPoolService) getSymbolFromAddress(chainID int64, address string) string {

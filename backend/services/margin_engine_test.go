@@ -353,3 +353,115 @@ func TestMarginPausedListingIsNotTradable(t *testing.T) {
 		t.Fatalf("paused listing must not accept collateral, got %v", err)
 	}
 }
+
+// TestMarginRejectsAmountsTheStoreCannotHold verifies a deposit or borrow whose
+// precision would be truncated to zero is rejected instead of silently
+// swallowing the caller's funds.
+func TestMarginRejectsAmountsTheStoreCannotHold(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+
+	// A satoshi-sized deposit used to be stored as 0.00000000: the funds vanished.
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "0.000000001"); err == nil {
+		t.Fatal("a sub-precision deposit must be rejected, not truncated to zero")
+	}
+	// More fractional digits than the store holds must also be refused.
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "0.123456789"); err == nil {
+		t.Fatal("an over-precise deposit must be rejected, not truncated")
+	}
+	// Garbage must not be accepted as a zero-value deposit.
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "abc"); err == nil {
+		t.Fatal("a non-numeric deposit must be rejected")
+	}
+
+	// The account must still be empty: nothing was silently credited.
+	view, err := env.engine.GetAccountView(ctx, "user-1", account.ID)
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	if view.CollateralValueUSD != 0 {
+		t.Fatalf("rejected deposits must not credit collateral, got %v", view.CollateralValueUSD)
+	}
+
+	// An exact 8-decimal deposit is still accepted.
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "0.00000001"); err != nil {
+		t.Fatalf("an 8-decimal deposit must be accepted: %v", err)
+	}
+}
+
+// TestMarginBorrowRepayRejectUnstorableAmounts verifies the same precision guard
+// covers borrowing and repaying, so debt cannot be created that the store would
+// round away.
+func TestMarginBorrowRepayRejectUnstorableAmounts(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "0.000000001"); err == nil {
+		t.Fatal("a sub-precision borrow must be rejected, not truncated to zero")
+	}
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "abc"); err == nil {
+		t.Fatal("a non-numeric borrow must be rejected")
+	}
+
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "1000"); err != nil {
+		t.Fatalf("borrow: %v", err)
+	}
+	if err := env.engine.Repay(ctx, "user-1", account.ID, "RUSD", "0.000000001"); err == nil {
+		t.Fatal("a sub-precision repay must be rejected")
+	}
+	if err := env.engine.Repay(ctx, "user-1", account.ID, "RUSD", "garbage"); err == nil {
+		t.Fatal("a non-numeric repay must be rejected")
+	}
+
+	// The debt must still be exactly what was borrowed: no partial repay slipped
+	// through and no rounding invented a balance.
+	var borrow models.MarginBorrow
+	if err := env.db.Where("account_id = ? AND asset = ?", account.ID, "RUSD").First(&borrow).Error; err != nil {
+		t.Fatalf("load borrow: %v", err)
+	}
+	if borrow.Principal != "1000.00000000" {
+		t.Fatalf("expected principal 1000.00000000, got %q", borrow.Principal)
+	}
+	if borrow.AccruedInterest != "0" {
+		t.Fatalf("expected no interest yet, got %q", borrow.AccruedInterest)
+	}
+}
+
+// TestMarginBorrowAtExactLTVIsAccepted verifies the LTV comparison is exact: a
+// borrow sized to precisely the limit is allowed rather than refused because
+// 0.7 is not representable in binary floating point.
+func TestMarginBorrowAtExactLTVIsAccepted(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	// 60000 * 0.7 = 42000 exactly at the limit.
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "42000"); err != nil {
+		t.Fatalf("a borrow exactly at the LTV must be accepted: %v", err)
+	}
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "0.00000001"); !errors.Is(err, ErrMarginInsufficientCollateral) {
+		t.Fatalf("a borrow a hair past the LTV must be refused, got %v", err)
+	}
+}

@@ -225,26 +225,26 @@ impl InsuranceFund {
             return Err(FundError::Overflow);
         }
 
-        // Validate the balance and the daily budget before mutating either, so a
-        // rejected withdrawal leaves both the holdings and the day's allowance
-        // untouched. Reserving first let a caller burn the whole daily limit with
-        // requests that could never succeed.
-        let remaining = {
-            let holdings = self.holdings.read();
-            let current = holdings
-                .get(token)
-                .copied()
-                .ok_or_else(|| FundError::UnknownToken(token.to_string()))?;
+        // The holdings write lock is held across the whole check-and-debit, so a
+        // concurrent withdrawal cannot pass the balance check against a balance
+        // this call is about to spend. Reading the balance under a read lock and
+        // writing it afterwards let two withdrawals of the full balance both
+        // record a payout while the fund was debited once.
+        let mut holdings = self.holdings.write();
+        let current = holdings
+            .get(token)
+            .copied()
+            .ok_or_else(|| FundError::UnknownToken(token.to_string()))?;
 
-            if current.value < amount.value {
-                return Err(FundError::InsufficientBalance);
-            }
-            current.sub(&amount)?
-        };
+        if current.value < amount.value {
+            return Err(FundError::InsufficientBalance);
+        }
 
+        let remaining = current.sub(&amount)?;
         self.reserve_daily_budget(&amount)?;
 
-        self.holdings.write().insert(token.to_string(), remaining);
+        holdings.insert(token.to_string(), remaining);
+        drop(holdings);
 
         self.record(
             InsuranceEventType::Withdraw,
@@ -595,6 +595,49 @@ mod tests {
                 .unwrap_err(),
             FundError::UnknownToken(_)
         ));
+    }
+
+    /// Two threads withdrawing the whole balance at once must not both succeed.
+    /// The balance check and the debit are one atomic step, so exactly one
+    /// withdrawal is recorded and the fund never goes negative.
+    #[test]
+    fn concurrent_full_balance_withdrawals_settle_once() {
+        use std::sync::Arc;
+
+        let fund = Arc::new(InsuranceFund::new(
+            FixedDecimal::new(100, 18),
+            FixedDecimal::new(1_000_000, 18),
+        ));
+        let full = FixedDecimal::new(100, 18);
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let f = Arc::clone(&fund);
+            let amount = full;
+            handles.push(std::thread::spawn(move || {
+                f.withdraw("TGR", amount, "race", None).is_ok()
+            }));
+        }
+
+        let successes = handles
+            .into_iter()
+            .map(|h| h.join().expect("thread panicked"))
+            .filter(|succeeded| *succeeded)
+            .count();
+
+        assert_eq!(successes, 1, "exactly one full-balance withdrawal may succeed");
+        assert_eq!(fund.balance("TGR").value, 0);
+        assert!(
+            fund.balance("TGR").value >= 0,
+            "the fund must never be overdrawn"
+        );
+        // One withdrawal event, no double payout recorded.
+        let withdrawals = fund
+            .recent_events(64)
+            .into_iter()
+            .filter(|e| e.event_type == InsuranceEventType::Withdraw)
+            .count();
+        assert_eq!(withdrawals, 1, "exactly one withdrawal event is recorded");
     }
 
     #[test]
