@@ -130,6 +130,9 @@ func main() {
 	swapExecutor := services.NewSwapExecutor(blockchainClient, priceAggregator, redis)
 	services.SetSwapExecutor(swapExecutor)
 	services.SetBlockchainClient(blockchainClient)
+	// The swap quote and price endpoints read the aggregator through this
+	// package-level handle; without it they can only answer 503.
+	services.SetPriceAggregator(priceAggregator)
 
 	liquidityService := services.NewLiquidityPoolService(blockchainClient, priceAggregator)
 	marginEngine := services.NewMarginEngine(db, priceAggregator)
@@ -179,6 +182,13 @@ func main() {
 	}
 
 	// Setup router
+	// The WebSocket hub and the market feed share one context so both stop when
+	// the process shuts down.
+	realtimeCtx, stopRealtime := context.WithCancel(context.Background())
+	defer stopRealtime()
+	services.StartWebSocketHub(realtimeCtx)
+	services.StartMarketFeed(realtimeCtx, priceAggregator, services.DefaultMarketFeedInterval)
+
 	router := setupRouter(apiDeps{
 		redis:              redis,
 		blockchainService:  blockchainService,

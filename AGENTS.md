@@ -291,6 +291,28 @@ writes its write-ahead log to `TIGERSWAP_WAL` (default
 `/var/lib/tigerswap/engine.wal`, which does not exist on a clean machine — set it
 to a writable path when running locally).
 
+## Realtime market feed
+
+The WebSocket at `/ws` is served by `services.WebSocketHub`. Two wiring rules
+matter, and breaking either leaves the endpoint silently unusable.
+
+- `services.StartWebSocketHub` must be called before the server serves traffic.
+  The hub's `Run` goroutine owns the `register` channel; while it is not running
+  a connection's registration blocks and the handshake never completes. The
+  register/unregister channels are buffered so a handler cannot wedge on a
+  stalled hub.
+- Publish through `services.Broadcast`, never by sending on `wsHub.broadcast`
+  directly. `Broadcast` is non-blocking: when the queue is full the tick is
+  dropped instead of stalling the caller. `StartMarketFeed` publishes real
+  oracle prices on an interval; `TrackedPriceSymbols` is the one symbol list
+  shared with the REST `/prices` handlers, so the two cannot drift.
+
+The frontend consumes the feed through `src/lib/marketFeed.ts` and
+`useMarketFeed`; every frame is validated with `marketTickValidator` before a
+component sees it. The socket URL comes from `NEXT_PUBLIC_WS_URL`, or is derived
+from the API base (`wss:` when the API base is HTTPS, same-origin when it is
+relative).
+
 ## Frontend API contract validators
 
 `frontend/src/lib/validation.ts` and `types.ts` validate every API response

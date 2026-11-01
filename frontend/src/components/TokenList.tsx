@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Search, Star, TrendingUp, Clock } from 'lucide-react';
 import { useTokens, usePrices } from '@/hooks/useApi';
+import { useMarketFeed } from '@/hooks/useMarketFeed';
 import type { Token as ApiToken } from '@/lib/types';
 
 interface TokenListProps {
@@ -16,8 +17,18 @@ export function TokenList({ onSelectToken }: TokenListProps) {
 
   const { data: tokens, error: tokensError, isPending } = useTokens();
   const { data: prices } = usePrices();
+  const { prices: livePrices } = useMarketFeed();
 
+  // The REST snapshot seeds the table; a live tick for the same symbol takes
+  // precedence so the price updates without a refetch.
   const priceBySymbol = new Map((prices ?? []).map((entry) => [entry.symbol, entry]));
+  const livePriceFor = (symbol: string) => {
+    const live = livePrices.get(symbol);
+    if (live) {
+      return { priceUSD: live.priceUSD, change24h: live.change24h };
+    }
+    return priceBySymbol.get(symbol);
+  };
 
   const available = tokens ?? [];
   const filteredTokens = available.filter(
@@ -92,20 +103,20 @@ export function TokenList({ onSelectToken }: TokenListProps) {
             <div className="text-right">
               <div className="text-white font-medium">
                 {(() => {
-                  const entry = priceBySymbol.get(token.symbol);
+                  const entry = livePriceFor(token.symbol);
                   if (!entry) return '—';
                   return `$${entry.priceUSD.toLocaleString()}`;
                 })()}
               </div>
               <div
                 className={`text-xs ${
-                  (priceBySymbol.get(token.symbol)?.change24h ?? 0) >= 0
+                  (livePriceFor(token.symbol)?.change24h ?? 0) >= 0
                     ? 'text-green-400'
                     : 'text-red-400'
                 }`}
               >
                 {(() => {
-                  const entry = priceBySymbol.get(token.symbol);
+                  const entry = livePriceFor(token.symbol);
                   if (!entry) return '—';
                   return `${entry.change24h >= 0 ? '+' : ''}${entry.change24h.toFixed(2)}%`;
                 })()}

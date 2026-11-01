@@ -291,22 +291,24 @@ func (s *SwapService) GetPool(c *gin.Context) {
 func (s *SwapService) GetPrices(c *gin.Context) {
 	// Only symbols TigerSwap actually prices are reported. The response is an
 	// array of {symbol, priceUSD, change24h} entries, which is the shape the
-	// frontend validator requires.
-	symbols := []string{"ETH", "BTC", "USDC", "USDT", "BNB", "SOL", "MATIC", "LINK", "UNI", "AAVE", "DOT", "AVAX", "LTC", "XRP", "DOGE", "TRX", "APT", "ARB", "OP", "NEAR", "INJ", "SUI", "FIL", "ATOM", "XTZ", "ADA", "ALGO", "XLM", "HBAR", "FTM", "EGLD", "GRT", "CRO", "ONE", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC", "XMR", "DASH", "ZIL", "ENS", "COMP", "DAI"}
-
-	entries := make([]priceDTO, 0, len(symbols))
+	// frontend validator requires. The symbol list is shared with the WebSocket
+	// market feed so the two never disagree.
+	entries := make([]priceDTO, 0, len(TrackedPriceSymbols))
 
 	if globalPriceAggregator != nil {
-		for _, symbol := range symbols {
-			pd, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol)
-			if err != nil || pd.USD <= 0 {
-				continue
+		prices, err := globalPriceAggregator.GetMultiChainPrices(c.Request.Context(), TrackedPriceSymbols)
+		if err == nil {
+			for _, symbol := range TrackedPriceSymbols {
+				pd, ok := prices[symbol]
+				if !ok || pd == nil || pd.USD <= 0 {
+					continue
+				}
+				entries = append(entries, priceDTO{
+					Symbol:    pd.Symbol,
+					PriceUSD:  pd.USD,
+					Change24h: pd.USDChange24h,
+				})
 			}
-			entries = append(entries, priceDTO{
-				Symbol:    pd.Symbol,
-				PriceUSD:  pd.USD,
-				Change24h: pd.USDChange24h,
-			})
 		}
 	}
 
@@ -1738,8 +1740,18 @@ type websocketConn struct {
 var wsHub = &WebSocketHub{
 	clients:    make(map[*websocketConn]bool),
 	broadcast:  make(chan []byte, 256),
-	register:   make(chan *websocketConn),
-	unregister: make(chan *websocketConn),
+	register:   make(chan *websocketConn, 64),
+	unregister: make(chan *websocketConn, 64),
+}
+
+// Broadcast enqueues a message for every connected WebSocket client. It never
+// blocks: when the hub's queue is full the message is dropped for that tick
+// rather than stalling the producer.
+func Broadcast(message []byte) {
+	select {
+	case wsHub.broadcast <- message:
+	default:
+	}
 }
 
 // upgrader upgrades HTTP requests to WebSocket connections.
@@ -1831,7 +1843,7 @@ func HandleWebSocket(c *gin.Context) {
 			if err != nil {
 				break
 			}
-			wsHub.broadcast <- message
+			Broadcast(message)
 		}
 	}()
 

@@ -1462,3 +1462,27 @@ export const bridgeChainsValidator: Validator<number[]> = (value, path = "value"
   }
   return chains.map((entry, index) => integer(entry, `${path}.chains[${index}]`));
 };
+
+/**
+ * One live market tick from the WebSocket feed at `/ws`.
+ *
+ * The server publishes real oracle prices on this channel, so the payload is
+ * checked before it can reach a component: a malformed frame is dropped rather
+ * than rendered as a price. `timestamp` is Unix seconds, matching the Go
+ * producer.
+ */
+export interface MarketTick {
+  type: "price";
+  symbol: string;
+  priceUSD: number;
+  change24h: number;
+  timestamp: number;
+}
+
+export const marketTickValidator = object<MarketTick>({
+  type: oneOf(["price"] as const),
+  symbol,
+  priceUSD: nonNegative,
+  change24h: number,
+  timestamp: integer,
+});
