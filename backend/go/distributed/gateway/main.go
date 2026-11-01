@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -11,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
 )
 
 var (
@@ -19,7 +24,6 @@ var (
 	bytesIn        int64
 	bytesOut       int64
 	startTime      = time.Now()
-	uptime         time.Duration
 	mu             sync.RWMutex
 	routes         = make(map[string]int)
 )
@@ -50,46 +54,81 @@ func main() {
 		BackendURL: getEnv("BACKEND_URL", "http://localhost:9090"),
 	}
 
+	proxy, err := newProxy(cfg.BackendURL)
+	if err != nil {
+		log.Fatalf("invalid BACKEND_URL %q: %v", cfg.BackendURL, err)
+	}
+
+	limiter := rate.NewLimiter(rate.Limit(cfg.RateLimit), cfg.RateLimit)
+
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(gin.Logger())
+	r.Use(rateLimitMiddleware(limiter))
 	r.Use(middlewareMetrics)
 
-	// Routes
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{"service": "TigerSwap Gateway", "version": "1.0.0"})
 	})
 
-	r.GET("/api/*any", proxyHandler(cfg.BackendURL))
-	r.POST("/api/*any", proxyHandler(cfg.BackendURL))
-	r.PUT("/api/*any", proxyHandler(cfg.BackendURL))
-	r.DELETE("/api/*any", proxyHandler(cfg.BackendURL))
+	// Every /api request is forwarded verbatim to the upstream backend. The
+	// proxy streams the real response and never fabricates a body.
+	r.Any("/api/*any", gin.WrapH(proxy))
 
 	r.GET("/metrics", metricsHandler)
 	r.GET("/health", healthHandler)
 
-	// Start server
+	srv := &http.Server{
+		Addr:           ":" + cfg.Port,
+		Handler:        r,
+		ReadTimeout:    cfg.Timeout,
+		WriteTimeout:   cfg.Timeout,
+		MaxHeaderBytes: 1 << 16,
+	}
+
 	go func() {
 		fmt.Printf("Gateway starting on port %s\n", cfg.Port)
-		fmt.Printf("Max connections: %d\n", cfg.MaxConns)
-		fmt.Printf("Rate limit: %d req/s\n", cfg.RateLimit)
-		s := &http.Server{
-			Addr:           ":" + cfg.Port,
-			Handler:        r,
-			ReadTimeout:    cfg.Timeout,
-			WriteTimeout:   cfg.Timeout,
-			MaxHeaderBytes: 1 << 16,
+		fmt.Printf("Upstream backend: %s\n", cfg.BackendURL)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("gateway server error: %v", err)
 		}
-		s.ListenAndServe()
 	}()
 
-	// Wait for shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	fmt.Println("Shutting down...")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("gateway shutdown error: %v", err)
+	}
+}
+
+// newProxy builds a reverse proxy for the upstream backend. The target must be
+// an absolute http/https URL; anything else is a configuration error rather
+// than something to guess at.
+func newProxy(backendURL string) (*httputil.ReverseProxy, error) {
+	target, err := url.Parse(backendURL)
+	if err != nil {
+		return nil, err
+	}
+	if target.Scheme != "http" && target.Scheme != "https" {
+		return nil, fmt.Errorf("scheme must be http or https, got %q", target.Scheme)
+	}
+	if target.Host == "" {
+		return nil, fmt.Errorf("host is empty")
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ErrorHandler = func(w http.ResponseWriter, req *http.Request, err error) {
+		log.Printf("upstream %s failed for %s %s: %v", target, req.Method, req.URL.Path, err)
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"upstream backend unavailable"}`))
+	}
+	return proxy, nil
 }
 
 func getEnv(key, def string) string {
@@ -99,45 +138,53 @@ func getEnv(key, def string) string {
 	return def
 }
 
+// rateLimitMiddleware rejects requests above the configured rate with 429
+// rather than letting them through unchecked.
+func rateLimitMiddleware(limiter *rate.Limiter) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !limiter.Allow() {
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "rate limit exceeded"})
+			return
+		}
+		c.Next()
+	}
+}
+
 func middlewareMetrics(c *gin.Context) {
 	atomic.AddInt64(&requestsTotal, 1)
 	atomic.AddInt64(&requestsActive, 1)
 	defer atomic.AddInt64(&requestsActive, -1)
 
-	// Track route
 	mu.Lock()
 	routes[c.FullPath()]++
 	mu.Unlock()
 
-	// Track bytes
-	bytesIn += int64(c.Request.ContentLength)
+	atomic.AddInt64(&bytesIn, c.Request.ContentLength)
 
 	c.Next()
 
-	// Track response size
-	// bytesOut += size
+	atomic.AddInt64(&bytesOut, int64(c.Writer.Size()))
 }
 
 func metricsHandler(c *gin.Context) {
-	uptime = time.Since(startTime)
+	mu.RLock()
+	routesCopy := make(map[string]int, len(routes))
+	for k, v := range routes {
+		routesCopy[k] = v
+	}
+	mu.RUnlock()
+
 	m := Metrics{
 		RequestsTotal:  atomic.LoadInt64(&requestsTotal),
 		RequestsActive: atomic.LoadInt64(&requestsActive),
 		BytesIn:        atomic.LoadInt64(&bytesIn),
 		BytesOut:       atomic.LoadInt64(&bytesOut),
-		Uptime:         uptime.String(),
-		Routes:         routes,
+		Uptime:         time.Since(startTime).String(),
+		Routes:         routesCopy,
 	}
 	c.JSON(200, m)
 }
 
 func healthHandler(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "healthy", "timestamp": time.Now().Unix()})
-}
-
-func proxyHandler(backend string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Simple proxy - in production use reverseproxy
-		c.JSON(200, gin.H{"proxied": c.FullPath(), "backend": backend})
-	}
 }

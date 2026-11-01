@@ -2,6 +2,7 @@ package main
 
 import (
 	"container/list"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -104,6 +106,19 @@ func main() {
 	srv := &http.Server{Addr: ":" + port, Handler: r}
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-quit; srv.Shutdown(nil) }()
-	srv.ListenAndServe()
+
+	go func() {
+		<-quit
+		fmt.Println("Shutting down cache server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Printf("cache server shutdown error: %v\n", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("cache server error: %v\n", err)
+		os.Exit(1)
+	}
 }

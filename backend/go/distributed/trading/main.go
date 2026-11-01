@@ -470,12 +470,18 @@ func main() {
 	go func() {
 		<-quit
 		fmt.Println("\nShutting down...")
-		srv.Shutdown(context.Background())
-		os.Exit(0)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Printf("trading shutdown error: %v\n", err)
+		}
 	}()
 
 	fmt.Printf("Server starting on port %s\n", cfg.Port)
-	srv.ListenAndServe()
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Printf("trading server error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func getEnv(key, defaultValue string) string {
