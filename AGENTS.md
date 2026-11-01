@@ -2,6 +2,15 @@
 
 Repository knowledge for agents working on TigerSwap (TigerEx DEX mode).
 
+## Branching and delivery
+
+Work is committed and pushed **directly to `main`**. This repository is
+owner-operated and the owner has explicitly overridden the usual
+branch-plus-pull-request default: do not open pull requests here, and do not
+push to a side branch and stop. After the change is built and tested, push the
+commit straight to `main` so CI (`.github/workflows/ci.yml`, triggered on push
+to `main`) runs against it.
+
 ## Layout
 
 - `backend/` — Go API server (Gin + GORM). Entry point `backend/cmd/api/main.go`.
