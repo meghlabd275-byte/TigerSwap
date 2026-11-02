@@ -188,6 +188,7 @@ func main() {
 	defer stopRealtime()
 	services.StartWebSocketHub(realtimeCtx)
 	services.StartMarketFeed(realtimeCtx, priceAggregator, services.DefaultMarketFeedInterval)
+	services.StartPositionMaintenance(realtimeCtx, perpetualEngine, copyTradingEngine, services.DefaultPositionRefreshInterval)
 
 	router := setupRouter(apiDeps{
 		redis:              redis,

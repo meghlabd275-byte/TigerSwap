@@ -61,8 +61,47 @@ func StartMarketFeed(ctx context.Context, agg *PriceAggregator, interval time.Du
 	}()
 }
 
-// publishMarketSnapshot reads the tracked symbols and broadcasts one tick per
-// symbol that returned a usable price.
+// DefaultPositionRefreshInterval is how often open perpetual and copy positions
+// are re-marked to the live oracle price. Without it a position would report
+// its entry price as its current price for as long as it stays open.
+const DefaultPositionRefreshInterval = 10 * time.Second
+
+// StartPositionMaintenance re-marks open perpetual and copy-trading positions to
+// the live oracle price until ctx is cancelled. A position whose price cannot be
+// read keeps its previous mark rather than being zeroed.
+func StartPositionMaintenance(ctx context.Context, perps *PerpetualEngine, copy *CopyTradingEngine, interval time.Duration) {
+	if perps == nil && copy == nil {
+		log.Println("position maintenance not started: no engines configured")
+		return
+	}
+	if interval <= 0 {
+		interval = DefaultPositionRefreshInterval
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if perps != nil {
+					if err := perps.UpdatePositions(ctx); err != nil {
+						log.Printf("position maintenance: perpetual update failed: %v", err)
+					}
+				}
+				if copy != nil {
+					if err := copy.UpdateCopyPositions(ctx); err != nil {
+						log.Printf("position maintenance: copy update failed: %v", err)
+					}
+				}
+			}
+		}
+	}()
+}
+
 func publishMarketSnapshot(ctx context.Context, agg *PriceAggregator) {
 	prices, err := agg.GetMultiChainPrices(ctx, TrackedPriceSymbols)
 	if err != nil {

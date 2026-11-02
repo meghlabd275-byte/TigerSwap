@@ -22,7 +22,7 @@ import (
 // PerpetualEngine handles real perpetual trading
 type PerpetualEngine struct {
 	blockchain *BlockchainClient
-	priceAgg   *PriceAggregator
+	priceAgg   priceSource
 	positions  map[string]*PerpetualPosition // positionID -> position
 	orders     map[string]*PerpetualOrder
 	mu         sync.RWMutex
@@ -107,7 +107,7 @@ type perpMarketConfig struct {
 // NewPerpetualEngine builds an engine with no markets. Markets are loaded from
 // the admin listing tables with SetDB, so the engine can only ever trade
 // symbols an operator has explicitly listed.
-func NewPerpetualEngine(blockchain *BlockchainClient, priceAgg *PriceAggregator) *PerpetualEngine {
+func NewPerpetualEngine(blockchain *BlockchainClient, priceAgg priceSource) *PerpetualEngine {
 	return &PerpetualEngine{
 		blockchain: blockchain,
 		priceAgg:   priceAgg,
@@ -448,6 +448,36 @@ func (e *PerpetualEngine) GetUserPositions(userAddress string) []*PerpetualPosit
 // leaving the position open would let a trader close at a price the risk engine
 // has already declared invalid.
 func (e *PerpetualEngine) UpdatePositions(ctx context.Context) error {
+	if e.priceAgg == nil {
+		return nil
+	}
+	// Read the open pairs and their oracle symbols first. The oracle call is
+	// network I/O, so it must not happen while the write lock is held: holding
+	// it would block every other position operation for the duration of the
+	// call, and market() takes the read lock, which would deadlock outright.
+	e.mu.RLock()
+	symbols := make(map[string]string, len(e.positions))
+	for _, position := range e.positions {
+		if !positionIsLive(position.Status) {
+			continue
+		}
+		cfg := e.markets[strings.ToUpper(strings.TrimSpace(position.Pair))]
+		if cfg == nil {
+			continue
+		}
+		symbols[position.Pair] = cfg.OracleSymbol
+	}
+	e.mu.RUnlock()
+
+	marks := make(map[string]float64, len(symbols))
+	for pair, symbol := range symbols {
+		priceData, err := e.priceAgg.GetRealPrice(ctx, symbol)
+		if err != nil || priceData.USD <= 0 {
+			continue
+		}
+		marks[pair] = priceData.USD
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -456,12 +486,10 @@ func (e *PerpetualEngine) UpdatePositions(ctx context.Context) error {
 			continue
 		}
 
-		// Get current mark price
-		markPrice, err := e.getMarkPrice(ctx, position.Pair)
-		if err != nil {
+		markPrice, ok := marks[position.Pair]
+		if !ok {
 			continue
 		}
-
 		position.MarkPrice = markPrice
 
 		// A position that has crossed its liquidation price is flagged for

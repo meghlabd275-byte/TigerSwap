@@ -17,7 +17,7 @@ import (
 // CopyTradingEngine handles real copy trading
 type CopyTradingEngine struct {
 	blockchain *BlockchainClient
-	priceAgg   *PriceAggregator
+	priceAgg   priceSource
 	mu         sync.RWMutex
 
 	// Trader registry
@@ -95,7 +95,7 @@ type CopyConfig struct {
 	TakeProfit      float64 `json:"take_profit"` // percentage
 }
 
-func NewCopyTradingEngine(blockchain *BlockchainClient, priceAgg *PriceAggregator) *CopyTradingEngine {
+func NewCopyTradingEngine(blockchain *BlockchainClient, priceAgg priceSource) *CopyTradingEngine {
 	return &CopyTradingEngine{
 		blockchain:    blockchain,
 		priceAgg:      priceAgg,
@@ -266,8 +266,31 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 	return position, nil
 }
 
-// UpdateCopyPositions updates all copy positions with current prices
+// UpdateCopyPositions refreshes the mark price and unrealised PnL of every open
+// copy position. The oracle calls happen before the write lock is taken so a
+// slow price read cannot stall every other copy-trading operation.
 func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
+	if e.priceAgg == nil {
+		return nil
+	}
+	e.mu.RLock()
+	pairs := make(map[string]struct{})
+	for _, position := range e.copyPositions {
+		if position.Status == "open" {
+			pairs[position.Pair] = struct{}{}
+		}
+	}
+	e.mu.RUnlock()
+
+	prices := make(map[string]float64, len(pairs))
+	for pair := range pairs {
+		price, err := e.getPriceForPair(ctx, pair)
+		if err != nil || price <= 0 {
+			continue
+		}
+		prices[pair] = price
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -275,12 +298,10 @@ func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
 		if position.Status != "open" {
 			continue
 		}
-
-		price, err := e.getPriceForPair(ctx, position.Pair)
-		if err != nil {
+		price, ok := prices[position.Pair]
+		if !ok {
 			continue
 		}
-
 		position.CurrentPrice = price
 		position.PNL = e.calculateCopyPNL(position)
 	}
