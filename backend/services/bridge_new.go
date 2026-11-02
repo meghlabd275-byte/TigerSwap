@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"fmt"
+	"log"
 	"math/big"
 	"os"
 	"strconv"
@@ -353,6 +354,39 @@ func (s *BridgeService) ReleaseMint(ctx context.Context, transferID string) (*Br
 	}
 
 	return transfer, nil
+}
+
+// DefaultBridgeSweepInterval is how often the relayer releases destination
+// mints for transfers whose source-chain lock has confirmed.
+const DefaultBridgeSweepInterval = 30 * time.Second
+
+// StartBridgeRelayer drives the TigerBridge relayer: every interval it releases
+// the destination mint for each confirmed lock. Without it a transfer stops at
+// `confirmed` and the recipient never receives the bridged asset.
+func StartBridgeRelayer(ctx context.Context, bridge *BridgeService, interval time.Duration) {
+	if bridge == nil {
+		log.Println("bridge relayer not started: bridge service not configured")
+		return
+	}
+	if interval <= 0 {
+		interval = DefaultBridgeSweepInterval
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := bridge.ProcessPending(ctx); err != nil {
+					log.Printf("bridge relayer: sweep failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 // ProcessPending sweeps confirmed transfers and releases mints on the destination chain.

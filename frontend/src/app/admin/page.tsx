@@ -46,7 +46,6 @@ export default function AdminPage() {
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isAdminAuthenticated, setAdminAuthenticated] = useState(false);
-  const [operatorId, setOperatorId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -118,7 +117,6 @@ export default function AdminPage() {
       const user = getCurrentUser();
       const allowed = user?.role === 'admin' || user?.role === 'superadmin';
       setAdminAuthenticated(allowed);
-      setOperatorId(allowed ? user!.id : null);
     };
     const unsubscribe = subscribe(applyUser);
     void restoreSession().then(() => {
@@ -154,7 +152,6 @@ export default function AdminPage() {
         return;
       }
       setAdminAuthenticated(true);
-      setOperatorId(user.id);
       setAdminPassword('');
     } catch (error) {
       setLoginError(error instanceof Error ? error.message : 'Sign-in failed');
@@ -166,7 +163,6 @@ export default function AdminPage() {
   const handleLogout = async () => {
     await logout();
     setAdminAuthenticated(false);
-    setOperatorId(null);
   };
 
   const handleAddBlockchain = async () => {
@@ -272,7 +268,6 @@ export default function AdminPage() {
     setIsSaving(true);
     try {
       await endpoints.createLaunchpadProject({
-        creator: operatorId ?? '',
         name: newProject.name,
         description: newProject.description,
         token_address: newProject.tokenAddress,

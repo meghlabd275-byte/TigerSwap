@@ -312,7 +312,6 @@ export const endpoints = {
   },
 
   async createLaunchpadProject(payload: {
-    creator: string;
     name: string;
     token_address: string;
     token_symbol: string;

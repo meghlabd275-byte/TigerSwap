@@ -836,4 +836,103 @@ func (s *DynamicIntegrationService) SearchHandler(c *gin.Context) {
 	}
 }
 
+// AddNonEVMChainHandler adds a non-EVM chain (Solana, Cosmos, TON, Aptos,
+// Bitcoin, ...). EVM chains go through AddEVMChainHandler; this is the only path
+// that can register a chain whose addresses are not 20-byte hex.
+func (s *DynamicIntegrationService) AddNonEVMChainHandler(c *gin.Context) {
+	var req struct {
+		Key         string `json:"key" binding:"required"`
+		Name        string `json:"name" binding:"required"`
+		Type        string `json:"type" binding:"required"`
+		RPCURL      string `json:"rpc_url" binding:"required"`
+		ExplorerURL string `json:"explorer_url" binding:"required"`
+		Symbol      string `json:"symbol" binding:"required"`
+		Decimals    int    `json:"decimals" binding:"required"`
+		AddedBy     string `json:"added_by"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	chain, err := s.AddNonEVMChain(req.Key, req.Name, req.Type, req.RPCURL, req.ExplorerURL, req.Symbol, req.Decimals, req.AddedBy)
+	if err != nil {
+		c.JSON(500, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, chain)
+}
+
+// ActivateChainHandler pauses or resumes a chain. Pausing hides it from the
+// active-only listings without discarding the entry.
+func (s *DynamicIntegrationService) ActivateChainHandler(c *gin.Context) {
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	key := c.Param("key")
+	if err := s.ActivateChain(key, req.Active); err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"key": key, "active": req.Active})
+}
+
+// ActivateTokenHandler pauses or resumes a token.
+func (s *DynamicIntegrationService) ActivateTokenHandler(c *gin.Context) {
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	key := c.Param("key")
+	if err := s.ActivateToken(key, req.Active); err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"key": key, "active": req.Active})
+}
+
+// DeleteChainHandler removes a chain registration.
+func (s *DynamicIntegrationService) DeleteChainHandler(c *gin.Context) {
+	key := c.Param("key")
+	if err := s.DeleteChain(key); err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"key": key, "deleted": true})
+}
+
+// DeleteTokenHandler removes a token registration.
+func (s *DynamicIntegrationService) DeleteTokenHandler(c *gin.Context) {
+	key := c.Param("key")
+	if err := s.DeleteToken(key); err != nil {
+		c.JSON(404, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"key": key, "deleted": true})
+}
+
+// GetBridgesHandler lists every registered bridge route.
+func (s *DynamicIntegrationService) GetBridgesHandler(c *gin.Context) {
+	bridges := s.GetAllBridges()
+	c.JSON(200, gin.H{
+		"bridges": bridges,
+		"count":   len(bridges),
+	})
+}
+
 // Helper functions

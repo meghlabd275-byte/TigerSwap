@@ -157,6 +157,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/margin/borrow", deps.marginEngine.BorrowMarginHandler)
 			protected.POST("/margin/repay", deps.marginEngine.RepayMarginHandler)
 			protected.POST("/perpetual/orders", deps.perpetualEngine.CreateOrderHandler)
+			protected.DELETE("/perpetual/orders/:id", deps.perpetualEngine.CancelOrderHandler)
 
 			// Liquidity pool read routes
 			protected.GET("/liquidity/pools", deps.liquidityService.GetPoolsHandler)
@@ -284,6 +285,14 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 			// Margin risk operations (admin only)
 			admin.GET("/margin/liquidatable", deps.marginEngine.ListLiquidatableHandler)
+			admin.POST("/margin/accounts/:id/liquidate", deps.marginEngine.LiquidateAccountHandler)
+
+			// Perpetual risk operations (admin only)
+			admin.GET("/perps/liquidatable", deps.perpetualEngine.ListLiquidatablePositionsHandler)
+			admin.POST("/perps/positions/:id/liquidate", deps.perpetualEngine.LiquidatePositionHandler)
+
+			// OTC block trades: expire open orders whose window has passed.
+			admin.POST("/otc/expire", deps.otcService.ExpireStaleOrdersHandler)
 
 			// Fee management (admin only)
 			admin.GET("/fees/config", deps.feeCollector.GetConfigHandler)
@@ -300,13 +309,19 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// Dynamic integration registry: chains, tokens, farms and
 			// bridges an operator adds without a redeploy.
 			admin.POST("/integration/chains", deps.dynamicIntegration.AddEVMChainHandler)
+			admin.POST("/integration/chains/non-evm", deps.dynamicIntegration.AddNonEVMChainHandler)
 			admin.GET("/integration/chains", deps.dynamicIntegration.GetChainsHandler)
+			admin.POST("/integration/chains/:key/active", deps.dynamicIntegration.ActivateChainHandler)
+			admin.DELETE("/integration/chains/:key", deps.dynamicIntegration.DeleteChainHandler)
 			admin.POST("/integration/tokens", deps.dynamicIntegration.AddTokenHandler)
 			admin.GET("/integration/tokens", deps.dynamicIntegration.GetTokensHandler)
+			admin.POST("/integration/tokens/:key/active", deps.dynamicIntegration.ActivateTokenHandler)
+			admin.DELETE("/integration/tokens/:key", deps.dynamicIntegration.DeleteTokenHandler)
 			admin.GET("/integration/farms", deps.dynamicIntegration.GetFarmsHandler)
 			admin.POST("/integration/pools", deps.dynamicIntegration.CreatePoolHandler)
 			admin.POST("/integration/farms", deps.dynamicIntegration.CreateFarmHandler)
 			admin.POST("/integration/bridges", deps.dynamicIntegration.AddBridgeHandler)
+			admin.GET("/integration/bridges", deps.dynamicIntegration.GetBridgesHandler)
 			admin.GET("/integration/stats", deps.dynamicIntegration.GetStatsHandler)
 			admin.GET("/integration/search", deps.dynamicIntegration.SearchHandler)
 

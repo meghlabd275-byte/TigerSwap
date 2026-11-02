@@ -991,6 +991,25 @@ func (e *MarginEngine) RepayMarginHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// LiquidateAccountHandler executes a liquidation on one account. It is an
+// operator endpoint: the route middleware enforces the admin role, and
+// Liquidate re-checks that the account is genuinely under-collateralised before
+// any collateral moves, so it cannot be used to seize a healthy account.
+func (e *MarginEngine) LiquidateAccountHandler(c *gin.Context) {
+	accountID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account id"})
+		return
+	}
+
+	result, err := e.Liquidate(c.Request.Context(), accountID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "liquidation": result})
+}
+
 // ListLiquidatableHandler lists accounts eligible for liquidation. It is an
 // operator endpoint: the caller's role is enforced by the route middleware.
 func (e *MarginEngine) ListLiquidatableHandler(c *gin.Context) {

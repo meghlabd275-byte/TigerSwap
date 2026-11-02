@@ -189,6 +189,8 @@ func main() {
 	services.StartWebSocketHub(realtimeCtx)
 	services.StartMarketFeed(realtimeCtx, priceAggregator, services.DefaultMarketFeedInterval)
 	services.StartPositionMaintenance(realtimeCtx, perpetualEngine, copyTradingEngine, services.DefaultPositionRefreshInterval)
+	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
+	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
 
 	router := setupRouter(apiDeps{
 		redis:              redis,

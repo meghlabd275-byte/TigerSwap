@@ -307,6 +307,17 @@ func (s *OtcService) ExpireStaleOrders() (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
+// ExpireStaleOrdersHandler expires every open order past its deadline and
+// reports how many were closed. It is an operator endpoint.
+func (s *OtcService) ExpireStaleOrdersHandler(c *gin.Context) {
+	expired, err := s.ExpireStaleOrders()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "expired": expired})
+}
+
 var (
 	errOrderNotFound = errors.New("otc order not found")
 	errOrderNotOpen  = errors.New("otc order is not open")

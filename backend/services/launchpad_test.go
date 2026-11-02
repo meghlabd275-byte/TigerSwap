@@ -2,14 +2,96 @@ package services
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
 	"tigerswap/backend/models"
 )
+
+func TestCreateProjectHandlerIgnoresClientSuppliedCreator(t *testing.T) {
+	svc, db := newLaunchpadWithDB(t)
+	user := seedVoter(t, db, "0x1111111111111111111111111111111111111111", "0", 24*time.Hour)
+
+	start := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	end := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+
+	rec := runAuthenticatedHandler(t, svc.CreateProjectHandler, user.ID.String(), gin.H{
+		"name": "Project", "token_address": "0xToken", "token_symbol": "PRJ",
+		"token_name": "Project Token", "total_supply": "1000000", "token_price": "1",
+		"payment_token": "RUSD", "min_purchase": "1", "max_purchase": "100",
+		"soft_cap": "1000", "hard_cap": "100000", "start_time": start, "end_time": end,
+		// A spoofed creator must be ignored in favour of the session identity.
+		"creator": "0xSomeoneElse",
+	}, nil)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	project := decodeMarket[LaunchpadProject](t, rec)
+	if project.CreatedBy != "0x1111111111111111111111111111111111111111" {
+		t.Fatalf("created_by = %q, want the session wallet", project.CreatedBy)
+	}
+}
+
+func TestParticipateHandlerUsesSessionWallet(t *testing.T) {
+	svc, db := newLaunchpadWithDB(t)
+	user := seedVoter(t, db, "0x2222222222222222222222222222222222222222", "0", 24*time.Hour)
+
+	project, err := svc.CreateProject(context.Background(), "0xOperator", "P", "", "0xToken", "PRJ", "Project",
+		"1000000", "1", "RUSD", "1", "1000", "10000", "1000000", time.Now().Add(-time.Hour), time.Now().Add(time.Hour), "", "", "")
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
+		t.Fatalf("UpdateProjectStatus: %v", err)
+	}
+
+	rec := runAuthenticatedHandler(t, svc.ParticipateHandler, user.ID.String(), gin.H{
+		"amount": "100",
+		// A spoofed address must not be used as the participant.
+		"user_address": "0xAttacker",
+	}, gin.Params{{Key: "id", Value: project.ID}})
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	allocation := decodeMarket[Allocation](t, rec)
+	if allocation.UserAddress != "0x2222222222222222222222222222222222222222" {
+		t.Fatalf("allocation user = %q, want the session wallet", allocation.UserAddress)
+	}
+}
+
+func TestParticipateHandlerRejectsAnonymousCaller(t *testing.T) {
+	svc, _ := newLaunchpadWithDB(t)
+
+	rec := runAuthenticatedHandler(t, svc.ParticipateHandler, "", gin.H{"amount": "100"},
+		gin.Params{{Key: "id", Value: "proj_x"}})
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+}
+
+func TestCreateProjectHandlerRejectsMalformedTimes(t *testing.T) {
+	svc, db := newLaunchpadWithDB(t)
+	user := seedVoter(t, db, "0x3333333333333333333333333333333333333333", "0", 24*time.Hour)
+
+	rec := runAuthenticatedHandler(t, svc.CreateProjectHandler, user.ID.String(), gin.H{
+		"name": "Project", "token_address": "0xToken", "token_symbol": "PRJ",
+		"token_name": "Project Token", "total_supply": "1000000", "token_price": "1",
+		"payment_token": "RUSD", "start_time": "not-a-time", "end_time": "also-bad",
+	}, nil)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for malformed timestamps", rec.Code)
+	}
+}
 
 func newTestLaunchpad() *LaunchpadService {
 	return NewLaunchpadService(nil, nil, nil)

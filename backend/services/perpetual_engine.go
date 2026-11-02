@@ -372,32 +372,49 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 
 // ClosePosition closes an existing position
 func (e *PerpetualEngine) ClosePosition(ctx context.Context, ownerID, positionID string) (*PerpetualPosition, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	// Read the position and its oracle symbol under the read lock, then fetch the
+	// mark price with no lock held. The oracle call is network I/O, and both
+	// market() and getMarkPrice() take the read lock, so calling them while
+	// holding the write lock would deadlock.
+	e.mu.RLock()
 	position, exists := e.positions[positionID]
 	if !exists {
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("position not found: %s", positionID)
 	}
 	if ownerID != "" && position.UserAddress != ownerID {
 		// Report a missing position rather than a permission error so the
 		// endpoint cannot be used to probe which position ids exist.
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("position not found: %s", positionID)
 	}
 	if position.Status == "liquidatable" {
 		// A position the risk engine has flagged must settle through
 		// LiquidatePosition, which applies the liquidation fee. Allowing a plain
 		// close here would let the trader escape that penalty.
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("position %s is being liquidated and cannot be closed", positionID)
 	}
 	if position.Status != "open" {
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("position %s is not open (status %s)", positionID, position.Status)
 	}
+	pair := position.Pair
+	e.mu.RUnlock()
 
-	// Get current price
-	markPrice, err := e.getMarkPrice(ctx, position.Pair)
+	markPrice, err := e.getMarkPrice(ctx, pair)
 	if err != nil {
 		return nil, err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Re-check under the write lock: the position may have been settled while the
+	// oracle call was in flight.
+	position, exists = e.positions[positionID]
+	if !exists || position.Status != "open" {
+		return nil, fmt.Errorf("position %s is no longer open", positionID)
 	}
 
 	// Calculate PNL
@@ -530,29 +547,46 @@ func (e *PerpetualEngine) LiquidatablePositions() []*PerpetualPosition {
 //
 // Returns the liquidation fee owed to the caller.
 func (e *PerpetualEngine) LiquidatePosition(ctx context.Context, positionID string) (*big.Rat, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	// Snapshot the position and its listing under the read lock, then price it
+	// with no lock held. market() and getMarkPrice() both take the read lock, so
+	// calling them while holding the write lock would deadlock.
+	e.mu.RLock()
 	position, exists := e.positions[positionID]
 	if !exists {
+		e.mu.RUnlock()
 		return nil, fmt.Errorf("position not found: %s", positionID)
 	}
 	if position.Status != "liquidatable" {
-		return nil, fmt.Errorf("position %s is not liquidatable (status %s)", positionID, position.Status)
+		status := position.Status
+		e.mu.RUnlock()
+		return nil, fmt.Errorf("position %s is not liquidatable (status %s)", positionID, status)
 	}
+	pair := position.Pair
+	e.mu.RUnlock()
 
-	cfg := e.market(position.Pair)
+	cfg := e.market(pair)
 	if cfg == nil {
-		return nil, fmt.Errorf("market %s is no longer listed", position.Pair)
+		return nil, fmt.Errorf("market %s is no longer listed", pair)
 	}
 
 	// Re-price at settlement: the flag was set by an earlier update and the price
 	// may have recovered since, in which case the position is no longer
 	// liquidatable and must be left alone.
-	markPrice, err := e.getMarkPrice(ctx, position.Pair)
+	markPrice, err := e.getMarkPrice(ctx, pair)
 	if err != nil {
 		return nil, err
 	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Re-check under the write lock: the position may have been settled while the
+	// oracle call was in flight.
+	position, exists = e.positions[positionID]
+	if !exists || position.Status != "liquidatable" {
+		return nil, fmt.Errorf("position %s is no longer liquidatable", positionID)
+	}
+
 	position.MarkPrice = markPrice
 	if !e.isLiquidatable(position) {
 		position.Status = "open"
@@ -613,10 +647,36 @@ func liquidationPayout(collateral, pnl *big.Rat, feeRate float64, symbol string)
 	return new(big.Rat).Mul(remaining, rate), nil
 }
 
-// CreateOrder creates a new perpetual order
+// CreateOrder creates a new perpetual order. The side, order type and size are
+// validated here rather than at the transport, so a malformed order can never
+// reach the matching path.
 func (e *PerpetualEngine) CreateOrder(ctx context.Context, userAddress, pair, side, orderType, size string, price, triggerPrice float64, expiresIn int) (*PerpetualOrder, error) {
 	if !e.isValidPair(pair) {
 		return nil, fmt.Errorf("unsupported pair: %s", pair)
+	}
+	side = strings.ToLower(strings.TrimSpace(side))
+	if side != "long" && side != "short" {
+		return nil, fmt.Errorf("side must be long or short, got %q", side)
+	}
+	orderType = strings.ToLower(strings.TrimSpace(orderType))
+	switch orderType {
+	case "market":
+	case "limit":
+		if price <= 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+			return nil, fmt.Errorf("a limit order requires a positive price")
+		}
+	case "stop":
+		if triggerPrice <= 0 || math.IsNaN(triggerPrice) || math.IsInf(triggerPrice, 0) {
+			return nil, fmt.Errorf("a stop order requires a positive trigger price")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported order type: %q", orderType)
+	}
+	if _, err := perpAmountValue(size); err != nil {
+		return nil, err
+	}
+	if expiresIn <= 0 {
+		return nil, fmt.Errorf("expires_in must be positive")
 	}
 
 	order := &PerpetualOrder{
@@ -646,13 +706,19 @@ func (e *PerpetualEngine) CreateOrder(ctx context.Context, userAddress, pair, si
 	return order, nil
 }
 
-// CancelOrder cancels an order
-func (e *PerpetualEngine) CancelOrder(orderID string) error {
+// CancelOrder cancels a pending order. When owner is non-empty the order must
+// belong to that caller, so one trader cannot cancel another's order.
+func (e *PerpetualEngine) CancelOrder(orderID, owner string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	order, exists := e.orders[orderID]
 	if !exists {
+		return fmt.Errorf("order not found")
+	}
+	if owner != "" && order.UserAddress != owner {
+		// Report a missing order rather than a permission error so the endpoint
+		// cannot be used to probe which order ids exist.
 		return fmt.Errorf("order not found")
 	}
 
@@ -922,8 +988,14 @@ func (e *PerpetualEngine) GetPositionsHandler(c *gin.Context) {
 }
 
 func (e *PerpetualEngine) CreateOrderHandler(c *gin.Context) {
+	// The order belongs to the authenticated caller; a user_address in the body
+	// is ignored so one trader cannot create an order on another's behalf.
+	owner, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+
 	var req struct {
-		UserAddress  string  `json:"user_address" binding:"required"`
 		Pair         string  `json:"pair" binding:"required"`
 		Side         string  `json:"side" binding:"required"`
 		OrderType    string  `json:"order_type" binding:"required"`
@@ -934,7 +1006,7 @@ func (e *PerpetualEngine) CreateOrderHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -943,13 +1015,28 @@ func (e *PerpetualEngine) CreateOrderHandler(c *gin.Context) {
 		expiresIn = 3600 // 1 hour default
 	}
 
-	order, err := e.CreateOrder(c.Request.Context(), req.UserAddress, req.Pair, req.Side, req.OrderType, req.Size, req.Price, req.TriggerPrice, expiresIn)
+	order, err := e.CreateOrder(c.Request.Context(), owner, req.Pair, req.Side, req.OrderType, req.Size, req.Price, req.TriggerPrice, expiresIn)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	c.JSON(200, order)
+	c.JSON(http.StatusOK, order)
+}
+
+// CancelOrderHandler cancels one of the caller's own pending orders.
+func (e *PerpetualEngine) CancelOrderHandler(c *gin.Context) {
+	owner, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+
+	if err := e.CancelOrder(c.Param("id"), owner); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
 func (e *PerpetualEngine) GetFundingRateHandler(c *gin.Context) {
@@ -1021,6 +1108,27 @@ func decimalOrDefault(value string, def float64) float64 {
 		return def
 	}
 	return v
+}
+
+// ListLiquidatablePositionsHandler lists positions whose mark has crossed their
+// liquidation price. It is an operator endpoint; the route middleware enforces
+// the admin role.
+func (e *PerpetualEngine) ListLiquidatablePositionsHandler(c *gin.Context) {
+	positions := e.LiquidatablePositions()
+	c.JSON(http.StatusOK, gin.H{"positions": positions, "count": len(positions)})
+}
+
+// LiquidatePositionHandler settles one liquidatable position. LiquidatePosition
+// re-prices at settlement and refuses a position that is no longer liquidatable,
+// so this cannot be used to close a healthy position and seize its margin.
+func (e *PerpetualEngine) LiquidatePositionHandler(c *gin.Context) {
+	positionID := c.Param("id")
+	fee, err := e.LiquidatePosition(c.Request.Context(), positionID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"success": true, "position_id": positionID, "liquidation_fee": fee.FloatString(8)})
 }
 
 // maxPerpLeverage is the absolute leverage ceiling for engine-priced perpetual

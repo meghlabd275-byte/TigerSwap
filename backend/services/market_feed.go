@@ -129,3 +129,71 @@ func publishMarketSnapshot(ctx context.Context, agg *PriceAggregator) {
 		Broadcast(payload)
 	}
 }
+
+// DefaultPriceSampleInterval is how often an observed price is appended to the
+// symbol's history. It is coarser than the feed cadence: history is stored for
+// 90 days, so sampling every tick would grow the store without adding signal.
+const DefaultPriceSampleInterval = time.Minute
+
+// StartPriceSampler records an observed price for every tracked symbol on an
+// interval, which is what the price-history endpoint reads back. Without it
+// GetHistoricalPrices has no writer and always returns an empty series.
+func StartPriceSampler(ctx context.Context, agg *PriceAggregator, interval time.Duration) {
+	if agg == nil {
+		log.Println("price sampler not started: price aggregator is nil")
+		return
+	}
+	if interval <= 0 {
+		interval = DefaultPriceSampleInterval
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				samplePrices(ctx, agg)
+			}
+		}
+	}()
+}
+
+// priceSamplerSource is the subset of PriceAggregator the price sampler uses.
+// It exists so the sampling logic can be exercised with an in-memory source,
+// the same way the margin engine takes a priceSource.
+type priceSamplerSource interface {
+	GetMultiChainPrices(ctx context.Context, symbols []string) (map[string]*PriceData, error)
+	RecordPriceSample(ctx context.Context, symbol string, price, volume float64) error
+}
+
+// samplePrices appends one observation per symbol that returned a usable price.
+// A store that rejects every write is reported once rather than once per symbol.
+func samplePrices(ctx context.Context, agg priceSamplerSource) {
+	prices, err := agg.GetMultiChainPrices(ctx, TrackedPriceSymbols)
+	if err != nil {
+		log.Printf("price sampler: price read failed: %v", err)
+		return
+	}
+
+	var recorded int
+	var lastErr error
+	for _, symbol := range TrackedPriceSymbols {
+		pd, ok := prices[symbol]
+		if !ok || pd == nil || pd.USD <= 0 {
+			continue
+		}
+		if err := agg.RecordPriceSample(ctx, pd.Symbol, pd.USD, pd.USDVolume24h); err != nil {
+			lastErr = err
+			continue
+		}
+		recorded++
+	}
+
+	if recorded == 0 && lastErr != nil {
+		log.Printf("price sampler: no samples recorded: %v", lastErr)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
@@ -496,7 +497,6 @@ func (s *LaunchpadService) GetTiers() map[string]*TierConfig {
 
 func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 	var req struct {
-		Creator       string `json:"creator" binding:"required"`
 		Name          string `json:"name" binding:"required"`
 		Description   string `json:"description"`
 		TokenAddress  string `json:"token_address" binding:"required"`
@@ -521,16 +521,54 @@ func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 		return
 	}
 
-	startTime, _ := time.Parse(time.RFC3339, req.StartTime)
-	endTime, _ := time.Parse(time.RFC3339, req.EndTime)
+	creator, ok := s.callerWalletAddress(c)
+	if !ok {
+		return
+	}
 
-	project, err := s.CreateProject(c.Request.Context(), req.Creator, req.Name, req.Description, req.TokenAddress, req.TokenSymbol, req.TokenName, req.TotalSupply, req.TokenPrice, req.PaymentToken, req.MinPurchase, req.MaxPurchase, req.SoftCap, req.HardCap, startTime, endTime, req.WebsiteURL, req.WhitepaperURL, req.LogoURL)
+	startTime, err := time.Parse(time.RFC3339, req.StartTime)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "start_time must be RFC3339"})
+		return
+	}
+	endTime, err := time.Parse(time.RFC3339, req.EndTime)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "end_time must be RFC3339"})
+		return
+	}
+
+	project, err := s.CreateProject(c.Request.Context(), creator, req.Name, req.Description, req.TokenAddress, req.TokenSymbol, req.TokenName, req.TotalSupply, req.TokenPrice, req.PaymentToken, req.MinPurchase, req.MaxPurchase, req.SoftCap, req.HardCap, startTime, endTime, req.WebsiteURL, req.WhitepaperURL, req.LogoURL)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(200, project)
+}
+
+// callerWalletAddress resolves the wallet address bound to the authenticated
+// caller. Launchpad participation and claims act on the caller's own wallet, so
+// a client can never participate as, or claim to, another address.
+func (s *LaunchpadService) callerWalletAddress(c *gin.Context) (string, bool) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return "", false
+	}
+	if s.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "launchpad store not configured"})
+		return "", false
+	}
+
+	var user models.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "no wallet is bound to this account"})
+		return "", false
+	}
+	if !common.IsHexAddress(user.WalletAddress) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "account has no usable wallet address"})
+		return "", false
+	}
+	return strings.ToLower(user.WalletAddress), true
 }
 
 // UpdateProjectStatusHandler is the admin endpoint that moves a launchpad
@@ -591,9 +629,7 @@ func (s *LaunchpadService) GetProjectHandler(c *gin.Context) {
 
 func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 	var req struct {
-		UserAddress string `json:"user_address" binding:"required"`
-		ProjectID   string `json:"project_id" binding:"required"`
-		Amount      string `json:"amount" binding:"required"`
+		Amount string `json:"amount" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -601,7 +637,12 @@ func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 		return
 	}
 
-	allocation, err := s.Participate(c.Request.Context(), req.UserAddress, req.ProjectID, req.Amount)
+	userAddress, ok := s.callerWalletAddress(c)
+	if !ok {
+		return
+	}
+
+	allocation, err := s.Participate(c.Request.Context(), userAddress, c.Param("id"), req.Amount)
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
@@ -611,17 +652,12 @@ func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 }
 
 func (s *LaunchpadService) ClaimTokensHandler(c *gin.Context) {
-	var req struct {
-		UserAddress string `json:"user_address" binding:"required"`
-		ProjectID   string `json:"project_id" binding:"required"`
-	}
-
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+	userAddress, ok := s.callerWalletAddress(c)
+	if !ok {
 		return
 	}
 
-	amount, err := s.ClaimTokens(req.UserAddress, req.ProjectID)
+	amount, err := s.ClaimTokens(userAddress, c.Param("id"))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
