@@ -542,7 +542,10 @@ func (s *DynamicIntegrationService) GetStats() *IntegrationStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.stats
+	// Return a snapshot: the shared pointer would let a caller read fields
+	// while a concurrent write updates them.
+	stats := *s.stats
+	return &stats
 }
 
 func (s *DynamicIntegrationService) updateStats() {
