@@ -95,6 +95,33 @@ public final class TigerSwapClient {
     }
 
     /**
+     * Active liquidity-mining farms, each with its reward streams and live APR.
+     *
+     * {@code apr} is null when the node has no oracle price for the farm's
+     * tokens; it is never reported as zero.
+     */
+    public List<Farm> getFarms() {
+        Map<String, Object> root = Json.asObject(get("/farms", null), "response");
+        List<Object> items = Json.asArray(Json.field(root, "farms"), "farms");
+        List<Farm> farms = new ArrayList<>(items.size());
+        for (Object item : items) {
+            farms.add(Farm.fromJson(Json.asObject(item, "farm")));
+        }
+        return farms;
+    }
+
+    /** Airdrop campaigns currently open for claims. */
+    public List<AirdropCampaign> getAirdrops() {
+        Map<String, Object> root = Json.asObject(get("/airdrops", null), "response");
+        List<Object> items = Json.asArray(Json.field(root, "campaigns"), "campaigns");
+        List<AirdropCampaign> campaigns = new ArrayList<>(items.size());
+        for (Object item : items) {
+            campaigns.add(AirdropCampaign.fromJson(Json.asObject(item, "campaign")));
+        }
+        return campaigns;
+    }
+
+    /**
      * Quote a swap.
      *
      * @param slippageBps allowed slippage in basis points, 50 for 0.5%
@@ -225,6 +252,145 @@ public final class TigerSwapClient {
     // ------------------------------------------------------------------
     // types
     // ------------------------------------------------------------------
+
+    /** A liquidity-mining farm with its reward streams and live APR. */
+    public static final class Farm {
+        public final String id;
+        public final String key;
+        public final String name;
+        public final String farmType;
+        public final long chainId;
+        public final String stakingTokenAddress;
+        public final String stakingTokenSymbol;
+        public final int stakingTokenDecimals;
+        public final String totalStaked;
+        public final String status;
+        public final List<FarmReward> rewards;
+        public final Double apr;
+
+        private Farm(String id, String key, String name, String farmType, long chainId,
+                     String stakingTokenAddress, String stakingTokenSymbol, int stakingTokenDecimals,
+                     String totalStaked, String status, List<FarmReward> rewards, Double apr) {
+            this.id = id;
+            this.key = key;
+            this.name = name;
+            this.farmType = farmType;
+            this.chainId = chainId;
+            this.stakingTokenAddress = stakingTokenAddress;
+            this.stakingTokenSymbol = stakingTokenSymbol;
+            this.stakingTokenDecimals = stakingTokenDecimals;
+            this.totalStaked = totalStaked;
+            this.status = status;
+            this.rewards = rewards;
+            this.apr = apr;
+        }
+
+        static Farm fromJson(Map<String, Object> object) {
+            Map<String, Object> inner = Json.asObject(Json.field(object, "farm"), "farm");
+            List<Object> rewardItems = Json.asArray(Json.field(object, "rewards"), "rewards");
+            List<FarmReward> rewards = new ArrayList<>(rewardItems.size());
+            for (Object item : rewardItems) {
+                rewards.add(FarmReward.fromJson(Json.asObject(item, "reward")));
+            }
+            Object apr = Json.field(object, "apr");
+            Double aprValue = null;
+            if (apr instanceof Number) {
+                aprValue = ((Number) apr).doubleValue();
+            } else if (apr != null) {
+                throw new Json.JsonException("field 'apr' is neither a number nor null");
+            }
+            return new Farm(
+                    Json.requiredString(inner, "id"),
+                    Json.requiredString(inner, "key"),
+                    Json.requiredString(inner, "name"),
+                    Json.requiredString(inner, "farm_type"),
+                    Json.requiredLong(inner, "chain_id"),
+                    Json.requiredString(inner, "staking_token_address"),
+                    Json.requiredString(inner, "staking_token_symbol"),
+                    Json.requiredInt(inner, "staking_token_decimals"),
+                    Json.requiredString(inner, "total_staked"),
+                    Json.requiredString(inner, "status"),
+                    rewards,
+                    aprValue);
+        }
+    }
+
+    /** One reward token stream of a farm. */
+    public static final class FarmReward {
+        public final String id;
+        public final String farmId;
+        public final String tokenAddress;
+        public final String tokenSymbol;
+        public final int tokenDecimals;
+        public final String ratePerSecond;
+
+        private FarmReward(String id, String farmId, String tokenAddress, String tokenSymbol,
+                           int tokenDecimals, String ratePerSecond) {
+            this.id = id;
+            this.farmId = farmId;
+            this.tokenAddress = tokenAddress;
+            this.tokenSymbol = tokenSymbol;
+            this.tokenDecimals = tokenDecimals;
+            this.ratePerSecond = ratePerSecond;
+        }
+
+        static FarmReward fromJson(Map<String, Object> object) {
+            return new FarmReward(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "farm_id"),
+                    Json.requiredString(object, "token_address"),
+                    Json.requiredString(object, "token_symbol"),
+                    Json.requiredInt(object, "token_decimals"),
+                    Json.requiredString(object, "rate_per_second"));
+        }
+    }
+
+    /** An admin-managed airdrop campaign. */
+    public static final class AirdropCampaign {
+        public final String id;
+        public final String key;
+        public final String name;
+        public final long chainId;
+        public final String tokenAddress;
+        public final String tokenSymbol;
+        public final int tokenDecimals;
+        public final String totalAllocated;
+        public final String funded;
+        public final String totalClaimed;
+        public final String status;
+
+        private AirdropCampaign(String id, String key, String name, long chainId,
+                                String tokenAddress, String tokenSymbol, int tokenDecimals,
+                                String totalAllocated, String funded, String totalClaimed,
+                                String status) {
+            this.id = id;
+            this.key = key;
+            this.name = name;
+            this.chainId = chainId;
+            this.tokenAddress = tokenAddress;
+            this.tokenSymbol = tokenSymbol;
+            this.tokenDecimals = tokenDecimals;
+            this.totalAllocated = totalAllocated;
+            this.funded = funded;
+            this.totalClaimed = totalClaimed;
+            this.status = status;
+        }
+
+        static AirdropCampaign fromJson(Map<String, Object> object) {
+            return new AirdropCampaign(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "key"),
+                    Json.requiredString(object, "name"),
+                    Json.requiredLong(object, "chain_id"),
+                    Json.requiredString(object, "token_address"),
+                    Json.requiredString(object, "token_symbol"),
+                    Json.requiredInt(object, "token_decimals"),
+                    Json.requiredString(object, "total_allocated"),
+                    Json.requiredString(object, "funded"),
+                    Json.requiredString(object, "total_claimed"),
+                    Json.requiredString(object, "status"));
+        }
+    }
 
     /** Raised when the node returns an error or an unusable body. */
     public static final class ApiException extends RuntimeException {

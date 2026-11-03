@@ -45,6 +45,9 @@ public final class TigerSwapClientTest {
         noTokenMeansNoAuthorizationHeader();
         constructorValidatesItsInput();
         quoteValidatesItsInput();
+        farmsAreDecodedWithTheirRewards();
+        farmWithNoPriceHasNullApr();
+        airdropsAreDecoded();
 
         System.out.println();
         System.out.println("checks run: " + checks);
@@ -285,6 +288,64 @@ public final class TigerSwapClientTest {
                     throwsIllegalArgument(() -> client.getQuote("0xa", "0xb", "1", 1, 10_001)));
             check("blank recipient rejected",
                     throwsIllegalArgument(() -> client.buildSwap("0xa", "0xb", "1", 1, "", 50)));
+        }
+    }
+
+    private static void farmsAreDecodedWithTheirRewards() throws Exception {
+        String body = "{\"farms\":[{\"farm\":{\"id\":\"f1\",\"key\":\"tgr-rusd\",\"name\":\"TGR/RUSD LP\","
+                + "\"farm_type\":\"lp\",\"chain_id\":1,\"staking_token_address\":\"0x1\","
+                + "\"staking_token_symbol\":\"LP\",\"staking_token_decimals\":18,"
+                + "\"total_staked\":\"1000\",\"start_time\":\"2026-11-01T00:00:00Z\","
+                + "\"end_time\":\"2026-12-01T00:00:00Z\",\"status\":\"active\"},"
+                + "\"rewards\":[{\"id\":\"r1\",\"farm_id\":\"f1\",\"token_address\":\"0x2\","
+                + "\"token_symbol\":\"TGR\",\"token_decimals\":18,\"rate_per_second\":\"10\"}],"
+                + "\"apr\":12.5}],\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.Farm> farms = new TigerSwapClient(server.baseURL(), "").getFarms();
+
+            check("one farm", farms.size() == 1);
+            check("farm key", "tgr-rusd".equals(farms.get(0).key));
+            check("farm staked", "1000".equals(farms.get(0).totalStaked));
+            check("farm reward stream", farms.get(0).rewards.size() == 1);
+            check("reward symbol", "TGR".equals(farms.get(0).rewards.get(0).tokenSymbol));
+            check("farm apr", farms.get(0).apr != null && farms.get(0).apr == 12.5);
+            check("farms path", "/api/v1/farms".equals(server.lastPath()));
+        }
+    }
+
+    private static void farmWithNoPriceHasNullApr() throws Exception {
+        String body = "{\"farms\":[{\"farm\":{\"id\":\"f2\",\"key\":\"paused\",\"name\":\"Paused\","
+                + "\"farm_type\":\"single\",\"chain_id\":1,\"staking_token_address\":\"0x3\","
+                + "\"staking_token_symbol\":\"TGR\",\"staking_token_decimals\":18,"
+                + "\"total_staked\":\"0\",\"start_time\":\"2026-11-01T00:00:00Z\","
+                + "\"end_time\":\"2026-12-01T00:00:00Z\",\"status\":\"paused\"},"
+                + "\"rewards\":[],\"apr\":null}],\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.Farm> farms = new TigerSwapClient(server.baseURL(), "").getFarms();
+            // A null APR means no oracle price; it must stay null, never become 0.
+            check("null apr stays null", farms.get(0).apr == null);
+            check("empty rewards", farms.get(0).rewards.isEmpty());
+        }
+    }
+
+    private static void airdropsAreDecoded() throws Exception {
+        String body = "{\"campaigns\":[{\"id\":\"c1\",\"key\":\"tgr-genesis\",\"name\":\"TGR Genesis\","
+                + "\"chain_id\":1,\"token_address\":\"0x3\",\"token_symbol\":\"TGR\","
+                + "\"token_decimals\":18,\"total_allocated\":\"750\",\"funded\":\"750\","
+                + "\"total_claimed\":\"500\",\"start_time\":\"2026-11-01T00:00:00Z\","
+                + "\"end_time\":\"2026-12-01T00:00:00Z\",\"status\":\"active\"}],\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.AirdropCampaign> campaigns =
+                    new TigerSwapClient(server.baseURL(), "").getAirdrops();
+
+            check("one campaign", campaigns.size() == 1);
+            check("campaign key", "tgr-genesis".equals(campaigns.get(0).key));
+            check("campaign funded", "750".equals(campaigns.get(0).funded));
+            check("campaign claimed", "500".equals(campaigns.get(0).totalClaimed));
+            check("airdrops path", "/api/v1/airdrops".equals(server.lastPath()));
         }
     }
 
