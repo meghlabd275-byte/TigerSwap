@@ -41,6 +41,31 @@ func TestRouterRegistersBotsOtcTwammRoutes(t *testing.T) {
 		"GET /api/v1/twamm/orders",
 		"POST /api/v1/twamm/orders",
 		"DELETE /api/v1/twamm/orders/:id",
+
+		"GET /api/v1/farms",
+		"GET /api/v1/farms/all",
+		"GET /api/v1/farms/stakes",
+		"GET /api/v1/farms/:id",
+		"POST /api/v1/farms/:id/stake",
+		"POST /api/v1/farms/:id/unstake",
+		"POST /api/v1/farms/:id/claim",
+		"POST /api/v1/farms/:id/fund",
+		"GET /api/v1/admin/farms",
+		"POST /api/v1/admin/farms",
+		"PUT /api/v1/admin/farms/:id",
+		"DELETE /api/v1/admin/farms/:id",
+
+		"GET /api/v1/airdrops",
+		"GET /api/v1/airdrops/all",
+		"GET /api/v1/airdrops/allocations",
+		"POST /api/v1/airdrops/:id/claim",
+		"GET /api/v1/admin/airdrops",
+		"POST /api/v1/admin/airdrops",
+		"PUT /api/v1/admin/airdrops/:id",
+		"DELETE /api/v1/admin/airdrops/:id",
+		"POST /api/v1/admin/airdrops/:id/allocations",
+		"GET /api/v1/admin/airdrops/:id/allocations",
+		"POST /api/v1/admin/airdrops/:id/fund",
 	}
 
 	for _, route := range want {
@@ -67,6 +92,11 @@ func TestRouterProtectedRoutesRejectAnonymousCallers(t *testing.T) {
 		{"DELETE", "/api/v1/otc/orders/1"},
 		{"GET", "/api/v1/twamm/orders"},
 		{"POST", "/api/v1/twamm/orders"},
+		{"GET", "/api/v1/farms/stakes"},
+		{"POST", "/api/v1/farms/1/stake"},
+		{"POST", "/api/v1/farms/1/claim"},
+		{"GET", "/api/v1/airdrops/allocations"},
+		{"POST", "/api/v1/airdrops/1/claim"},
 	}
 
 	for _, route := range protected {

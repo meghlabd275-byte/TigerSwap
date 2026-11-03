@@ -22,6 +22,7 @@ import {
   BarChart3,
   Lock,
   Unlock,
+  Sprout,
 } from 'lucide-react';
 import { getCurrentUser, login, logout, restoreSession, subscribe } from '@/lib/auth';
 import { endpoints } from '@/lib/endpoints';
@@ -36,8 +37,9 @@ import {
   useLaunchpadProjects,
 } from '@/hooks/useApi';
 import { AdminListingsPanel } from '@/components/AdminListingsPanel';
+import { AdminFarmingPanel } from '@/components/AdminFarmingPanel';
 
-type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'fees' | 'settings' | 'activity';
+type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'farming' | 'fees' | 'settings' | 'activity';
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -460,6 +462,7 @@ export default function AdminPage() {
               { id: 'tokens', label: 'Tokens', icon: Coins },
               { id: 'listings', label: 'Listings', icon: BarChart3 },
               { id: 'launchpad', label: 'Launchpad', icon: Rocket },
+              { id: 'farming', label: 'Farms & Airdrops', icon: Sprout },
               { id: 'fees', label: 'Fees', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
               { id: 'activity', label: 'Activity', icon: Activity },
@@ -853,6 +856,13 @@ export default function AdminPage() {
                   ))
                 )}
               </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'farming' && (
+            <motion.div key="farming" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <h2 className="text-2xl font-bold text-white mb-6">Farms & Airdrops</h2>
+              <AdminFarmingPanel />
             </motion.div>
           )}
 

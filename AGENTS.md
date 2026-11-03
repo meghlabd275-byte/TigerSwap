@@ -338,3 +338,39 @@ and run each real response through its validator:
 ```
 cd frontend && npm test            # compiles to .test-build and runs the suite
 ```
+
+## Farming, staking and airdrops
+
+`services/farm_service.go` and `services/airdrop_service.go` own the vertical.
+Both escrow real ledger balance, so a farm reward or an airdrop claim can only
+pay out what an operator funded.
+
+- `FarmService` is a MasterChef accumulator: `FarmReward.AccRewardPerShare` is
+  scaled by `accScale` (1e18) and only advances while the farm has stake. Every
+  monetary value is an exact integer string in the token's smallest unit.
+  `rewardStep` is the pure projection used by `GetStakes` to display pending
+  reward without mutating the stream; `advanceReward` persists it.
+- Emission is capped by the stream's remaining budget (`TotalReward -
+  TotalDistributed`) and stops at the farm's `end_time`. A farm with no oracle
+  price reports a null APR rather than an invented one.
+- The veTGR boost comes from `GovernanceService.BoostBps`, the library form of
+  the `GetBoost` handler. With no boost source wired the staker gets the 1x
+  base; a boost is never fabricated.
+- A stake, an unstake, a claim and a reward funding each run as one database
+  transaction that includes the ledger mutation (`ledger.debitWithin` /
+  `ledger.creditWithin`). The farm row is re-read under `FOR UPDATE` inside the
+  transaction and its status and window are re-checked, so a concurrent admin
+  pause cannot be raced into accepting a stake or paying a claim. Never credit
+  after the transaction commits: that is what the within-transaction helpers
+  exist to avoid.
+- Farm and airdrop listings are created `paused`; an operator funds the reward
+  stream or campaign escrow and then activates it. `DeleteFarm` refuses while
+  anything is staked; a campaign that has paid out is closed rather than
+  deleted so its audit trail survives.
+- Airdrop campaigns keep explicit per-user allocations in `airdrop_allocations`.
+  A replacement allocation set is refused once any allocation has been claimed,
+  and a claim is refused unless `Funded` still covers the remaining allocation.
+- Routes: public `GET /farms`, `/farms/all`, `/farms/:id`, `/airdrops`,
+  `/airdrops/all`; protected `POST /farms/:id/{stake,unstake,claim,fund}`,
+  `GET /farms/stakes`, `POST /airdrops/:id/claim`, `GET /airdrops/allocations`;
+  admin CRUD under `/admin/farms` and `/admin/airdrops`.

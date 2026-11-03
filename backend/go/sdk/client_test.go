@@ -147,3 +147,156 @@ func TestGetMarketStatsDecodesCamelCase(t *testing.T) {
 		t.Errorf("stats counts = %+v", stats)
 	}
 }
+
+// The farm and airdrop methods wrap the API's `{ "farms": [...] }` and
+// `{ "stakes": [...] }` envelopes. A reader that decoded the body as a bare
+// array would silently return nothing, so these tests pin the envelope keys and
+// the paths.
+
+func TestGetFarmsDecodesEnvelope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/farms" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"farms":[{"farm":{"id":"f1","key":"tgr-rusd","name":"TGR/RUSD LP","farm_type":"lp","chain_id":1,"staking_token_address":"0x1","staking_token_symbol":"LP","staking_token_decimals":18,"total_staked":"1000","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"active"},"rewards":[{"id":"r1","farm_id":"f1","token_address":"0x2","token_symbol":"TGR","token_decimals":18,"rate_per_second":"10"}],"apr":12.5},{"farm":{"id":"f2","key":"paused","name":"Paused","farm_type":"single","chain_id":1,"staking_token_address":"0x3","staking_token_symbol":"TGR","staking_token_decimals":18,"total_staked":"0","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"paused"},"rewards":[],"apr":null}],"success":true}`))
+	}))
+	defer server.Close()
+
+	farms, err := NewClient(server.URL, "").GetFarms(context.Background())
+	if err != nil {
+		t.Fatalf("GetFarms: %v", err)
+	}
+	if len(farms) != 2 {
+		t.Fatalf("expected 2 farms, got %d", len(farms))
+	}
+	if farms[0].Farm.Key != "tgr-rusd" || farms[0].Farm.TotalStaked != "1000" {
+		t.Errorf("farm[0] = %+v", farms[0])
+	}
+	if len(farms[0].Rewards) != 1 || farms[0].Rewards[0].TokenSymbol != "TGR" {
+		t.Errorf("farm[0] rewards = %+v", farms[0].Rewards)
+	}
+	if farms[0].APR == nil || *farms[0].APR != 12.5 {
+		t.Errorf("farm[0] APR should be 12.5, got %v", farms[0].APR)
+	}
+	// A null APR means no price source is wired; it must stay nil, not become 0.
+	if farms[1].APR != nil {
+		t.Errorf("farm[1] APR should be nil for null, got %v", *farms[1].APR)
+	}
+}
+
+func TestGetFarmStakesDecodesEnvelope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/farms/stakes" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"stakes":[{"stake_id":"s1","farm_id":"f1","farm_key":"tgr-rusd","farm_name":"TGR/RUSD LP","status":"active","chain_id":1,"staking_token_address":"0x1","staking_token_symbol":"LP","staked":"500","end_time":"2026-12-01T00:00:00Z","pending_rewards":[{"token_address":"0x2","symbol":"TGR","decimals":18,"pending":"25"}]}],"success":true}`))
+	}))
+	defer server.Close()
+
+	stakes, err := NewClient(server.URL, "key").GetFarmStakes(context.Background())
+	if err != nil {
+		t.Fatalf("GetFarmStakes: %v", err)
+	}
+	if len(stakes) != 1 {
+		t.Fatalf("expected 1 stake, got %d", len(stakes))
+	}
+	if stakes[0].Staked != "500" || len(stakes[0].PendingRewards) != 1 {
+		t.Errorf("stake = %+v", stakes[0])
+	}
+	if stakes[0].PendingRewards[0].Pending != "25" {
+		t.Errorf("pending = %+v", stakes[0].PendingRewards[0])
+	}
+}
+
+func TestFarmActionsPostToTheRightPath(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if body["amount"] == "" {
+			t.Errorf("amount missing from request: %v", body)
+		}
+		if r.Header.Get("Authorization") == "" {
+			t.Errorf("stake/unstake must be authenticated")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key")
+	if err := client.StakeFarm(context.Background(), "f1", "100"); err != nil {
+		t.Fatalf("StakeFarm: %v", err)
+	}
+	if err := client.UnstakeFarm(context.Background(), "f1", "50"); err != nil {
+		t.Fatalf("UnstakeFarm: %v", err)
+	}
+	want := []string{"POST /api/v1/farms/f1/stake", "POST /api/v1/farms/f1/unstake"}
+	if len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestGetAirdropsAndClaim(t *testing.T) {
+	var claimPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/airdrops":
+			_, _ = w.Write([]byte(`{"campaigns":[{"id":"c1","key":"tgr-genesis","name":"TGR Genesis","chain_id":1,"token_address":"0x3","token_symbol":"TGR","token_decimals":18,"total_allocated":"750","funded":"750","total_claimed":"500","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"active"}],"success":true}`))
+		case r.URL.Path == "/api/v1/airdrops/allocations":
+			_, _ = w.Write([]byte(`{"allocations":[{"allocation_id":"a1","campaign_id":"c1","campaign_key":"tgr-genesis","campaign_name":"TGR Genesis","token_address":"0x3","symbol":"TGR","amount":"500","claimed":false,"status":"active","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z"}],"success":true}`))
+		case r.URL.Path == "/api/v1/airdrops/c1/claim":
+			claimPath = r.URL.Path
+			_, _ = w.Write([]byte(`{"success":true,"campaign_id":"c1","token_address":"0x3","symbol":"TGR","amount":"500"}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key")
+	campaigns, err := client.GetAirdrops(context.Background())
+	if err != nil {
+		t.Fatalf("GetAirdrops: %v", err)
+	}
+	if len(campaigns) != 1 || campaigns[0].Funded != "750" {
+		t.Fatalf("campaigns = %+v", campaigns)
+	}
+
+	allocations, err := client.GetMyAirdrops(context.Background())
+	if err != nil {
+		t.Fatalf("GetMyAirdrops: %v", err)
+	}
+	if len(allocations) != 1 || allocations[0].Claimed {
+		t.Fatalf("allocations = %+v", allocations)
+	}
+
+	if err := client.ClaimAirdrop(context.Background(), "c1"); err != nil {
+		t.Fatalf("ClaimAirdrop: %v", err)
+	}
+	if claimPath != "/api/v1/airdrops/c1/claim" {
+		t.Fatalf("claim path = %q", claimPath)
+	}
+}
+
+func TestFarmRequestsFailOnNonOKStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"farm is not active"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "key")
+	if err := client.StakeFarm(context.Background(), "f1", "100"); err == nil {
+		t.Fatal("StakeFarm should report a non-200 status instead of reporting success")
+	}
+	if _, err := client.GetFarms(context.Background()); err == nil {
+		t.Fatal("GetFarms should report a non-200 status instead of returning an empty slice")
+	}
+}

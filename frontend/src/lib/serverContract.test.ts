@@ -28,6 +28,10 @@ import {
   tokenListValidator,
   tradeListValidator,
   twammOrderListValidator,
+  airdropAllocationViewListValidator,
+  airdropCampaignListValidator,
+  farmStakeViewListValidator,
+  farmViewListValidator,
 } from "./types";
 
 // Every payload below was captured verbatim from a running TigerSwap API
@@ -284,4 +288,59 @@ test("live /bridge/quote payload satisfies bridgeQuoteValidator", () => {
   assert.equal(quote.amount_in, "1000000");
   assert.equal(quote.amount_out, "999000");
   assert.equal(quote.estimated_time, "15 minutes");
+});
+
+// Farm and airdrop payloads captured from the running API, in the same way as
+// the fixtures above. The farm view carries its reward streams and a nullable
+// APR, and the stake view carries a nullable pending-reward list.
+
+const SERVER_FARMS = `{"farms":[{"farm":{"id":"a84f971d-57f4-469f-a4d1-9c59bfd8561f","key":"tgr-rusd","name":"TGR/RUSD LP Farm","farm_type":"lp","chain_id":1,"staking_token_address":"0x1111111111111111111111111111111111111111","staking_token_symbol":"TGR-RUSD-LP","staking_token_decimals":18,"total_staked":"1000000000000000000000","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"active","created_by":"","created_at":"2026-11-03T17:54:15.233625133Z","updated_at":"2026-11-03T17:54:15.233625133Z"},"rewards":[{"id":"b269f781-35ce-4cfc-a00d-e6db27bac226","farm_id":"a84f971d-57f4-469f-a4d1-9c59bfd8561f","token_address":"0x2222222222222222222222222222222222222222","token_symbol":"TGR","token_decimals":18,"rate_per_second":"1000000000000","acc_reward_per_share":"0","last_update_time":"2026-11-01T00:00:00Z","total_reward":"0","total_distributed":"0","created_at":"2026-11-03T17:54:15.233796723Z","updated_at":"2026-11-03T17:54:15.233796723Z"}],"apr":12.5}],"success":true}`;
+
+const SERVER_FARMS_NO_PRICE = `{"farms":[{"farm":{"id":"a84f971d-57f4-469f-a4d1-9c59bfd8561f","key":"tgr-rusd","name":"TGR/RUSD LP Farm","farm_type":"lp","chain_id":1,"staking_token_address":"0x1111111111111111111111111111111111111111","staking_token_symbol":"TGR-RUSD-LP","staking_token_decimals":18,"total_staked":"0","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"paused"},"rewards":[],"apr":null}],"success":true}`;
+
+const SERVER_FARM_STAKES = `{"stakes":[{"chain_id":1,"checked_at":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","farm_id":"a84f971d-57f4-469f-a4d1-9c59bfd8561f","farm_key":"tgr-rusd","farm_name":"TGR/RUSD LP Farm","farm_type":"lp","pending_rewards":[{"decimals":18,"pending":"2500000000000","symbol":"TGR","token_address":"0x2222222222222222222222222222222222222222"}],"stake_id":"11111111-1111-1111-1111-111111111111","staked":"500000000000000000000","staking_token_address":"0x1111111111111111111111111111111111111111","staking_token_symbol":"TGR-RUSD-LP","status":"active"}],"success":true}`;
+
+const SERVER_AIRDROPS = `{"campaigns":[{"id":"3e6aac81-848b-4585-9e85-0f8ab1634419","key":"tgr-genesis","name":"TGR Genesis","chain_id":1,"token_address":"0x3333333333333333333333333333333333333333","token_symbol":"TGR","token_decimals":18,"total_allocated":"750000000000000000000","funded":"750000000000000000000","total_claimed":"500000000000000000000","start_time":"2026-11-01T00:00:00Z","end_time":"2026-12-01T00:00:00Z","status":"active","created_by":"","created_at":"2026-11-03T17:54:15.234018093Z","updated_at":"2026-11-03T17:54:15.234018093Z"}],"success":true}`;
+
+const SERVER_AIRDROP_ALLOCATIONS = `{"allocations":[{"allocation_id":"74796fa2-02c0-4cf6-9958-27bfe5d4c0f8","amount":"500000000000000000000","campaign_id":"3e6aac81-848b-4585-9e85-0f8ab1634419","campaign_key":"tgr-genesis","campaign_name":"TGR Genesis","claimed":true,"end_time":"2026-12-01T00:00:00Z","start_time":"2026-11-01T00:00:00Z","status":"active","symbol":"TGR","token_address":"0x3333333333333333333333333333333333333333"}],"success":true}`;
+
+test("live /farms payload satisfies farmViewListValidator", () => {
+  const farms = parse(farmViewListValidator, SERVER_FARMS, "farms");
+  assert.equal(farms.length, 1);
+  assert.equal(farms[0].farm.key, "tgr-rusd");
+  assert.equal(farms[0].farm.total_staked, "1000000000000000000000");
+  assert.equal(farms[0].rewards.length, 1);
+  assert.equal(farms[0].rewards[0].token_symbol, "TGR");
+  assert.equal(farms[0].apr, 12.5);
+});
+
+test("a farm with no oracle price has a null APR rather than a fabricated one", () => {
+  const farms = parse(farmViewListValidator, SERVER_FARMS_NO_PRICE, "farms");
+  assert.equal(farms.length, 1);
+  assert.equal(farms[0].apr, null);
+  assert.deepEqual(farms[0].rewards, []);
+});
+
+test("live /farms/stakes payload satisfies farmStakeViewListValidator", () => {
+  const stakes = parse(farmStakeViewListValidator, SERVER_FARM_STAKES, "farmStakes");
+  assert.equal(stakes.length, 1);
+  assert.equal(stakes[0].staked, "500000000000000000000");
+  assert.equal(stakes[0].pending_rewards.length, 1);
+  assert.equal(stakes[0].pending_rewards[0].symbol, "TGR");
+  assert.equal(stakes[0].pending_rewards[0].pending, "2500000000000");
+});
+
+test("live /airdrops payload satisfies airdropCampaignListValidator", () => {
+  const campaigns = parse(airdropCampaignListValidator, SERVER_AIRDROPS, "airdrops");
+  assert.equal(campaigns.length, 1);
+  assert.equal(campaigns[0].key, "tgr-genesis");
+  assert.equal(campaigns[0].funded, "750000000000000000000");
+  assert.equal(campaigns[0].status, "active");
+});
+
+test("live /airdrops/allocations payload satisfies airdropAllocationViewListValidator", () => {
+  const allocations = parse(airdropAllocationViewListValidator, SERVER_AIRDROP_ALLOCATIONS, "allocations");
+  assert.equal(allocations.length, 1);
+  assert.equal(allocations[0].amount, "500000000000000000000");
+  assert.equal(allocations[0].claimed, true);
 });

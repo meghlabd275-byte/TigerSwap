@@ -58,16 +58,23 @@ func (s *LedgerService) creditWithin(tx *gorm.DB, userID string, chainID int64, 
 // Debit subtracts an amount from a user's available balance, failing if the
 // balance is insufficient.
 func (s *LedgerService) Debit(userID string, chainID int64, tokenAddress string, amount *big.Int) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return s.debitWithin(tx, userID, chainID, tokenAddress, amount)
+	})
+}
+
+// debitWithin debits a balance using an existing transaction, so a caller can
+// commit the debit together with its own bookkeeping record. Either both land or
+// neither does, which removes the need for a compensating credit.
+func (s *LedgerService) debitWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress string, amount *big.Int) error {
 	if amount == nil || amount.Sign() <= 0 {
 		return fmt.Errorf("debit amount must be positive")
 	}
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		return mutateWithin(tx, userID, chainID, tokenAddress, "", 0, func(available *big.Int) (*big.Int, error) {
-			if available.Cmp(amount) < 0 {
-				return nil, ErrInsufficientBalance
-			}
-			return new(big.Int).Sub(available, amount), nil
-		})
+	return mutateWithin(tx, userID, chainID, tokenAddress, "", 0, func(available *big.Int) (*big.Int, error) {
+		if available.Cmp(amount) < 0 {
+			return nil, ErrInsufficientBalance
+		}
+		return new(big.Int).Sub(available, amount), nil
 	})
 }
 

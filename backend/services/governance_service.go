@@ -565,6 +565,23 @@ func (s *GovernanceService) ClaimBribe(c *gin.Context) {
 	})
 }
 
+// BoostBps returns the veTGR boost in basis points for a user staking
+// `staked` units. It is the library form of the GetBoost handler, so the farm
+// engine can apply the same boost without an HTTP round trip.
+func (s *GovernanceService) BoostBps(userID string, staked *big.Int) (*big.Int, error) {
+	if staked == nil || staked.Sign() <= 0 {
+		return big.NewInt(minBoostBps), nil
+	}
+	power := s.totalVotingPower(userID, time.Now())
+	bonus := new(big.Int).Mul(big.NewInt(15000), power)
+	bonus.Div(bonus, staked)
+	total := new(big.Int).Add(big.NewInt(minBoostBps), bonus)
+	if total.Cmp(big.NewInt(maxBoostBps)) > 0 {
+		return big.NewInt(maxBoostBps), nil
+	}
+	return total, nil
+}
+
 // GetBoost returns the caller's farm boost in basis points for a staked amount.
 func (s *GovernanceService) GetBoost(c *gin.Context) {
 	userID, ok := authenticatedUserID(c)

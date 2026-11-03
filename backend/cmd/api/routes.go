@@ -37,6 +37,8 @@ type apiDeps struct {
 	twammService       *services.TwammService
 	botsService        *services.BotsService
 	dynamicIntegration *services.DynamicIntegrationService
+	farmService        *services.FarmService
+	airdropService     *services.AirdropService
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -226,6 +228,19 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.DELETE("/bots/:id", deps.botsService.DeleteBot)
 			protected.GET("/bots/:id/orders", deps.botsService.ListBotOrders)
 			protected.GET("/bots/:id/performance", deps.botsService.BotPerformanceSummary)
+
+			// Farms: stake a token and earn one or more reward streams. A stake
+			// escrows a real ledger balance and rewards are funded before they can
+			// be claimed.
+			protected.POST("/farms/:id/stake", deps.farmService.Stake)
+			protected.POST("/farms/:id/unstake", deps.farmService.Unstake)
+			protected.POST("/farms/:id/claim", deps.farmService.Claim)
+			protected.POST("/farms/:id/fund", deps.farmService.FundFarmReward)
+			protected.GET("/farms/stakes", deps.farmService.GetStakes)
+
+			// Airdrops: an admin allocates and funds, the user claims.
+			protected.POST("/airdrops/:id/claim", deps.airdropService.ClaimAirdrop)
+			protected.GET("/airdrops/allocations", deps.airdropService.GetMyAllocations)
 		}
 
 		// Admin routes (protected by admin middleware)
@@ -329,6 +344,23 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			admin.GET("/fees/revenue", deps.feeCollector.GetRevenueReportHandler)
 			admin.GET("/fees/revenue/total", deps.feeCollector.GetTotalRevenueHandler)
 			admin.GET("/fees/records", deps.feeCollector.GetFeeRecordsHandler)
+
+			// Farm administration: create, edit, close and fund farms.
+			admin.POST("/farms", deps.farmService.CreateFarm)
+			admin.GET("/farms", deps.farmService.GetFarms)
+			admin.GET("/farms/:id", deps.farmService.GetFarm)
+			admin.PUT("/farms/:id", deps.farmService.UpdateFarm)
+			admin.DELETE("/farms/:id", deps.farmService.DeleteFarm)
+			admin.POST("/farms/:id/fund", deps.farmService.FundFarmReward)
+
+			// Airdrop administration: campaigns, allocations and funding.
+			admin.POST("/airdrops", deps.airdropService.CreateCampaign)
+			admin.GET("/airdrops", deps.airdropService.GetCampaigns)
+			admin.PUT("/airdrops/:id", deps.airdropService.UpdateCampaign)
+			admin.DELETE("/airdrops/:id", deps.airdropService.DeleteCampaign)
+			admin.POST("/airdrops/:id/allocations", deps.airdropService.SetAllocations)
+			admin.GET("/airdrops/:id/allocations", deps.airdropService.GetCampaignAllocations)
+			admin.POST("/airdrops/:id/fund", deps.airdropService.FundCampaign)
 		}
 
 		// Price aggregation (public)
@@ -349,6 +381,14 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		public.GET("/launchpad/projects", deps.launchpadService.GetProjectsHandler)
 		public.GET("/launchpad/projects/:id", deps.launchpadService.GetProjectHandler)
 		public.GET("/launchpad/tiers", deps.launchpadService.GetTiersHandler)
+
+		// Farms and airdrops (public read): the live listings a user can stake
+		// in or claim from.
+		public.GET("/farms", deps.farmService.GetActiveFarms)
+		public.GET("/farms/all", deps.farmService.GetFarms)
+		public.GET("/farms/:id", deps.farmService.GetFarm)
+		public.GET("/airdrops", deps.airdropService.GetActiveCampaigns)
+		public.GET("/airdrops/all", deps.airdropService.GetCampaigns)
 
 		// TigerSwap router (public read, protected broadcast)
 		public.GET("/tigerswap/supported", deps.swapExecutor.GetSupportedDEXHandler)

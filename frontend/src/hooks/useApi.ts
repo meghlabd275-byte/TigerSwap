@@ -16,6 +16,9 @@ import { endpoints } from "@/lib/endpoints";
 import { isAdmin, isAuthenticated } from "@/lib/auth";
 import type {
   AdminAuditLog,
+  AirdropAllocationView,
+  AirdropCampaign,
+  AirdropClaimResult,
   AdminChain,
   AdminDashboard,
   AdminSettings,
@@ -26,6 +29,9 @@ import type {
   BotsSummary,
   BotStrategy,
   Chain,
+  FarmClaimResult,
+  FarmStakeView,
+  FarmView,
   FeeConfig,
   LaunchpadProject,
   MarketStats,
@@ -611,6 +617,100 @@ export function useCancelTwammOrder() {
     mutationFn: (id: string) => endpoints.cancelTwammOrder(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["twamm"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ farms */
+
+/** Active farms a user can stake in, with their live APR. */
+export function useFarms(): UseQueryResult<FarmView[], Error> {
+  return useQuery<FarmView[], Error>({
+    queryKey: ["farms", "active"],
+    queryFn: () => endpoints.getFarms(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's stakes and their pending rewards. */
+export function useFarmStakes(): UseQueryResult<FarmStakeView[], Error> {
+  return useQuery<FarmStakeView[], Error>({
+    queryKey: ["farms", "stakes"],
+    queryFn: () => endpoints.getFarmStakes(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Escrows staking tokens into a farm. */
+export function useStakeFarm() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; amount: string }) => endpoints.stakeFarm(params.id, params.amount),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["farms"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Returns staked tokens to the caller's balance. */
+export function useUnstakeFarm() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; amount: string }) => endpoints.unstakeFarm(params.id, params.amount),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["farms"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Settles accrued farm reward into the caller's balance. */
+export function useClaimFarmRewards() {
+  const queryClient = useQueryClient();
+  return useMutation<FarmClaimResult, Error, { id: string; tokenAddress?: string }>({
+    mutationFn: (params) => endpoints.claimFarmRewards(params.id, params.tokenAddress),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["farms"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/* --------------------------------------------------------------- airdrops */
+
+/** Airdrop campaigns currently open for claims. */
+export function useAirdrops(): UseQueryResult<AirdropCampaign[], Error> {
+  return useQuery<AirdropCampaign[], Error>({
+    queryKey: ["airdrops", "active"],
+    queryFn: () => endpoints.getAirdrops(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's airdrop entitlements. */
+export function useMyAirdrops(): UseQueryResult<AirdropAllocationView[], Error> {
+  return useQuery<AirdropAllocationView[], Error>({
+    queryKey: ["airdrops", "allocations"],
+    queryFn: () => endpoints.getMyAirdrops(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Claims the caller's allocation in a campaign. */
+export function useClaimAirdrop() {
+  const queryClient = useQueryClient();
+  return useMutation<AirdropClaimResult, Error, string>({
+    mutationFn: (id: string) => endpoints.claimAirdrop(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["airdrops"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
     },
   });
 }

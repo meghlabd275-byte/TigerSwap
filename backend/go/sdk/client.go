@@ -91,6 +91,261 @@ type Transaction struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// Farm is a liquidity-mining farm with its reward streams.
+type Farm struct {
+	ID                   string `json:"id"`
+	Key                  string `json:"key"`
+	Name                 string `json:"name"`
+	FarmType             string `json:"farm_type"`
+	ChainID              int64  `json:"chain_id"`
+	StakingTokenAddress  string `json:"staking_token_address"`
+	StakingTokenSymbol   string `json:"staking_token_symbol"`
+	StakingTokenDecimals int    `json:"staking_token_decimals"`
+	TotalStaked          string `json:"total_staked"`
+	StartTime            string `json:"start_time"`
+	EndTime              string `json:"end_time"`
+	Status               string `json:"status"`
+}
+
+// FarmReward is one reward stream of a farm.
+type FarmReward struct {
+	ID            string `json:"id"`
+	FarmID        string `json:"farm_id"`
+	TokenAddress  string `json:"token_address"`
+	TokenSymbol   string `json:"token_symbol"`
+	TokenDecimals int    `json:"token_decimals"`
+	RatePerSecond string `json:"rate_per_second"`
+}
+
+// FarmView is a farm together with its reward streams and live APR. APR is nil
+// when no price source is configured; it is never invented.
+type FarmView struct {
+	Farm    Farm         `json:"farm"`
+	Rewards []FarmReward `json:"rewards"`
+	APR     *float64     `json:"apr"`
+}
+
+// FarmPendingReward is the reward a stake has accrued in one stream.
+type FarmPendingReward struct {
+	TokenAddress string `json:"token_address"`
+	Symbol       string `json:"symbol"`
+	Decimals     int    `json:"decimals"`
+	Pending      string `json:"pending"`
+}
+
+// FarmStake is a user's position in a farm.
+type FarmStake struct {
+	StakeID             string              `json:"stake_id"`
+	FarmID              string              `json:"farm_id"`
+	FarmKey             string              `json:"farm_key"`
+	FarmName            string              `json:"farm_name"`
+	Status              string              `json:"status"`
+	ChainID             int64               `json:"chain_id"`
+	StakingTokenAddress string              `json:"staking_token_address"`
+	StakingTokenSymbol  string              `json:"staking_token_symbol"`
+	Staked              string              `json:"staked"`
+	EndTime             string              `json:"end_time"`
+	PendingRewards      []FarmPendingReward `json:"pending_rewards"`
+}
+
+// AirdropCampaign is an admin-managed token distribution.
+type AirdropCampaign struct {
+	ID             string `json:"id"`
+	Key            string `json:"key"`
+	Name           string `json:"name"`
+	ChainID        int64  `json:"chain_id"`
+	TokenAddress   string `json:"token_address"`
+	TokenSymbol    string `json:"token_symbol"`
+	TokenDecimals  int    `json:"token_decimals"`
+	TotalAllocated string `json:"total_allocated"`
+	Funded         string `json:"funded"`
+	TotalClaimed   string `json:"total_claimed"`
+	StartTime      string `json:"start_time"`
+	EndTime        string `json:"end_time"`
+	Status         string `json:"status"`
+}
+
+// AirdropAllocation is one user's entitlement in a campaign.
+type AirdropAllocation struct {
+	AllocationID string `json:"allocation_id"`
+	CampaignID   string `json:"campaign_id"`
+	CampaignKey  string `json:"campaign_key"`
+	CampaignName string `json:"campaign_name"`
+	TokenAddress string `json:"token_address"`
+	Symbol       string `json:"symbol"`
+	Amount       string `json:"amount"`
+	Claimed      bool   `json:"claimed"`
+	Status       string `json:"status"`
+	StartTime    string `json:"start_time"`
+	EndTime      string `json:"end_time"`
+}
+
+// GetFarms returns the active farms a user can stake in.
+func (c *Client) GetFarms(ctx context.Context) ([]FarmView, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/farms", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get farms: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Farms []FarmView `json:"farms"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Farms, nil
+}
+
+// GetFarmStakes returns the authenticated caller's farm positions. The API key
+// identifies the caller; no user id is ever sent in the request.
+func (c *Client) GetFarmStakes(ctx context.Context) ([]FarmStake, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/farms/stakes", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get farm stakes: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Stakes []FarmStake `json:"stakes"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Stakes, nil
+}
+
+// StakeFarm escrows `amount` of a farm's staking token, in raw units.
+func (c *Client) StakeFarm(ctx context.Context, farmID, amount string) error {
+	return c.postFarmAction(ctx, farmID, "stake", amount)
+}
+
+// UnstakeFarm returns staked tokens to the caller's balance.
+func (c *Client) UnstakeFarm(ctx context.Context, farmID, amount string) error {
+	return c.postFarmAction(ctx, farmID, "unstake", amount)
+}
+
+func (c *Client) postFarmAction(ctx context.Context, farmID, action, amount string) error {
+	body, err := json.Marshal(map[string]string{"amount": amount})
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/api/v1/farms/%s/%s", c.baseURL, farmID, action)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("farm %s: unexpected status %d", action, resp.StatusCode)
+	}
+	return nil
+}
+
+// GetAirdrops returns the campaigns currently open for claims.
+func (c *Client) GetAirdrops(ctx context.Context) ([]AirdropCampaign, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/airdrops", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get airdrops: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Campaigns []AirdropCampaign `json:"campaigns"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Campaigns, nil
+}
+
+// GetMyAirdrops returns the authenticated caller's airdrop entitlements.
+func (c *Client) GetMyAirdrops(ctx context.Context) ([]AirdropAllocation, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/airdrops/allocations", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get airdrop allocations: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Allocations []AirdropAllocation `json:"allocations"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Allocations, nil
+}
+
+// ClaimAirdrop claims the caller's allocation in a campaign.
+func (c *Client) ClaimAirdrop(ctx context.Context, campaignID string) error {
+	url := fmt.Sprintf("%s/api/v1/airdrops/%s/claim", c.baseURL, campaignID)
+	req, err := http.NewRequest("POST", url, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("claim airdrop: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // GetChains returns all supported chains
 func (c *Client) GetChains(ctx context.Context) ([]Chain, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/chains", nil)

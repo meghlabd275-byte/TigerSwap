@@ -44,8 +44,9 @@ import { MarginTrading } from '@/components/MarginTrading';
 import { Bots } from '@/components/Bots';
 import { OtcTwamm } from '@/components/OtcTwamm';
 import { CopyTrading } from '@/components/CopyTrading';
+import { Farming } from '@/components/Farming';
 
-type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance' | 'otc' | 'bots' | 'copy-trading';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -76,6 +77,7 @@ export default function Home() {
     { id: 'cross-chain' as const, label: 'Cross-Chain', icon: Globe },
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
     { id: 'governance' as const, label: 'Governance', icon: Vote },
+    { id: 'farming' as const, label: 'Farm & Airdrop', icon: Gauge },
     { id: 'otc' as const, label: 'OTC / TWAMM', icon: Clock },
     { id: 'bots' as const, label: 'Bots', icon: Bot },
     { id: 'copy-trading' as const, label: 'Copy Trading', icon: Users },
@@ -147,6 +149,7 @@ export default function Home() {
                 {activeTab === 'cross-chain' && <CrossChain />}
                 {activeTab === 'portfolio' && <Portfolio />}
                 {activeTab === 'governance' && <Governance />}
+                {activeTab === 'farming' && <Farming />}
                 {activeTab === 'otc' && <OtcTwamm />}
                 {activeTab === 'bots' && <Bots />}
                 {activeTab === 'copy-trading' && <CopyTrading />}

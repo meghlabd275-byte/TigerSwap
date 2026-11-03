@@ -107,6 +107,12 @@ func main() {
 		&models.BotPerformance{},
 		&models.OtcOrder{},
 		&models.TwammOrder{},
+		&models.FarmPool{},
+		&models.FarmReward{},
+		&models.FarmStake{},
+		&models.FarmStakeReward{},
+		&models.AirdropCampaign{},
+		&models.AirdropAllocation{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -163,6 +169,14 @@ func main() {
 
 	ledgerService := services.NewLedgerService(db)
 
+	// Liquidity mining and token distribution. Both escrow a real ledger
+	// balance, so a farm reward or an airdrop claim can only pay out what was
+	// funded. The farm boost reads veTGR voting power from governance.
+	farmService := services.NewFarmService(db, ledgerService)
+	farmService.SetBoostSource(governanceService)
+	farmService.SetPriceSource(priceAggregator)
+	airdropService := services.NewAirdropService(db, ledgerService)
+
 	var walletService *services.WalletService
 	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
@@ -216,6 +230,8 @@ func main() {
 		twammService:       twammService,
 		botsService:        botsService,
 		dynamicIntegration: dynamicIntegration,
+		farmService:        farmService,
+		airdropService:     airdropService,
 	})
 
 	// Get port from environment or default

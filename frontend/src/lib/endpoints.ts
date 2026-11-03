@@ -12,6 +12,9 @@ import { integer, object, string } from "./validation";
 import {
   AccountBalance,
   AdminAuditLog,
+  AirdropAllocationView,
+  AirdropCampaign,
+  AirdropClaimResult,
   AdminChain,
   AdminDashboard,
   AdminSettings,
@@ -28,6 +31,9 @@ import {
   Chain,
   CopyPosition,
   CopyTrader,
+  FarmClaimResult,
+  FarmStakeView,
+  FarmView,
   FeeConfig,
   FuturesMarket,
   FuturesMarketInput,
@@ -71,6 +77,15 @@ import {
   copyPositionListValidator,
   copyTraderListValidator,
   copyTraderValidator,
+  airdropAllocationViewListValidator,
+  airdropCampaignListValidator,
+  airdropCampaignValidator,
+  airdropClaimResultValidator,
+  farmClaimResultValidator,
+  farmPoolValidator,
+  farmStakeViewListValidator,
+  farmViewListValidator,
+  farmViewValidator,
   feeConfigValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
@@ -736,5 +751,164 @@ export const endpoints = {
 
   async cancelTwammOrder(id: string): Promise<void> {
     await apiRequest(`/twamm/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Farms: liquidity mining with one or more reward streams. */
+
+  /** Active farms a user can stake in, with their live APR. */
+  async getFarms(): Promise<FarmView[]> {
+    const body = await api.get("/farms", { authenticated: false });
+    return farmViewListValidator(body);
+  },
+
+  /** Every farm, including paused and closed ones. */
+  async getAllFarms(): Promise<FarmView[]> {
+    const body = await api.get("/farms/all", { authenticated: false });
+    return farmViewListValidator(body);
+  },
+
+  async getFarm(id: string): Promise<FarmView> {
+    const body = await api.get(`/farms/${encodeURIComponent(id)}`, { authenticated: false });
+    return farmViewValidator(body);
+  },
+
+  /** The caller's stakes with their pending rewards. */
+  async getFarmStakes(): Promise<FarmStakeView[]> {
+    const body = await api.get("/farms/stakes");
+    return farmStakeViewListValidator(body);
+  },
+
+  /** Escrows `amount` of the farm's staking token. */
+  async stakeFarm(id: string, amount: string): Promise<void> {
+    await api.post(`/farms/${encodeURIComponent(id)}/stake`, { amount });
+  },
+
+  /** Returns staked tokens to the caller's balance. */
+  async unstakeFarm(id: string, amount: string): Promise<void> {
+    await api.post(`/farms/${encodeURIComponent(id)}/unstake`, { amount });
+  },
+
+  /** Settles accrued reward. An empty `tokenAddress` claims every stream. */
+  async claimFarmRewards(id: string, tokenAddress?: string): Promise<FarmClaimResult> {
+    const body = await api.post(
+      `/farms/${encodeURIComponent(id)}/claim`,
+      tokenAddress ? { token_address: tokenAddress } : {},
+    );
+    return farmClaimResultValidator(body);
+  },
+
+  /** Admin: create a farm. It starts paused until activated. */
+  async createFarm(payload: {
+    key: string;
+    name: string;
+    farm_type?: string;
+    chain_id: number;
+    staking_token_address: string;
+    staking_token_symbol: string;
+    staking_token_decimals: number;
+    start_time: string;
+    end_time: string;
+    rewards: Array<{
+      token_address: string;
+      token_symbol: string;
+      token_decimals: number;
+      rate_per_second: string;
+    }>;
+  }): Promise<void> {
+    await api.post("/admin/farms", payload);
+  },
+
+  /** Admin: edit a farm's parameters. */
+  async updateFarm(
+    id: string,
+    payload: {
+      name?: string;
+      farm_type?: string;
+      start_time?: string;
+      end_time?: string;
+      status?: string;
+    },
+  ): Promise<void> {
+    await api.put(`/admin/farms/${encodeURIComponent(id)}`, payload);
+  },
+
+  /** Admin: close an empty farm. */
+  async deleteFarm(id: string): Promise<void> {
+    await apiRequest(`/admin/farms/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: move reward tokens from the caller's balance into the farm. */
+  async fundFarm(id: string, tokenAddress: string, amount: string): Promise<void> {
+    await api.post(`/admin/farms/${encodeURIComponent(id)}/fund`, {
+      token_address: tokenAddress,
+      amount,
+    });
+  },
+
+  /** Airdrops: an admin allocates and funds, the user claims. */
+
+  /** Campaigns currently open for claims. */
+  async getAirdrops(): Promise<AirdropCampaign[]> {
+    const body = await api.get("/airdrops", { authenticated: false });
+    return airdropCampaignListValidator(body);
+  },
+
+  /** Every campaign, including paused and closed ones. */
+  async getAllAirdrops(): Promise<AirdropCampaign[]> {
+    const body = await api.get("/airdrops/all", { authenticated: false });
+    return airdropCampaignListValidator(body);
+  },
+
+  /** The caller's airdrop entitlements. */
+  async getMyAirdrops(): Promise<AirdropAllocationView[]> {
+    const body = await api.get("/airdrops/allocations");
+    return airdropAllocationViewListValidator(body);
+  },
+
+  /** Claims the caller's allocation in a campaign. */
+  async claimAirdrop(id: string): Promise<AirdropClaimResult> {
+    const body = await api.post(`/airdrops/${encodeURIComponent(id)}/claim`, {});
+    return airdropClaimResultValidator(body);
+  },
+
+  /** Admin: open a campaign. It starts paused until funded and activated. */
+  async createAirdrop(payload: {
+    key: string;
+    name: string;
+    chain_id: number;
+    token_address: string;
+    token_symbol: string;
+    token_decimals: number;
+    start_time: string;
+    end_time: string;
+  }): Promise<AirdropCampaign> {
+    const body = await api.post("/admin/airdrops", payload);
+    return airdropCampaignValidator(body);
+  },
+
+  /** Admin: edit a campaign. */
+  async updateAirdrop(
+    id: string,
+    payload: { name?: string; start_time?: string; end_time?: string; status?: string },
+  ): Promise<void> {
+    await api.put(`/admin/airdrops/${encodeURIComponent(id)}`, payload);
+  },
+
+  /** Admin: close or delete a campaign. */
+  async deleteAirdrop(id: string): Promise<void> {
+    await apiRequest(`/admin/airdrops/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: replace the campaign's allocation set. */
+  async setAirdropAllocations(
+    id: string,
+    allocations: Array<{ user_id: string; amount: string }>,
+  ): Promise<void> {
+    await api.post(`/admin/airdrops/${encodeURIComponent(id)}/allocations`, { allocations });
+  },
+
+  /** Admin: move tokens from the caller's balance into the campaign escrow. */
+  async fundAirdrop(id: string, amount: string): Promise<void> {
+    await api.post(`/admin/airdrops/${encodeURIComponent(id)}/fund`, { amount });
   },
 };

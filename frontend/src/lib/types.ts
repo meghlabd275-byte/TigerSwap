@@ -792,7 +792,11 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.traders ??
         record.transfers ??
         record.positions ??
-        record.projects;
+        record.projects ??
+        record.farms ??
+        record.stakes ??
+        record.campaigns ??
+        record.allocations;
       if (items !== undefined) {
         // A Go nil slice serialises as `null`; treat it as an empty list
         // rather than failing the whole response.
@@ -1485,4 +1489,242 @@ export const marketTickValidator = object<MarketTick>({
   priceUSD: nonNegative,
   change24h: number,
   timestamp: integer,
+});
+
+/* ------------------------------------------------------------------ farms */
+
+/** A liquidity-mining farm listing from `GET /farms`. */
+export interface FarmPool {
+  id: string;
+  key: string;
+  name: string;
+  farm_type: string;
+  chain_id: number;
+  staking_token_address: string;
+  staking_token_symbol: string;
+  staking_token_decimals: number;
+  total_staked: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const farmPoolValidator = object<FarmPool>(
+  {
+    id: string,
+    key: string,
+    name: displayText,
+    farm_type: string,
+    chain_id: integer,
+    staking_token_address: string,
+    staking_token_symbol: string,
+    staking_token_decimals: integer,
+    total_staked: withDefault(decimal, "0"),
+    start_time: withDefault(timestamp, new Date(0).toISOString()),
+    end_time: withDefault(timestamp, new Date(0).toISOString()),
+    status: string,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["total_staked", "start_time", "end_time", "created_at", "updated_at"] },
+);
+
+/** One reward stream of a farm. */
+export interface FarmReward {
+  id: string;
+  farm_id: string;
+  token_address: string;
+  token_symbol: string;
+  token_decimals: number;
+  rate_per_second: string;
+  acc_reward_per_share: string;
+  total_reward: string;
+  total_distributed: string;
+}
+
+export const farmRewardValidator = object<FarmReward>({
+  id: string,
+  farm_id: string,
+  token_address: string,
+  token_symbol: string,
+  token_decimals: integer,
+  rate_per_second: withDefault(decimal, "0"),
+  acc_reward_per_share: withDefault(decimal, "0"),
+  total_reward: withDefault(decimal, "0"),
+  total_distributed: withDefault(decimal, "0"),
+});
+
+/**
+ * A farm with its reward streams and APR.
+ *
+ * `apr` is null when the oracle price for a token is unavailable; the UI shows
+ * a dash rather than a fabricated yield.
+ */
+export interface FarmView {
+  farm: FarmPool;
+  rewards: FarmReward[];
+  apr: number | null;
+}
+
+export const farmViewValidator = object<FarmView>({
+  farm: farmPoolValidator,
+  rewards: withDefault(arrayLenient(farmRewardValidator), []),
+  apr: nullable(nonNegative),
+});
+
+export const farmViewListValidator = listingArray(farmViewValidator);
+
+/** One pending reward stream of a user's farm stake. */
+export interface FarmPendingReward {
+  token_address: string;
+  symbol: string;
+  decimals: number;
+  pending: string;
+}
+
+export const farmPendingRewardValidator = object<FarmPendingReward>({
+  token_address: string,
+  symbol: string,
+  decimals: integer,
+  pending: withDefault(decimal, "0"),
+});
+
+/** A user's position in a farm, from `GET /farms/stakes`. */
+export interface FarmStakeView {
+  stake_id: string;
+  farm_id: string;
+  farm_key: string;
+  farm_name: string;
+  farm_type: string;
+  status: string;
+  chain_id: number;
+  staking_token_address: string;
+  staking_token_symbol: string;
+  staked: string;
+  end_time: string;
+  pending_rewards: FarmPendingReward[];
+  checked_at: string;
+}
+
+export const farmStakeViewValidator = object<FarmStakeView>({
+  stake_id: string,
+  farm_id: string,
+  farm_key: withDefault(string, ""),
+  farm_name: withDefault(displayText, ""),
+  farm_type: withDefault(string, ""),
+  status: withDefault(string, ""),
+  chain_id: withDefault(integer, 0),
+  staking_token_address: withDefault(string, ""),
+  staking_token_symbol: withDefault(string, ""),
+  staked: withDefault(decimal, "0"),
+  end_time: withDefault(timestamp, new Date(0).toISOString()),
+  pending_rewards: withDefault(arrayLenient(farmPendingRewardValidator), []),
+  checked_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const farmStakeViewListValidator = listingArray(farmStakeViewValidator);
+
+/** The result of claiming farm rewards. */
+export interface FarmClaimResult {
+  success: boolean;
+  claimed: Array<{ token_address?: string; symbol: string; amount: string }>;
+}
+
+export const farmClaimResultValidator = object<FarmClaimResult>({
+  success: boolean,
+  claimed: withDefault(arrayLenient(object<{ token_address?: string; symbol: string; amount: string }>({
+    token_address: withDefault(string, ""),
+    symbol: string,
+    amount: decimal,
+  })), []),
+});
+
+/* --------------------------------------------------------------- airdrops */
+
+/** An airdrop campaign from `GET /airdrops`. */
+export interface AirdropCampaign {
+  id: string;
+  key: string;
+  name: string;
+  chain_id: number;
+  token_address: string;
+  token_symbol: string;
+  token_decimals: number;
+  total_allocated: string;
+  funded: string;
+  total_claimed: string;
+  start_time: string;
+  end_time: string;
+  status: string;
+}
+
+export const airdropCampaignValidator = object<AirdropCampaign>(
+  {
+    id: string,
+    key: string,
+    name: displayText,
+    chain_id: integer,
+    token_address: string,
+    token_symbol: string,
+    token_decimals: integer,
+    total_allocated: withDefault(decimal, "0"),
+    funded: withDefault(decimal, "0"),
+    total_claimed: withDefault(decimal, "0"),
+    start_time: withDefault(timestamp, new Date(0).toISOString()),
+    end_time: withDefault(timestamp, new Date(0).toISOString()),
+    status: string,
+  },
+  { optional: ["total_allocated", "funded", "total_claimed", "start_time", "end_time"] },
+);
+
+export const airdropCampaignListValidator = listingArray(airdropCampaignValidator);
+
+/** A user's airdrop entitlement, from `GET /airdrops/allocations`. */
+export interface AirdropAllocationView {
+  allocation_id: string;
+  campaign_id: string;
+  campaign_key: string;
+  campaign_name: string;
+  token_address: string;
+  symbol: string;
+  amount: string;
+  claimed: boolean;
+  status: string;
+  start_time: string;
+  end_time: string;
+}
+
+export const airdropAllocationViewValidator = object<AirdropAllocationView>({
+  allocation_id: string,
+  campaign_id: string,
+  campaign_key: withDefault(string, ""),
+  campaign_name: withDefault(displayText, ""),
+  token_address: withDefault(string, ""),
+  symbol: withDefault(string, ""),
+  amount: withDefault(decimal, "0"),
+  claimed: withDefault(boolean, false),
+  status: withDefault(string, ""),
+  start_time: withDefault(timestamp, new Date(0).toISOString()),
+  end_time: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const airdropAllocationViewListValidator = listingArray(airdropAllocationViewValidator);
+
+/** The result of claiming an airdrop. */
+export interface AirdropClaimResult {
+  success: boolean;
+  campaign_id: string;
+  token_address: string;
+  symbol: string;
+  amount: string;
+}
+
+export const airdropClaimResultValidator = object<AirdropClaimResult>({
+  success: boolean,
+  campaign_id: string,
+  token_address: string,
+  symbol: string,
+  amount: decimal,
 });
