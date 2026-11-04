@@ -66,6 +66,22 @@ func TestRouterRegistersBotsOtcTwammRoutes(t *testing.T) {
 		"POST /api/v1/admin/airdrops/:id/allocations",
 		"GET /api/v1/admin/airdrops/:id/allocations",
 		"POST /api/v1/admin/airdrops/:id/fund",
+		"GET /api/v1/options/series",
+		"GET /api/v1/options/series/all",
+		"GET /api/v1/options/series/:id",
+		"GET /api/v1/options/positions",
+		"POST /api/v1/options/series/:id/buy",
+		"POST /api/v1/options/series/:id/collateral",
+		"POST /api/v1/options/series/:id/collateral/remove",
+		"POST /api/v1/options/series/:id/exercise",
+		"POST /api/v1/options/series/:id/withdraw",
+		"GET /api/v1/admin/options/series",
+		"POST /api/v1/admin/options/series",
+		"GET /api/v1/admin/options/series/:id",
+		"PUT /api/v1/admin/options/series/:id",
+		"DELETE /api/v1/admin/options/series/:id",
+		"POST /api/v1/admin/options/series/:id/settle",
+		"POST /api/v1/admin/options/series/:id/refresh-price",
 	}
 
 	for _, route := range want {
@@ -97,6 +113,10 @@ func TestRouterProtectedRoutesRejectAnonymousCallers(t *testing.T) {
 		{"POST", "/api/v1/farms/1/claim"},
 		{"GET", "/api/v1/airdrops/allocations"},
 		{"POST", "/api/v1/airdrops/1/claim"},
+		{"GET", "/api/v1/options/positions"},
+		{"POST", "/api/v1/options/series/1/buy"},
+		{"POST", "/api/v1/options/series/1/collateral"},
+		{"POST", "/api/v1/options/series/1/exercise"},
 	}
 
 	for _, route := range protected {

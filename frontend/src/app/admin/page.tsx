@@ -38,8 +38,9 @@ import {
 } from '@/hooks/useApi';
 import { AdminListingsPanel } from '@/components/AdminListingsPanel';
 import { AdminFarmingPanel } from '@/components/AdminFarmingPanel';
+import { AdminOptionsPanel } from '@/components/AdminOptionsPanel';
 
-type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'farming' | 'fees' | 'settings' | 'activity';
+type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'options' | 'farming' | 'fees' | 'settings' | 'activity';
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -462,6 +463,7 @@ export default function AdminPage() {
               { id: 'tokens', label: 'Tokens', icon: Coins },
               { id: 'listings', label: 'Listings', icon: BarChart3 },
               { id: 'launchpad', label: 'Launchpad', icon: Rocket },
+              { id: 'options', label: 'Options', icon: Activity },
               { id: 'farming', label: 'Farms & Airdrops', icon: Sprout },
               { id: 'fees', label: 'Fees', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
@@ -856,6 +858,13 @@ export default function AdminPage() {
                   ))
                 )}
               </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'options' && (
+            <motion.div key="options" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <h2 className="text-2xl font-bold text-white mb-6">Option Series</h2>
+              <AdminOptionsPanel />
             </motion.div>
           )}
 

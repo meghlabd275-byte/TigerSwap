@@ -208,6 +208,36 @@ contract TigerSwapOptionMathTest is Test {
         _assertClose(price, 765849845096052400000, 100, "zero rate ATM call");
     }
 
+    /// @dev 1/sqrt(WAD*WAD/T) for a 30-day T equals sqrt(T)/WAD, whose
+    /// normalised mantissa lands above 3. Before the guard the Newton update
+    /// drove y negative and the unsigned subtraction reverted, so any series
+    /// shorter than about three months could not be priced.
+    function testInvSqrtShortDatedArgument() public pure {
+        uint256 thirtyDays = 30 days;
+        uint256 t = thirtyDays * 1e18 / YEAR;
+        uint256 argument = 1e18 * 1e18 / t;
+        uint256 result = TigerSwapOptionMath.invSqrt(argument);
+        // sqrt(30/365) = 0.286691089540497920
+        _assertClose(result, 286691089540497920, 1, "invSqrt short-dated");
+    }
+
+    /// @dev A one-month at-the-money call must be positive and below spot.
+    function testShortDatedSeriesPrices() public pure {
+        uint256 spot = 2000e18;
+        uint256[] memory tenors = new uint256[](5);
+        tenors[0] = 1 days;
+        tenors[1] = 7 days;
+        tenors[2] = 30 days;
+        tenors[3] = 60 days;
+        tenors[4] = 90 days;
+        for (uint256 i = 0; i < tenors.length; i++) {
+            uint256 price =
+                TigerSwapOptionMath.blackScholes(spot, spot, tenors[i], 5e16, 8e17, true);
+            assertGt(price, 0, "short-dated call must be positive");
+            assertLt(price, spot, "short-dated call must be below spot");
+        }
+    }
+
     // ---- Put-call parity ----------------------------------------------------
 
     function testPutCallParity() public pure {

@@ -39,6 +39,7 @@ type apiDeps struct {
 	dynamicIntegration *services.DynamicIntegrationService
 	farmService        *services.FarmService
 	airdropService     *services.AirdropService
+	optionService      *services.OptionService
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -241,6 +242,16 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// Airdrops: an admin allocates and funds, the user claims.
 			protected.POST("/airdrops/:id/claim", deps.airdropService.ClaimAirdrop)
 			protected.GET("/airdrops/allocations", deps.airdropService.GetMyAllocations)
+
+			// Options: buy a long position, provide or withdraw series liquidity,
+			// and exercise a settled position. Every leg moves a real ledger
+			// balance, and a series can only pay out what it holds.
+			protected.POST("/options/series/:id/buy", deps.optionService.Buy)
+			protected.POST("/options/series/:id/collateral", deps.optionService.AddCollateral)
+			protected.POST("/options/series/:id/collateral/remove", deps.optionService.RemoveCollateral)
+			protected.POST("/options/series/:id/exercise", deps.optionService.Exercise)
+			protected.POST("/options/series/:id/withdraw", deps.optionService.WithdrawLiquidity)
+			protected.GET("/options/positions", deps.optionService.GetMyPositions)
 		}
 
 		// Admin routes (protected by admin middleware)
@@ -361,6 +372,16 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			admin.POST("/airdrops/:id/allocations", deps.airdropService.SetAllocations)
 			admin.GET("/airdrops/:id/allocations", deps.airdropService.GetCampaignAllocations)
 			admin.POST("/airdrops/:id/fund", deps.airdropService.FundCampaign)
+
+			// Option series administration: create, edit, close, settle and
+			// refresh the mark price from the oracle.
+			admin.POST("/options/series", deps.optionService.CreateSeries)
+			admin.GET("/options/series", deps.optionService.GetSeries)
+			admin.GET("/options/series/:id", deps.optionService.GetSeriesDetail)
+			admin.PUT("/options/series/:id", deps.optionService.UpdateSeries)
+			admin.DELETE("/options/series/:id", deps.optionService.DeleteSeries)
+			admin.POST("/options/series/:id/settle", deps.optionService.SettleSeries)
+			admin.POST("/options/series/:id/refresh-price", deps.optionService.RefreshMarkPrice)
 		}
 
 		// Price aggregation (public)
@@ -389,6 +410,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		public.GET("/farms/:id", deps.farmService.GetFarm)
 		public.GET("/airdrops", deps.airdropService.GetActiveCampaigns)
 		public.GET("/airdrops/all", deps.airdropService.GetCampaigns)
+
+		// Options (public read): the tradable series with live greeks.
+		public.GET("/options/series", deps.optionService.GetActiveSeries)
+		public.GET("/options/series/all", deps.optionService.GetSeries)
+		public.GET("/options/series/:id", deps.optionService.GetSeriesDetail)
 
 		// TigerSwap router (public read, protected broadcast)
 		public.GET("/tigerswap/supported", deps.swapExecutor.GetSupportedDEXHandler)

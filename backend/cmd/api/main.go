@@ -113,6 +113,9 @@ func main() {
 		&models.FarmStakeReward{},
 		&models.AirdropCampaign{},
 		&models.AirdropAllocation{},
+		&models.OptionSeries{},
+		&models.OptionPosition{},
+		&models.OptionLiquidity{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -177,6 +180,12 @@ func main() {
 	farmService.SetPriceSource(priceAggregator)
 	airdropService := services.NewAirdropService(db, ledgerService)
 
+	// European option AMM. A series is a fully collateralised pool; the premium
+	// is priced with the exact port of the on-chain Black-Scholes library and the
+	// payout is bounded by the collateral the pool actually holds.
+	optionService := services.NewOptionService(db, ledgerService)
+	optionService.SetPriceSource(priceAggregator)
+
 	var walletService *services.WalletService
 	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
@@ -232,6 +241,7 @@ func main() {
 		dynamicIntegration: dynamicIntegration,
 		farmService:        farmService,
 		airdropService:     airdropService,
+		optionService:      optionService,
 	})
 
 	// Get port from environment or default

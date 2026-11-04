@@ -14,6 +14,8 @@ package services
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/gin-gonic/gin"
 	"sort"
 	"testing"
 	"time"
@@ -185,4 +187,51 @@ func TestBotTablesRoundTrip(t *testing.T) {
 	if loaded.Strategy != models.StrategyGrid || loaded.Symbol != "ETH/RUSD" {
 		t.Fatalf("round trip mismatch: %+v", loaded)
 	}
+}
+
+// TestOptionResponseWireFormat pins the option series, position, buy and
+// exercise payloads. The frontend fixtures for the options panel are copied
+// from this test's log output, so a field rename fails here first.
+func TestOptionResponseWireFormat(t *testing.T) {
+	env := newOptionTestEnv(t)
+	expiry := time.Now().Add(30 * 24 * time.Hour)
+	seriesID := seedOptionSeries(t, env, true, "2000", "2000", "0.8", expiry)
+
+	_, listBody := callUserHandler(t, env.engine.GetActiveSeries, "", http.MethodGet,
+		"/options/series", "", nil)
+	t.Logf("SERVER_OPTION_SERIES = `%s`", listBody)
+
+	_, detailBody := callUserHandler(t, env.engine.GetSeriesDetail, "", http.MethodGet,
+		"/options/series/"+seriesID, "", gin.Params{{Key: "id", Value: seriesID}})
+	t.Logf("SERVER_OPTION_SERIES_DETAIL = `%s`", detailBody)
+	assertKeys(t, detailBody, "series", "success")
+
+	creditCollateral(t, env, "lp-1", "1000000000000000000000000")
+	callUserHandler(t, env.engine.AddCollateral, "lp-1", http.MethodPost,
+		"/options/series/"+seriesID+"/collateral", `{"amount":"1000000000000000000000000"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+
+	creditCollateral(t, env, "trader-1", "10000000000000000000000")
+	_, buyBody := callUserHandler(t, env.engine.Buy, "trader-1", http.MethodPost,
+		"/options/series/"+seriesID+"/buy", `{"size":"1","max_premium":"1000000000000000000000"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+	t.Logf("SERVER_OPTION_BUY = `%s`", buyBody)
+	assertKeys(t, buyBody, "premium", "size", "success")
+
+	_, positionsBody := callUserHandler(t, env.engine.GetMyPositions, "trader-1", http.MethodGet,
+		"/options/positions", "", nil)
+	t.Logf("SERVER_OPTION_POSITIONS = `%s`", positionsBody)
+	assertKeys(t, positionsBody, "positions", "success")
+
+	// Settle above the strike so the call finishes in the money and the
+	// exercise payload carries a real payout.
+	env.db.Model(&models.OptionSeries{}).Where("id = ?", seriesID).
+		Update("expiry", time.Now().Add(-time.Hour))
+	callUserHandler(t, env.engine.SettleSeries, "admin-1", http.MethodPost,
+		"/options/series/"+seriesID+"/settle", `{"settlement_price":"2500"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+	_, exerciseBody := callUserHandler(t, env.engine.Exercise, "trader-1", http.MethodPost,
+		"/options/series/"+seriesID+"/exercise", "", gin.Params{{Key: "id", Value: seriesID}})
+	t.Logf("SERVER_OPTION_EXERCISE = `%s`", exerciseBody)
+	assertKeys(t, exerciseBody, "payout", "success")
 }

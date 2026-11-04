@@ -374,3 +374,38 @@ pay out what an operator funded.
   `/airdrops/all`; protected `POST /farms/:id/{stake,unstake,claim,fund}`,
   `GET /farms/stakes`, `POST /airdrops/:id/claim`, `GET /airdrops/allocations`;
   admin CRUD under `/admin/farms` and `/admin/airdrops`.
+
+## Options
+
+`contracts/TigerSwapOptionMath.sol` and `contracts/TigerSwapOptions.sol` are the
+pricing and settlement layer; `services/option_math.go` and
+`services/option_service.go` mirror them on the Go side, and the panel lives in
+`frontend/src/components/OptionsTrading.tsx`.
+
+- `option_math.go` must agree with the Solidity library digit for digit. It
+  keeps the intermediate `/WAD` truncations the contract performs rather than
+  computing in floating point, so a premium the API quotes is the premium the
+  chain would charge.
+- `invSqrt` normalises its argument into `temp` but the Newton step divides by
+  the original `x`. The update is `y * (3 - x*y^2) / 2`; when `x*y^2 >= 3*WAD`
+  the numerator is negative and the unsigned subtraction reverts. A short-dated
+  series (under roughly three months) produces exactly that argument through
+  `WAD*WAD/T`, so both libraries guard the case by halving `y` and continuing.
+  If you touch the loop, keep the guard: without it any series shorter than a
+  quarter could not be priced at all, and the old tests only used 0.25-1 year,
+  which is why the defect survived.
+- A series is fully collateralised per pool. Buying pays the Black-Scholes
+  premium out of the caller's ledger balance, an LP deposits settlement
+  collateral, and a settled position pays its intrinsic value. `AddCollateral`
+  and `RemoveCollateral` refuse while open positions need the collateral; the
+  locked amount is reserved rather than moved.
+- Settlement is admin-driven: `POST /admin/options/series/:id/settle` fixes the
+  settlement price, after which `Exercise` pays intrinsic value and
+  `WithdrawLiquidity` returns an LP's share. A position can be exercised once;
+  the payout is recorded before it is credited so a replay cannot double-pay.
+- The mark price is never caller-supplied. `RefreshMarkPrice` reads it from the
+  configured price source, the same way the perp engine sources its oracle.
+- Routes: public `GET /options/series`, `/options/series/all`,
+  `/options/series/:id`; protected `POST /options/series/:id/{buy,collateral,
+  collateral/remove,exercise,withdraw}`, `GET /options/positions`; admin CRUD
+  and `settle`/`refresh-price` under `/admin/options/series`.

@@ -114,6 +114,15 @@ library TigerSwapOptionMath {
         for (uint256 i = 0; i < 40; i++) {
             uint256 ySquared = y * y / WAD_U;
             uint256 step = x * ySquared / WAD_U;
+            // The update is y * (3 - step) / 2. When step >= 3*WAD_U the
+            // numerator would go negative and revert on the unsigned
+            // subtraction, which happens for short-dated series whose
+            // normalised mantissa lands above 3. Halving y is a safe step
+            // toward the root and the following iterations converge normally.
+            if (step >= 3 * WAD_U) {
+                y /= 2;
+                continue;
+            }
             uint256 next = y * (3 * WAD_U - step) / (2 * WAD_U);
             if (next == y) {
                 break;

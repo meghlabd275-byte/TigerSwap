@@ -46,6 +46,11 @@ import {
   MarginListingInput,
   MarketStats,
   OtcOrder,
+  OptionBuyResult,
+  OptionExerciseResult,
+  OptionPositionView,
+  OptionSeries,
+  OptionSeriesView,
   PerpMarket,
   PerpOpenResult,
   PerpPosition,
@@ -86,6 +91,12 @@ import {
   farmStakeViewListValidator,
   farmViewListValidator,
   farmViewValidator,
+  optionBuyResultValidator,
+  optionExerciseResultValidator,
+  optionPositionViewListValidator,
+  optionSeriesEnvelopeValidator,
+  optionSeriesViewListValidator,
+  optionSeriesViewValidator,
   feeConfigValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
@@ -910,5 +921,110 @@ export const endpoints = {
   /** Admin: move tokens from the caller's balance into the campaign escrow. */
   async fundAirdrop(id: string, amount: string): Promise<void> {
     await api.post(`/admin/airdrops/${encodeURIComponent(id)}/fund`, { amount });
+  },
+
+  /** Options: a self-built European option AMM settled in RUSD, USDT or USDC. */
+
+  /** Tradable series with their live greeks and unit premium. */
+  async getOptionSeries(): Promise<OptionSeriesView[]> {
+    const body = await api.get("/options/series", { authenticated: false });
+    return optionSeriesViewListValidator(body);
+  },
+
+  /** Every series, including paused and settled ones. */
+  async getAllOptionSeries(): Promise<OptionSeriesView[]> {
+    const body = await api.get("/options/series/all", { authenticated: false });
+    return optionSeriesViewListValidator(body);
+  },
+
+  async getOptionSeriesById(id: string): Promise<OptionSeriesView> {
+    const body = await api.get(`/options/series/${encodeURIComponent(id)}`, {
+      authenticated: false,
+    });
+    return optionSeriesEnvelopeValidator(body);
+  },
+
+  /** The caller's open option positions. */
+  async getOptionPositions(): Promise<OptionPositionView[]> {
+    const body = await api.get("/options/positions");
+    return optionPositionViewListValidator(body);
+  },
+
+  /** Buys `size` of a series, refusing a premium above `maxPremium`. */
+  async buyOption(id: string, size: string, maxPremium: string): Promise<OptionBuyResult> {
+    const body = await api.post(`/options/series/${encodeURIComponent(id)}/buy`, {
+      size,
+      max_premium: maxPremium,
+    });
+    return optionBuyResultValidator(body);
+  },
+
+  /** Deposits settlement collateral to underwrite a series. */
+  async addOptionCollateral(id: string, amount: string): Promise<void> {
+    await api.post(`/options/series/${encodeURIComponent(id)}/collateral`, { amount });
+  },
+
+  /** Withdraws collateral that is not backing an open position. */
+  async removeOptionCollateral(id: string, amount: string): Promise<void> {
+    await api.post(`/options/series/${encodeURIComponent(id)}/collateral/remove`, { amount });
+  },
+
+  /** Exercises a settled position, paying its intrinsic value. */
+  async exerciseOption(id: string): Promise<OptionExerciseResult> {
+    const body = await api.post(`/options/series/${encodeURIComponent(id)}/exercise`, {});
+    return optionExerciseResultValidator(body);
+  },
+
+  /** Withdraws an LP's share of a settled series' remaining collateral. */
+  async withdrawOptionLiquidity(id: string, amount: string): Promise<void> {
+    await api.post(`/options/series/${encodeURIComponent(id)}/withdraw`, { amount });
+  },
+
+  /** Admin: create an option series. It starts paused until activated. */
+  async createOptionSeries(payload: {
+    key: string;
+    name: string;
+    chain_id: number;
+    underlying_symbol: string;
+    collateral_token_address: string;
+    collateral_token_symbol: string;
+    collateral_token_decimals: number;
+    strike: string;
+    base_iv: string;
+    expiry: string;
+    is_call: boolean;
+    mark_price: string;
+    status?: string;
+  }): Promise<OptionSeriesView> {
+    const body = await api.post("/admin/options/series", payload);
+    return optionSeriesEnvelopeValidator(body);
+  },
+
+  /** Admin: edit a series' name, implied volatility, expiry or status. */
+  async updateOptionSeries(
+    id: string,
+    payload: { name?: string; base_iv?: string; mark_price?: string; expiry?: string; status?: string },
+  ): Promise<OptionSeriesView> {
+    const body = await api.put(`/admin/options/series/${encodeURIComponent(id)}`, payload);
+    return optionSeriesEnvelopeValidator(body);
+  },
+
+  /** Admin: close an empty series. */
+  async deleteOptionSeries(id: string): Promise<void> {
+    await apiRequest(`/admin/options/series/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: settle an expired series at a settlement price. */
+  async settleOptionSeries(id: string, settlementPrice: string): Promise<OptionSeriesView> {
+    const body = await api.post(`/admin/options/series/${encodeURIComponent(id)}/settle`, {
+      settlement_price: settlementPrice,
+    });
+    return optionSeriesEnvelopeValidator(body);
+  },
+
+  /** Admin: refresh a series' mark price from the oracle. */
+  async refreshOptionMarkPrice(id: string): Promise<OptionSeriesView> {
+    const body = await api.post(`/admin/options/series/${encodeURIComponent(id)}/refresh-price`, {});
+    return optionSeriesEnvelopeValidator(body);
   },
 };

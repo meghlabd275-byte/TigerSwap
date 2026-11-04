@@ -19,6 +19,11 @@ import {
   futuresMarketListValidator,
   marginListingListValidator,
   marketStatsValidator,
+  optionBuyResultValidator,
+  optionExerciseResultValidator,
+  optionPositionViewListValidator,
+  optionSeriesEnvelopeValidator,
+  optionSeriesViewListValidator,
   otcOrderListValidator,
   perpMarketListValidator,
   perpsListingListValidator,
@@ -343,4 +348,54 @@ test("live /airdrops/allocations payload satisfies airdropAllocationViewListVali
   assert.equal(allocations.length, 1);
   assert.equal(allocations[0].amount, "500000000000000000000");
   assert.equal(allocations[0].claimed, true);
+});
+
+// The options payloads below were captured by running the real handlers in
+// `backend/services/contract_capture_test.go` and copying the logged JSON.
+const SERVER_OPTION_SERIES = `{"series":[{"series":{"id":"ffb3134c-45d0-4328-bacf-c982839a92c3","key":"btc-2000-20261204","name":"BTC RUSD option","chain_id":1,"underlying_symbol":"BTC","collateral_token_address":"0x3333333333333333333333333333333333333333","collateral_token_symbol":"RUSD","collateral_token_decimals":18,"strike":"2000","base_iv":"0.8","expiry":"2026-12-04T16:36:39Z","is_call":true,"mark_price":"2000","collateral":"0","locked_collateral":"0","premium_collected":"0","total_long_size":"0","status":"active","created_by":"admin-1","created_at":"2026-11-04T16:36:39.075177715Z","updated_at":"2026-11-04T16:36:39.075177715Z"},"implied_volatility":"0.8","delta":"0.552743034574114732","gamma":"0.000862101170526148","vega":"226.744329974896719742","theta":"-45.95666238517838708","premium_per_unit":"186.352821444661749979","expired":false}],"success":true}`;
+
+const SERVER_OPTION_SERIES_DETAIL = `{"series":{"series":{"id":"ffb3134c-45d0-4328-bacf-c982839a92c3","key":"btc-2000-20261204","name":"BTC RUSD option","chain_id":1,"underlying_symbol":"BTC","collateral_token_address":"0x3333333333333333333333333333333333333333","collateral_token_symbol":"RUSD","collateral_token_decimals":18,"strike":"2000","base_iv":"0.8","expiry":"2026-12-04T16:36:39Z","is_call":true,"mark_price":"2000","collateral":"0","locked_collateral":"0","premium_collected":"0","total_long_size":"0","status":"active","created_by":"admin-1","created_at":"2026-11-04T16:36:39.075177715Z","updated_at":"2026-11-04T16:36:39.075177715Z"},"implied_volatility":"0.8","delta":"0.552743034574114732","gamma":"0.000862101170526148","vega":"226.744329974896719742","theta":"-45.95666238517838708","premium_per_unit":"186.352821444661749979","expired":false},"success":true}`;
+
+const SERVER_OPTION_BUY = `{"premium":"186352821444661749979","size":"1","success":true}`;
+
+const SERVER_OPTION_POSITIONS = `{"positions":[{"position":{"id":"35c86ad0-8c8e-47df-99a6-3ec7f5f7c005","series_id":"ffb3134c-45d0-4328-bacf-c982839a92c3","user_id":"trader-1","size":"1000000000000000000","premium_paid":"186352821444661749979","claimed_payout":"0","created_at":"2026-11-04T16:36:39.077671515Z","updated_at":"2026-11-04T16:36:39.077671515Z"},"series":{"id":"ffb3134c-45d0-4328-bacf-c982839a92c3","key":"btc-2000-20261204","name":"BTC RUSD option","chain_id":1,"underlying_symbol":"BTC","collateral_token_address":"0x3333333333333333333333333333333333333333","collateral_token_symbol":"RUSD","collateral_token_decimals":18,"strike":"2000","base_iv":"0.8","expiry":"2026-12-04T16:36:39Z","is_call":true,"mark_price":"2000","collateral":"1000186352821444661749979","locked_collateral":"2000000000000000000000","premium_collected":"186352821444661749979","total_long_size":"1000000000000000000","status":"active","created_by":"admin-1","created_at":"2026-11-04T16:36:39.075177715Z","updated_at":"2026-11-04T16:36:39.077558285Z"},"current_premium":"187.2595972548250677","payout_estimate":"0"}],"success":true}`;
+
+const SERVER_OPTION_EXERCISE = `{"payout":"500000000000000000000","success":true}`;
+
+test("live /options/series payload satisfies optionSeriesViewListValidator", () => {
+  const series = parse(optionSeriesViewListValidator, SERVER_OPTION_SERIES, "options");
+  assert.equal(series.length, 1);
+  assert.equal(series[0].series.key, "btc-2000-20261204");
+  assert.equal(series[0].series.is_call, true);
+  assert.equal(series[0].premium_per_unit, "186.352821444661749979");
+  assert.equal(series[0].delta, "0.552743034574114732");
+  assert.equal(series[0].expired, false);
+});
+
+test("live /options/series/:id payload satisfies optionSeriesEnvelopeValidator", () => {
+  const view = parse(optionSeriesEnvelopeValidator, SERVER_OPTION_SERIES_DETAIL, "optionSeries");
+  assert.equal(view.series.strike, "2000");
+  assert.equal(view.series.collateral_token_symbol, "RUSD");
+  assert.equal(view.implied_volatility, "0.8");
+});
+
+test("live /options/series/:id/buy payload satisfies optionBuyResultValidator", () => {
+  const result = parse(optionBuyResultValidator, SERVER_OPTION_BUY, "optionBuy");
+  assert.equal(result.success, true);
+  assert.equal(result.premium, "186352821444661749979");
+  assert.equal(result.size, "1");
+});
+
+test("live /options/positions payload satisfies optionPositionViewListValidator", () => {
+  const positions = parse(optionPositionViewListValidator, SERVER_OPTION_POSITIONS, "optionPositions");
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].position.size, "1000000000000000000");
+  assert.equal(positions[0].current_premium, "187.2595972548250677");
+  assert.equal(positions[0].series.key, "btc-2000-20261204");
+});
+
+test("live /options/series/:id/exercise payload satisfies optionExerciseResultValidator", () => {
+  const result = parse(optionExerciseResultValidator, SERVER_OPTION_EXERCISE, "optionExercise");
+  assert.equal(result.success, true);
+  assert.equal(result.payout, "500000000000000000000");
 });

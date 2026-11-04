@@ -37,6 +37,10 @@ import type {
   MarketStats,
   MarginAccountView,
   MarginListing,
+  OptionBuyResult,
+  OptionExerciseResult,
+  OptionPositionView,
+  OptionSeriesView,
   OtcOrder,
   PerpMarket,
   PerpPosition,
@@ -711,6 +715,158 @@ export function useClaimAirdrop() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["airdrops"] });
       void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/* --------------------------------------------------------------- options */
+
+/** Tradable option series with their live greeks. */
+export function useOptionSeries(): UseQueryResult<OptionSeriesView[], Error> {
+  return useQuery<OptionSeriesView[], Error>({
+    queryKey: ["options", "series"],
+    queryFn: () => endpoints.getOptionSeries(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Every option series, including paused and settled ones (admin view). */
+export function useAllOptionSeries(enabled = true): UseQueryResult<OptionSeriesView[], Error> {
+  return useQuery<OptionSeriesView[], Error>({
+    queryKey: ["options", "series", "all"],
+    queryFn: () => endpoints.getAllOptionSeries(),
+    enabled,
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's open option positions. */
+export function useOptionPositions(): UseQueryResult<OptionPositionView[], Error> {
+  return useQuery<OptionPositionView[], Error>({
+    queryKey: ["options", "positions"],
+    queryFn: () => endpoints.getOptionPositions(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Buys a long option position, capping the premium paid. */
+export function useBuyOption() {
+  const queryClient = useQueryClient();
+  return useMutation<OptionBuyResult, Error, { id: string; size: string; maxPremium: string }>({
+    mutationFn: (params) => endpoints.buyOption(params.id, params.size, params.maxPremium),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Deposits settlement collateral into a series. */
+export function useAddOptionCollateral() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, { id: string; amount: string }>({
+    mutationFn: (params) => endpoints.addOptionCollateral(params.id, params.amount),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Withdraws collateral that is not backing an open position. */
+export function useRemoveOptionCollateral() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, { id: string; amount: string }>({
+    mutationFn: (params) => endpoints.removeOptionCollateral(params.id, params.amount),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Exercises a settled position, paying its intrinsic value. */
+export function useExerciseOption() {
+  const queryClient = useQueryClient();
+  return useMutation<OptionExerciseResult, Error, string>({
+    mutationFn: (id: string) => endpoints.exerciseOption(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Withdraws an LP's share of a settled series' remaining collateral. */
+export function useWithdrawOptionLiquidity() {
+  const queryClient = useQueryClient();
+  return useMutation<void, Error, { id: string; amount: string }>({
+    mutationFn: (params) => endpoints.withdrawOptionLiquidity(params.id, params.amount),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Admin: creates an option series. */
+export function useCreateOptionSeries() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof endpoints.createOptionSeries>[0]) =>
+      endpoints.createOptionSeries(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+    },
+  });
+}
+
+/** Admin: edits a series. */
+export function useUpdateOptionSeries() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; payload: Parameters<typeof endpoints.updateOptionSeries>[1] }) =>
+      endpoints.updateOptionSeries(params.id, params.payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+    },
+  });
+}
+
+/** Admin: closes an empty series. */
+export function useDeleteOptionSeries() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.deleteOptionSeries(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+    },
+  });
+}
+
+/** Admin: settles an expired series at a settlement price. */
+export function useSettleOptionSeries() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; settlementPrice: string }) =>
+      endpoints.settleOptionSeries(params.id, params.settlementPrice),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
+    },
+  });
+}
+
+/** Admin: refreshes a series' mark price from the oracle. */
+export function useRefreshOptionMarkPrice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.refreshOptionMarkPrice(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["options"] });
     },
   });
 }

@@ -796,7 +796,9 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.farms ??
         record.stakes ??
         record.campaigns ??
-        record.allocations;
+        record.allocations ??
+        record.series ??
+        record.option_series;
       if (items !== undefined) {
         // A Go nil slice serialises as `null`; treat it as an empty list
         // rather than failing the whole response.
@@ -804,6 +806,25 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
       }
     }
     return arrayLenient(element)(value, path);
+  };
+}
+
+/**
+ * Unwraps a single-key envelope such as `{ series: {...} }` or
+ * `{ campaign: {...} }` before validating the inner object. The key must be
+ * named explicitly because a wrapper and its payload can share a field name:
+ * `OptionSeriesView` has its own `series` field, so a generic unwrap would
+ * strip the wrong level.
+ */
+function envelope<T>(key: string, inner: Validator<T>): Validator<T> {
+  return (value: unknown, path = "value"): T => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const record = value as Record<string, unknown>;
+      if (record[key] !== undefined) {
+        return inner(record[key], `${path}.${key}`);
+      }
+    }
+    return inner(value, path);
   };
 }
 
@@ -1728,3 +1749,170 @@ export const airdropClaimResultValidator = object<AirdropClaimResult>({
   symbol: string,
   amount: decimal,
 });
+
+/* ---------------------------------------------------------------- options */
+
+/**
+ * An option series from `GET /options/series`.
+ *
+ * Every monetary field is an exact decimal string. `strike`, `base_iv` and
+ * `mark_price` are plain decimals, while the pool's collateral and size fields
+ * are integers in the settlement token's smallest unit.
+ */
+export interface OptionSeries {
+  id: string;
+  key: string;
+  name: string;
+  chain_id: number;
+  underlying_symbol: string;
+  collateral_token_address: string;
+  collateral_token_symbol: string;
+  collateral_token_decimals: number;
+  strike: string;
+  base_iv: string;
+  expiry: string;
+  is_call: boolean;
+  mark_price: string;
+  collateral: string;
+  locked_collateral: string;
+  premium_collected: string;
+  total_long_size: string;
+  settlement_price?: string;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const optionSeriesValidator = object<OptionSeries>(
+  {
+    id: string,
+    key: string,
+    name: displayText,
+    chain_id: integer,
+    underlying_symbol: string,
+    collateral_token_address: withDefault(string, ""),
+    collateral_token_symbol: string,
+    collateral_token_decimals: withDefault(integer, 18),
+    strike: decimal,
+    base_iv: decimal,
+    expiry: timestamp,
+    is_call: boolean,
+    mark_price: withDefault(decimal, "0"),
+    collateral: withDefault(decimal, "0"),
+    locked_collateral: withDefault(decimal, "0"),
+    premium_collected: withDefault(decimal, "0"),
+    total_long_size: withDefault(decimal, "0"),
+    settlement_price: withDefault(decimal, "0"),
+    status: string,
+    created_by: withDefault(string, ""),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "collateral_token_address",
+      "collateral_token_decimals",
+      "mark_price",
+      "collateral",
+      "locked_collateral",
+      "premium_collected",
+      "total_long_size",
+      "settlement_price",
+      "created_by",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/**
+ * A series with its live greeks and unit premium, from `GET /options/series`.
+ *
+ * `expired` is derived on the server so the UI does not have to compare clocks.
+ */
+export interface OptionSeriesView {
+  series: OptionSeries;
+  implied_volatility: string;
+  delta: string;
+  gamma: string;
+  vega: string;
+  theta: string;
+  premium_per_unit: string;
+  expired: boolean;
+}
+
+export const optionSeriesViewValidator = object<OptionSeriesView>({
+  series: optionSeriesValidator,
+  implied_volatility: withDefault(decimal, "0"),
+  delta: withDefault(decimal, "0"),
+  gamma: withDefault(decimal, "0"),
+  vega: withDefault(decimal, "0"),
+  theta: withDefault(decimal, "0"),
+  premium_per_unit: withDefault(decimal, "0"),
+  expired: withDefault(boolean, false),
+});
+
+export const optionSeriesViewListValidator = listingArray(optionSeriesViewValidator);
+
+/** A holder's option position, from `GET /options/positions`. */
+export interface OptionPositionView {
+  position: {
+    id: string;
+    series_id: string;
+    user_id: string;
+    size: string;
+    premium_paid: string;
+    claimed_payout: string;
+    created_at: string;
+    updated_at: string;
+  };
+  series: OptionSeries;
+  current_premium: string;
+  payout_estimate: string;
+}
+
+export const optionPositionViewValidator = object<OptionPositionView>({
+  position: object({
+    id: string,
+    series_id: string,
+    user_id: withDefault(string, ""),
+    size: withDefault(decimal, "0"),
+    premium_paid: withDefault(decimal, "0"),
+    claimed_payout: withDefault(decimal, "0"),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  }),
+  series: optionSeriesValidator,
+  current_premium: withDefault(decimal, "0"),
+  payout_estimate: withDefault(decimal, "0"),
+});
+
+export const optionPositionViewListValidator = listingArray(optionPositionViewValidator);
+
+/** The result of buying an option. */
+export interface OptionBuyResult {
+  success: boolean;
+  premium: string;
+  size: string;
+}
+
+export const optionBuyResultValidator = object<OptionBuyResult>({
+  success: boolean,
+  premium: decimal,
+  size: decimal,
+});
+
+/** The result of exercising a settled option. */
+export interface OptionExerciseResult {
+  success: boolean;
+  payout: string;
+}
+
+export const optionExerciseResultValidator = object<OptionExerciseResult>({
+  success: boolean,
+  payout: decimal,
+});
+
+/** The admin create/update/settle/refresh endpoints wrap the view in `series`. */
+export const optionSeriesEnvelopeValidator = envelope("series", optionSeriesViewValidator);
