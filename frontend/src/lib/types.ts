@@ -798,7 +798,10 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.campaigns ??
         record.allocations ??
         record.series ??
-        record.option_series;
+        record.option_series ??
+        record.collections ??
+        record.offers ??
+        record.nft_listings;
       if (items !== undefined) {
         // A Go nil slice serialises as `null`; treat it as an empty list
         // rather than failing the whole response.
@@ -1916,3 +1919,228 @@ export const optionExerciseResultValidator = object<OptionExerciseResult>({
 
 /** The admin create/update/settle/refresh endpoints wrap the view in `series`. */
 export const optionSeriesEnvelopeValidator = envelope("series", optionSeriesViewValidator);
+
+// ---------------------------------------------------------------------------
+// Self-built NFT marketplace.
+//
+// A collection groups tokens; a token is owned by exactly one account and is
+// moved to the escrow sentinel while a live listing holds it. A listing or an
+// offer freezes its fee bps at creation, so the amount the seller receives is
+// fixed even if the marketplace fee changes later.
+// ---------------------------------------------------------------------------
+
+/** A collection as returned by `/nft/collections`. */
+export interface NFTCollection {
+  id: string;
+  key: string;
+  name: string;
+  symbol: string;
+  chain_id: number;
+  contract_address: string;
+  base_uri: string;
+  total_supply: number;
+  status: string;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const nftCollectionValidator = object<NFTCollection>(
+  {
+    id: string,
+    key: string,
+    name: displayText,
+    symbol: string,
+    chain_id: integer,
+    contract_address: withDefault(string, ""),
+    base_uri: withDefault(string, ""),
+    total_supply: withDefault(integer, 0),
+    status: string,
+    created_by: withDefault(string, ""),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["contract_address", "base_uri", "total_supply", "created_by", "created_at", "updated_at"] },
+);
+
+/** A token as returned by `/nft/tokens/mine`. */
+export interface NFTToken {
+  id: string;
+  collection_id: string;
+  token_id: number;
+  owner_user_id: string;
+  uri: string;
+  escrow_listing_id?: string | null;
+  minted_by: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const nftTokenValidator = object<NFTToken>(
+  {
+    id: string,
+    collection_id: string,
+    token_id: integer,
+    owner_user_id: withDefault(string, ""),
+    uri: withDefault(string, ""),
+    escrow_listing_id: withDefault(nullable(string), null),
+    minted_by: withDefault(string, ""),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  { optional: ["owner_user_id", "uri", "escrow_listing_id", "minted_by", "created_at", "updated_at"] },
+);
+
+/** A fixed-price listing, from `/nft/listings`. */
+export interface NFTListing {
+  id: string;
+  collection_id: string;
+  token_id: number;
+  seller_user_id: string;
+  payment_token_address: string;
+  payment_token_symbol: string;
+  payment_token_decimals: number;
+  price: string;
+  fee_bps: number;
+  deadline: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const nftListingValidator = object<NFTListing>(
+  {
+    id: string,
+    collection_id: string,
+    token_id: integer,
+    seller_user_id: withDefault(string, ""),
+    payment_token_address: withDefault(string, ""),
+    payment_token_symbol: string,
+    payment_token_decimals: withDefault(integer, 18),
+    price: decimal,
+    fee_bps: withDefault(integer, 0),
+    deadline: timestamp,
+    status: string,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "seller_user_id",
+      "payment_token_address",
+      "payment_token_decimals",
+      "fee_bps",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/** A live listing joined with its token and collection, from `GET /nft/listings`. */
+export interface NFTListingView {
+  listing: NFTListing;
+  token: NFTToken;
+  collection: NFTCollection;
+  active: boolean;
+}
+
+export const nftListingViewValidator = object<NFTListingView>({
+  listing: nftListingValidator,
+  token: nftTokenValidator,
+  collection: nftCollectionValidator,
+  active: withDefault(boolean, true),
+});
+
+export const nftListingViewListValidator = listingArray(nftListingViewValidator);
+
+/** An escrowed bid, from `/nft/offers`. */
+export interface NFTOffer {
+  id: string;
+  collection_id: string;
+  token_id: number;
+  buyer_user_id: string;
+  payment_token_address: string;
+  payment_token_symbol: string;
+  payment_token_decimals: number;
+  amount: string;
+  fee_bps: number;
+  deadline: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const nftOfferValidator = object<NFTOffer>(
+  {
+    id: string,
+    collection_id: string,
+    token_id: integer,
+    buyer_user_id: withDefault(string, ""),
+    payment_token_address: withDefault(string, ""),
+    payment_token_symbol: string,
+    payment_token_decimals: withDefault(integer, 18),
+    amount: decimal,
+    fee_bps: withDefault(integer, 0),
+    deadline: timestamp,
+    status: string,
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {
+    optional: [
+      "buyer_user_id",
+      "payment_token_address",
+      "payment_token_decimals",
+      "fee_bps",
+      "created_at",
+      "updated_at",
+    ],
+  },
+);
+
+/** A live offer joined with its token and collection, from `GET /nft/offers`. */
+export interface NFTOfferView {
+  offer: NFTOffer;
+  token: NFTToken;
+  collection: NFTCollection;
+  active: boolean;
+}
+
+export const nftOfferViewValidator = object<NFTOfferView>({
+  offer: nftOfferValidator,
+  token: nftTokenValidator,
+  collection: nftCollectionValidator,
+  active: withDefault(boolean, true),
+});
+
+export const nftOfferViewListValidator = listingArray(nftOfferViewValidator);
+
+/** The marketplace fee configuration, from `GET /nft/config`. */
+export interface NFTMarketplaceConfig {
+  escrow_account: string;
+  fee_account: string;
+  fee_bps: number;
+  max_fee_bps: number;
+}
+
+export const nftMarketplaceConfigValidator = object<NFTMarketplaceConfig>({
+  escrow_account: withDefault(string, ""),
+  fee_account: withDefault(string, ""),
+  fee_bps: withDefault(integer, 0),
+  max_fee_bps: withDefault(integer, 500),
+});
+
+/** The result of buying a listing: the settled listing comes back. */
+export const nftListingEnvelopeValidator = envelope("listing", nftListingValidator);
+
+/** The result of opening an offer: the escrowed offer comes back. */
+export const nftOfferEnvelopeValidator = envelope("offer", nftOfferValidator);
+
+/** The admin create/mint endpoints wrap the collection or token. */
+export const nftCollectionEnvelopeValidator = envelope("collection", nftCollectionValidator);
+export const nftTokenEnvelopeValidator = envelope("token", nftTokenValidator);
+
+export const nftCollectionListValidator = listingArray(nftCollectionValidator);
+export const nftTokenListValidator = listingArray(nftTokenValidator);
+export const nftListingListValidator = listingArray(nftListingValidator);
+export const nftOfferListValidator = listingArray(nftOfferValidator);

@@ -37,6 +37,13 @@ import type {
   MarketStats,
   MarginAccountView,
   MarginListing,
+  NFTCollection,
+  NFTListing,
+  NFTListingView,
+  NFTMarketplaceConfig,
+  NFTOffer,
+  NFTOfferView,
+  NFTToken,
   OptionBuyResult,
   OptionExerciseResult,
   OptionPositionView,
@@ -867,6 +874,249 @@ export function useRefreshOptionMarkPrice() {
     mutationFn: (id: string) => endpoints.refreshOptionMarkPrice(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["options"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------------- nft */
+
+/** Live NFT listings, each joined with its token and collection. */
+export function useNFTListings(): UseQueryResult<NFTListingView[], Error> {
+  return useQuery<NFTListingView[], Error>({
+    queryKey: ["nft", "listings"],
+    queryFn: () => endpoints.getNFTListings(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Active NFT collections. */
+export function useNFTCollections(): UseQueryResult<NFTCollection[], Error> {
+  return useQuery<NFTCollection[], Error>({
+    queryKey: ["nft", "collections"],
+    queryFn: () => endpoints.getNFTCollections(),
+    staleTime: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** Live offers, optionally filtered to one token. */
+export function useNFTOffers(
+  collectionId?: string,
+  tokenId?: number,
+): UseQueryResult<NFTOfferView[], Error> {
+  return useQuery<NFTOfferView[], Error>({
+    queryKey: ["nft", "offers", collectionId ?? "all", tokenId ?? "all"],
+    queryFn: () => endpoints.getNFTOffers(collectionId, tokenId),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The marketplace fee configuration. */
+export function useNFTConfig(): UseQueryResult<NFTMarketplaceConfig, Error> {
+  return useQuery<NFTMarketplaceConfig, Error>({
+    queryKey: ["nft", "config"],
+    queryFn: () => endpoints.getNFTConfig(),
+    staleTime: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** The caller's own tokens. */
+export function useMyNFTs(): UseQueryResult<NFTToken[], Error> {
+  return useQuery<NFTToken[], Error>({
+    queryKey: ["nft", "tokens", "mine"],
+    queryFn: () => endpoints.getMyNFTs(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The caller's own listings. */
+export function useMyNFTListings(): UseQueryResult<NFTListing[], Error> {
+  return useQuery<NFTListing[], Error>({
+    queryKey: ["nft", "listings", "mine"],
+    queryFn: () => endpoints.getMyNFTListings(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The caller's own offers. */
+export function useMyNFTOffers(): UseQueryResult<NFTOffer[], Error> {
+  return useQuery<NFTOffer[], Error>({
+    queryKey: ["nft", "offers", "mine"],
+    queryFn: () => endpoints.getMyNFTOffers(),
+    enabled: isAuthenticated(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Lists an owned token for a fixed price. */
+export function useListNFT() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof endpoints.listNFT>[0]) => endpoints.listNFT(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Buys a live listing. */
+export function useBuyNFT() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.buyNFT(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Cancels a listing, returning the escrowed token. */
+export function useCancelNFTListing() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.cancelNFTListing(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Re-prices a listing the caller owns. */
+export function useUpdateNFTListingPrice() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; price: string }) =>
+      endpoints.updateNFTListingPrice(params.id, params.price),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Opens an escrowed bid on a token. */
+export function useMakeNFTOffer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof endpoints.makeNFTOffer>[0]) =>
+      endpoints.makeNFTOffer(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Accepts an escrowed bid. */
+export function useAcceptNFTOffer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; collectionId: string; tokenId: number }) =>
+      endpoints.acceptNFTOffer(params.id, params.collectionId, params.tokenId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Cancels an offer, refunding the escrowed bid. */
+export function useCancelNFTOffer() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.cancelNFTOffer(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+      void queryClient.invalidateQueries({ queryKey: ["balances"] });
+    },
+  });
+}
+
+/** Admin: every collection, including paused ones. */
+export function useAllNFTCollections(enabled = true): UseQueryResult<NFTCollection[], Error> {
+  return useQuery<NFTCollection[], Error>({
+    queryKey: ["nft", "collections", "all"],
+    queryFn: () => endpoints.getAllNFTCollections(),
+    enabled,
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: every listing, including settled and cancelled ones. */
+export function useAllNFTListings(enabled = true): UseQueryResult<NFTListing[], Error> {
+  return useQuery<NFTListing[], Error>({
+    queryKey: ["nft", "listings", "all"],
+    queryFn: () => endpoints.getAllNFTListings(),
+    enabled,
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: creates a collection. */
+export function useCreateNFTCollection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof endpoints.createNFTCollection>[0]) =>
+      endpoints.createNFTCollection(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Admin: edits a collection. */
+export function useUpdateNFTCollection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { id: string; payload: Parameters<typeof endpoints.updateNFTCollection>[1] }) =>
+      endpoints.updateNFTCollection(params.id, params.payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Admin: deletes an empty collection. */
+export function useDeleteNFTCollection() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => endpoints.deleteNFTCollection(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Admin: mints a token into an account. */
+export function useMintNFT() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { collectionId: string; payload: Parameters<typeof endpoints.mintNFT>[1] }) =>
+      endpoints.mintNFT(params.collectionId, params.payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/** Admin: sets the marketplace fee. */
+export function useUpdateNFTConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: Parameters<typeof endpoints.updateNFTConfig>[0]) =>
+      endpoints.updateNFTConfig(payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["nft"] });
     },
   });
 }

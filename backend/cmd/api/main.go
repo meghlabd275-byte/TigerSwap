@@ -116,6 +116,10 @@ func main() {
 		&models.OptionSeries{},
 		&models.OptionPosition{},
 		&models.OptionLiquidity{},
+		&models.NFTCollection{},
+		&models.NFTToken{},
+		&models.NFTListing{},
+		&models.NFTOffer{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -186,6 +190,24 @@ func main() {
 	optionService := services.NewOptionService(db, ledgerService)
 	optionService.SetPriceSource(priceAggregator)
 
+	// Self-built NFT marketplace. A listing escrows the token and an offer
+	// escrows the buyer's payment, so neither a sale nor an accepted offer can
+	// fail for a missing asset or balance. The marketplace fee is frozen onto
+	// each listing and offer at creation.
+	nftService := services.NewNFTMarketplaceService(db, ledgerService)
+	if feeAccount := os.Getenv("NFT_FEE_ACCOUNT"); feeAccount != "" {
+		nftService.SetFeeAccount(feeAccount)
+	}
+	if feeBpsRaw := os.Getenv("NFT_FEE_BPS"); feeBpsRaw != "" {
+		if feeBps, err := strconv.Atoi(feeBpsRaw); err == nil {
+			if err := nftService.SetFeeBps(feeBps); err != nil {
+				log.Printf("NFT_FEE_BPS is invalid: %v", err)
+			}
+		} else {
+			log.Printf("NFT_FEE_BPS is not a number: %v", err)
+		}
+	}
+
 	var walletService *services.WalletService
 	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
@@ -242,6 +264,7 @@ func main() {
 		farmService:        farmService,
 		airdropService:     airdropService,
 		optionService:      optionService,
+		nftService:         nftService,
 	})
 
 	// Get port from environment or default

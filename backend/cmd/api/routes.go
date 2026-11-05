@@ -40,6 +40,7 @@ type apiDeps struct {
 	farmService        *services.FarmService
 	airdropService     *services.AirdropService
 	optionService      *services.OptionService
+	nftService         *services.NFTMarketplaceService
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -252,6 +253,20 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/options/series/:id/exercise", deps.optionService.Exercise)
 			protected.POST("/options/series/:id/withdraw", deps.optionService.WithdrawLiquidity)
 			protected.GET("/options/positions", deps.optionService.GetMyPositions)
+
+			// NFT marketplace: list an escrowed token, buy, cancel, and the
+			// offer book. Every leg moves a real ledger balance and a real
+			// token; the token is escrowed for the life of a listing.
+			protected.POST("/nft/listings", deps.nftService.ListNFT)
+			protected.POST("/nft/listings/:id/buy", deps.nftService.BuyNFT)
+			protected.POST("/nft/listings/:id/cancel", deps.nftService.CancelListing)
+			protected.PUT("/nft/listings/:id", deps.nftService.UpdateListingPrice)
+			protected.GET("/nft/listings/mine", deps.nftService.GetMyListings)
+			protected.POST("/nft/offers", deps.nftService.MakeOffer)
+			protected.POST("/nft/offers/:id/accept", deps.nftService.AcceptOffer)
+			protected.POST("/nft/offers/:id/cancel", deps.nftService.CancelOffer)
+			protected.GET("/nft/offers/mine", deps.nftService.GetMyOffers)
+			protected.GET("/nft/tokens/mine", deps.nftService.GetMyNFTs)
 		}
 
 		// Admin routes (protected by admin middleware)
@@ -382,6 +397,16 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			admin.DELETE("/options/series/:id", deps.optionService.DeleteSeries)
 			admin.POST("/options/series/:id/settle", deps.optionService.SettleSeries)
 			admin.POST("/options/series/:id/refresh-price", deps.optionService.RefreshMarkPrice)
+
+			// NFT marketplace administration: collections, minting, and the
+			// marketplace fee.
+			admin.POST("/nft/collections", deps.nftService.CreateCollection)
+			admin.GET("/nft/collections", deps.nftService.GetCollections)
+			admin.PUT("/nft/collections/:id", deps.nftService.UpdateCollection)
+			admin.DELETE("/nft/collections/:id", deps.nftService.DeleteCollection)
+			admin.POST("/nft/collections/:id/mint", deps.nftService.Mint)
+			admin.GET("/nft/listings", deps.nftService.GetListings)
+			admin.PUT("/nft/config", deps.nftService.UpdateMarketplaceConfig)
 		}
 
 		// Price aggregation (public)
@@ -415,6 +440,13 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		public.GET("/options/series", deps.optionService.GetActiveSeries)
 		public.GET("/options/series/all", deps.optionService.GetSeries)
 		public.GET("/options/series/:id", deps.optionService.GetSeriesDetail)
+
+		// NFT marketplace (public read): live listings, the offer book for a
+		// token, active collections and the fee configuration.
+		public.GET("/nft/listings", deps.nftService.GetActiveListings)
+		public.GET("/nft/collections", deps.nftService.GetActiveCollections)
+		public.GET("/nft/offers", deps.nftService.GetOffers)
+		public.GET("/nft/config", deps.nftService.GetMarketplaceConfig)
 
 		// TigerSwap router (public read, protected broadcast)
 		public.GET("/tigerswap/supported", deps.swapExecutor.GetSupportedDEXHandler)

@@ -13,6 +13,7 @@ package services
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -234,4 +235,57 @@ func TestOptionResponseWireFormat(t *testing.T) {
 		"/options/series/"+seriesID+"/exercise", "", gin.Params{{Key: "id", Value: seriesID}})
 	t.Logf("SERVER_OPTION_EXERCISE = `%s`", exerciseBody)
 	assertKeys(t, exerciseBody, "payout", "success")
+}
+
+// TestNFTResponseWireFormat pins the NFT marketplace payloads. The frontend
+// fixtures for the NFT panel are copied from this test's log output, so a field
+// rename fails here first.
+func TestNFTResponseWireFormat(t *testing.T) {
+        env := newNFTTestEnv(t)
+        collectionID := nftCollectionID(t, env)
+        tokenID := nftMint(t, env, collectionID, "seller-1")
+
+        _, collectionsBody := callUserHandler(t, env.engine.GetActiveCollections, "", http.MethodGet,
+                "/nft/collections", "", nil)
+        t.Logf("SERVER_NFT_COLLECTIONS = `%s`", collectionsBody)
+        assertKeys(t, collectionsBody, "collections", "success")
+
+        _, configBody := callUserHandler(t, env.engine.GetMarketplaceConfig, "", http.MethodGet,
+                "/nft/config", "", nil)
+        t.Logf("SERVER_NFT_CONFIG = `%s`", configBody)
+        assertKeys(t, configBody, "escrow_account", "fee_account", "fee_bps", "max_fee_bps", "success")
+
+        _, mineBody := callUserHandler(t, env.engine.GetMyNFTs, "seller-1", http.MethodGet,
+                "/nft/tokens/mine", "", nil)
+        t.Logf("SERVER_NFT_TOKENS_MINE = `%s`", mineBody)
+        assertKeys(t, mineBody, "success", "tokens")
+
+        fund(t, env, "buyer-1", 1_000_000)
+        listingID := listNFT(t, env, collectionID, tokenID, "seller-1", "100000")
+
+        _, listingsBody := callUserHandler(t, env.engine.GetActiveListings, "", http.MethodGet,
+                "/nft/listings", "", nil)
+        t.Logf("SERVER_NFT_LISTINGS = `%s`", listingsBody)
+        assertKeys(t, listingsBody, "listings", "success")
+
+        _, buyBody := callUserHandler(t, env.engine.BuyNFT, "buyer-1", http.MethodPost,
+                "/nft/listings/"+listingID+"/buy", "", gin.Params{{Key: "id", Value: listingID}})
+        t.Logf("SERVER_NFT_BUY = `%s`", buyBody)
+        assertKeys(t, buyBody, "listing", "success")
+
+        // Offers: mint a fresh token so it is not escrowed by the listing above.
+        offerTokenID := nftMint(t, env, collectionID, "seller-2")
+        fund(t, env, "buyer-2", 1_000_000)
+        offerBody := fmt.Sprintf(`{"collection_id":%q,"token_id":%d,"payment_token_address":%q,`+
+                `"payment_token_symbol":"RUSD","amount":"50000","deadline":%q}`,
+                collectionID, offerTokenID, nftPaymentAddress, time.Now().Add(24*time.Hour).Format(time.RFC3339))
+        _, makeOfferBody := callUserHandler(t, env.engine.MakeOffer, "buyer-2", http.MethodPost,
+                "/nft/offers", offerBody, nil)
+        t.Logf("SERVER_NFT_OFFER = `%s`", makeOfferBody)
+        assertKeys(t, makeOfferBody, "offer", "success")
+
+        offerURL := "/nft/offers?collection_id=" + collectionID + fmt.Sprintf("&token_id=%d", offerTokenID)
+        _, offersBody := callUserHandler(t, env.engine.GetOffers, "", http.MethodGet, offerURL, "", nil)
+        t.Logf("SERVER_NFT_OFFERS = `%s`", offersBody)
+        assertKeys(t, offersBody, "offers", "success")
 }

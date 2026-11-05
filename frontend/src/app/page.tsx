@@ -28,6 +28,7 @@ import {
   Vote,
   Bot,
   Users,
+  Gem,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -46,8 +47,9 @@ import { OtcTwamm } from '@/components/OtcTwamm';
 import { CopyTrading } from '@/components/CopyTrading';
 import { Farming } from '@/components/Farming';
 import { OptionsTrading } from '@/components/OptionsTrading';
+import { NFTMarketplace } from '@/components/NFTMarketplace';
 
-type Tab = 'swap' | 'perpetuals' | 'margin' | 'options' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -76,6 +78,7 @@ export default function Home() {
     { id: 'perpetuals' as const, label: 'Perpetuals', icon: TrendingUp },
     { id: 'margin' as const, label: 'Margin', icon: Coins },
     { id: 'options' as const, label: 'Options', icon: LineChart },
+    { id: 'nft' as const, label: 'NFT', icon: Gem },
     { id: 'cross-chain' as const, label: 'Cross-Chain', icon: Globe },
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
     { id: 'governance' as const, label: 'Governance', icon: Vote },
@@ -149,6 +152,7 @@ export default function Home() {
                 {activeTab === 'perpetuals' && <PerpetualTrading />}
                 {activeTab === 'margin' && <MarginTrading />}
                 {activeTab === 'options' && <OptionsTrading />}
+                {activeTab === 'nft' && <NFTMarketplace />}
                 {activeTab === 'cross-chain' && <CrossChain />}
                 {activeTab === 'portfolio' && <Portfolio />}
                 {activeTab === 'governance' && <Governance />}

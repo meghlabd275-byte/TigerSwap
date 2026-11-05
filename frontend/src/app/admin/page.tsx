@@ -23,6 +23,7 @@ import {
   Lock,
   Unlock,
   Sprout,
+  Gem,
 } from 'lucide-react';
 import { getCurrentUser, login, logout, restoreSession, subscribe } from '@/lib/auth';
 import { endpoints } from '@/lib/endpoints';
@@ -39,8 +40,9 @@ import {
 import { AdminListingsPanel } from '@/components/AdminListingsPanel';
 import { AdminFarmingPanel } from '@/components/AdminFarmingPanel';
 import { AdminOptionsPanel } from '@/components/AdminOptionsPanel';
+import { AdminNFTMarketplacePanel } from '@/components/AdminNFTMarketplacePanel';
 
-type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'options' | 'farming' | 'fees' | 'settings' | 'activity';
+type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'options' | 'nft' | 'farming' | 'fees' | 'settings' | 'activity';
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -464,6 +466,7 @@ export default function AdminPage() {
               { id: 'listings', label: 'Listings', icon: BarChart3 },
               { id: 'launchpad', label: 'Launchpad', icon: Rocket },
               { id: 'options', label: 'Options', icon: Activity },
+              { id: 'nft', label: 'NFT', icon: Gem },
               { id: 'farming', label: 'Farms & Airdrops', icon: Sprout },
               { id: 'fees', label: 'Fees', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
@@ -865,6 +868,13 @@ export default function AdminPage() {
             <motion.div key="options" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <h2 className="text-2xl font-bold text-white mb-6">Option Series</h2>
               <AdminOptionsPanel />
+            </motion.div>
+          )}
+
+          {activeTab === 'nft' && (
+            <motion.div key="nft" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <h2 className="text-2xl font-bold text-white mb-6">NFT Marketplace</h2>
+              <AdminNFTMarketplacePanel />
             </motion.div>
           )}
 

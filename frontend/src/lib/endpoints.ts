@@ -45,6 +45,13 @@ import {
   MarginListing,
   MarginListingInput,
   MarketStats,
+  NFTCollection,
+  NFTListing,
+  NFTListingView,
+  NFTMarketplaceConfig,
+  NFTOffer,
+  NFTOfferView,
+  NFTToken,
   OtcOrder,
   OptionBuyResult,
   OptionExerciseResult,
@@ -119,6 +126,17 @@ import {
   marginListingListValidator,
   marginListingValidator,
   marketStatsValidator,
+  nftCollectionEnvelopeValidator,
+  nftCollectionListValidator,
+  nftListingEnvelopeValidator,
+  nftListingListValidator,
+  nftListingViewListValidator,
+  nftMarketplaceConfigValidator,
+  nftOfferEnvelopeValidator,
+  nftOfferListValidator,
+  nftOfferViewListValidator,
+  nftTokenEnvelopeValidator,
+  nftTokenListValidator,
   otcOrderListValidator,
   otcOrderValidator,
   perpMarketListValidator,
@@ -1026,5 +1044,183 @@ export const endpoints = {
   async refreshOptionMarkPrice(id: string): Promise<OptionSeriesView> {
     const body = await api.post(`/admin/options/series/${encodeURIComponent(id)}/refresh-price`, {});
     return optionSeriesEnvelopeValidator(body);
+  },
+
+  /**
+   * NFT marketplace: a self-built marketplace where a listing escrows the
+   * token and an offer escrows the bid, so settlement cannot fail for a missing
+   * asset or balance. Prices are exact integers in the payment token's smallest
+   * unit.
+   */
+
+  /** Live listings, each joined with its token and collection. */
+  async getNFTListings(): Promise<NFTListingView[]> {
+    const body = await api.get("/nft/listings", { authenticated: false });
+    return nftListingViewListValidator(body);
+  },
+
+  /** Active collections. */
+  async getNFTCollections(): Promise<NFTCollection[]> {
+    const body = await api.get("/nft/collections", { authenticated: false });
+    return nftCollectionListValidator(body);
+  },
+
+  /** Live offers, optionally filtered to one token. */
+  async getNFTOffers(collectionId?: string, tokenId?: number): Promise<NFTOfferView[]> {
+    const params = new URLSearchParams();
+    if (collectionId) {
+      params.set("collection_id", collectionId);
+    }
+    if (tokenId !== undefined) {
+      params.set("token_id", String(tokenId));
+    }
+    const query = params.toString();
+    const body = await api.get(`/nft/offers${query ? `?${query}` : ""}`, {
+      authenticated: false,
+    });
+    return nftOfferViewListValidator(body);
+  },
+
+  /** The marketplace fee configuration. */
+  async getNFTConfig(): Promise<NFTMarketplaceConfig> {
+    const body = await api.get("/nft/config", { authenticated: false });
+    return nftMarketplaceConfigValidator(body);
+  },
+
+  /** The caller's own tokens. */
+  async getMyNFTs(): Promise<NFTToken[]> {
+    const body = await api.get("/nft/tokens/mine");
+    return nftTokenListValidator(body);
+  },
+
+  /** The caller's own listings. */
+  async getMyNFTListings(): Promise<NFTListing[]> {
+    const body = await api.get("/nft/listings/mine");
+    return nftListingListValidator(body);
+  },
+
+  /** The caller's own offers. */
+  async getMyNFTOffers(): Promise<NFTOffer[]> {
+    const body = await api.get("/nft/offers/mine");
+    return nftOfferListValidator(body);
+  },
+
+  /** Lists an owned token for a fixed price, escrowing it. */
+  async listNFT(payload: {
+    collection_id: string;
+    token_id: number;
+    payment_token_address: string;
+    payment_token_symbol: string;
+    price: string;
+    deadline: string;
+  }): Promise<NFTListing> {
+    const body = await api.post("/nft/listings", payload);
+    return nftListingEnvelopeValidator(body);
+  },
+
+  /** Buys a live listing, paying the seller net of the frozen fee. */
+  async buyNFT(id: string): Promise<NFTListing> {
+    const body = await api.post(`/nft/listings/${encodeURIComponent(id)}/buy`, {});
+    return nftListingEnvelopeValidator(body);
+  },
+
+  /** Cancels a listing, returning the escrowed token. */
+  async cancelNFTListing(id: string): Promise<void> {
+    await api.post(`/nft/listings/${encodeURIComponent(id)}/cancel`, {});
+  },
+
+  /** Re-prices a listing the caller owns. */
+  async updateNFTListingPrice(id: string, price: string): Promise<NFTListing> {
+    const body = await api.put(`/nft/listings/${encodeURIComponent(id)}`, { price });
+    return nftListingEnvelopeValidator(body);
+  },
+
+  /** Opens an escrowed bid on a token. */
+  async makeNFTOffer(payload: {
+    collection_id: string;
+    token_id: number;
+    payment_token_address: string;
+    payment_token_symbol: string;
+    amount: string;
+    deadline: string;
+  }): Promise<NFTOffer> {
+    const body = await api.post("/nft/offers", payload);
+    return nftOfferEnvelopeValidator(body);
+  },
+
+  /** Accepts an escrowed bid, paying the seller net of the frozen fee. */
+  async acceptNFTOffer(id: string, collectionId: string, tokenId: number): Promise<NFTOffer> {
+    const params = new URLSearchParams({
+      collection_id: collectionId,
+      token_id: String(tokenId),
+    });
+    const body = await api.post(
+      `/nft/offers/${encodeURIComponent(id)}/accept?${params.toString()}`,
+      {},
+    );
+    return nftOfferEnvelopeValidator(body);
+  },
+
+  /** Cancels an offer, refunding the escrowed bid. */
+  async cancelNFTOffer(id: string): Promise<void> {
+    await api.post(`/nft/offers/${encodeURIComponent(id)}/cancel`, {});
+  },
+
+  /** Admin: create a collection. It starts paused until activated. */
+  async createNFTCollection(payload: {
+    key: string;
+    name: string;
+    symbol: string;
+    chain_id: number;
+    contract_address?: string;
+    base_uri?: string;
+    status?: string;
+  }): Promise<NFTCollection> {
+    const body = await api.post("/admin/nft/collections", payload);
+    return nftCollectionEnvelopeValidator(body);
+  },
+
+  /** Admin: every collection, including paused ones. */
+  async getAllNFTCollections(): Promise<NFTCollection[]> {
+    const body = await api.get("/admin/nft/collections");
+    return nftCollectionListValidator(body);
+  },
+
+  /** Admin: edit a collection. */
+  async updateNFTCollection(
+    id: string,
+    payload: { name?: string; symbol?: string; contract_address?: string; base_uri?: string; status?: string },
+  ): Promise<NFTCollection> {
+    const body = await api.put(`/admin/nft/collections/${encodeURIComponent(id)}`, payload);
+    return nftCollectionEnvelopeValidator(body);
+  },
+
+  /** Admin: delete an empty collection. */
+  async deleteNFTCollection(id: string): Promise<void> {
+    await apiRequest(`/admin/nft/collections/${encodeURIComponent(id)}`, { method: "DELETE" });
+  },
+
+  /** Admin: mint a token into an account. */
+  async mintNFT(
+    collectionId: string,
+    payload: { uri: string; owner?: string; token_id?: number },
+  ): Promise<NFTToken> {
+    const body = await api.post(
+      `/admin/nft/collections/${encodeURIComponent(collectionId)}/mint`,
+      payload,
+    );
+    return nftTokenEnvelopeValidator(body);
+  },
+
+  /** Admin: every listing, including settled and cancelled ones. */
+  async getAllNFTListings(): Promise<NFTListing[]> {
+    const body = await api.get("/admin/nft/listings");
+    return nftListingListValidator(body);
+  },
+
+  /** Admin: set the marketplace fee in basis points. */
+  async updateNFTConfig(payload: { fee_bps?: number; fee_account?: string }): Promise<NFTMarketplaceConfig> {
+    const body = await api.put("/admin/nft/config", payload);
+    return nftMarketplaceConfigValidator(body);
   },
 };

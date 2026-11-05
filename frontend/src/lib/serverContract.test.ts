@@ -19,6 +19,17 @@ import {
   futuresMarketListValidator,
   marginListingListValidator,
   marketStatsValidator,
+  nftCollectionListValidator,
+  nftCollectionEnvelopeValidator,
+  nftListingEnvelopeValidator,
+  nftListingListValidator,
+  nftListingViewListValidator,
+  nftMarketplaceConfigValidator,
+  nftOfferEnvelopeValidator,
+  nftOfferListValidator,
+  nftOfferViewListValidator,
+  nftTokenEnvelopeValidator,
+  nftTokenListValidator,
   optionBuyResultValidator,
   optionExerciseResultValidator,
   optionPositionViewListValidator,
@@ -398,4 +409,80 @@ test("live /options/series/:id/exercise payload satisfies optionExerciseResultVa
   const result = parse(optionExerciseResultValidator, SERVER_OPTION_EXERCISE, "optionExercise");
   assert.equal(result.success, true);
   assert.equal(result.payout, "500000000000000000000");
+});
+
+
+// ---------------------------------------------------------------------------
+// NFT marketplace fixtures, captured from the running server.
+// ---------------------------------------------------------------------------
+
+const SERVER_NFT_COLLECTIONS = `{"collections":[{"id":"cde0d70d-2ec6-4ea0-9760-1402d0d6a4e5","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"0x5555555555555555555555555555555555555555","base_uri":"https://cdn.tigerswap.example/nft/","total_supply":1,"status":"active","created_by":"admin-1","created_at":"2026-11-05T13:20:05.561048696Z","updated_at":"2026-11-05T13:20:05.561651656Z"}],"success":true}`;
+
+const SERVER_NFT_CONFIG = `{"escrow_account":"__nft_escrow__","fee_account":"__nft_fee__","fee_bps":250,"max_fee_bps":500,"success":true}`;
+
+const SERVER_NFT_LISTINGS = `{"listings":[{"listing":{"id":"adeb0115-2c27-4b0c-94fa-921ae785f21b","collection_id":"cde0d70d-2ec6-4ea0-9760-1402d0d6a4e5","token_id":1,"seller_user_id":"seller-1","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"price":"100000","fee_bps":250,"deadline":"2026-11-06T13:20:05Z","status":"active","created_at":"2026-11-05T13:20:05.562507656Z","updated_at":"2026-11-05T13:20:05.562507656Z"},"token":{"id":"9933c5ed-5c6d-425e-a87b-5305847a98af","collection_id":"cde0d70d-2ec6-4ea0-9760-1402d0d6a4e5","token_id":1,"owner_user_id":"__nft_escrow__","uri":"token.json","escrow_listing_id":"adeb0115-2c27-4b0c-94fa-921ae785f21b","minted_by":"admin-1","created_at":"2026-11-05T13:20:05.561573566Z","updated_at":"2026-11-05T13:20:05.562606666Z"},"collection":{"id":"cde0d70d-2ec6-4ea0-9760-1402d0d6a4e5","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"0x5555555555555555555555555555555555555555","base_uri":"https://cdn.tigerswap.example/nft/","total_supply":1,"status":"active","created_by":"admin-1","created_at":"2026-11-05T13:20:05.561048696Z","updated_at":"2026-11-05T13:20:05.561651656Z"},"active":true}],"success":true}`;
+
+const SERVER_NFT_TOKENS_MINE = `{"success":true,"tokens":[{"id":"a85a83f9-5ed6-4630-8945-0e8ca3f115cd","collection_id":"f673b944-e119-428c-8cfc-702b7bf65677","token_id":1,"owner_user_id":"seller-1","uri":"token.json","minted_by":"admin-1","created_at":"2026-11-05T13:20:15.502600879Z","updated_at":"2026-11-05T13:20:15.502600879Z"}]}`;
+
+const SERVER_NFT_BUY = `{"listing":{"id":"adeb0115-2c27-4b0c-94fa-921ae785f21b","collection_id":"cde0d70d-2ec6-4ea0-9760-1402d0d6a4e5","token_id":1,"seller_user_id":"seller-1","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"price":"100000","fee_bps":250,"deadline":"2026-11-06T13:20:05Z","status":"active","created_at":"2026-11-05T13:20:05.562507656Z","updated_at":"2026-11-05T13:20:05.562507656Z"},"success":true}`;
+
+test("live /nft/collections payload satisfies nftCollectionListValidator", () => {
+  const collections = parse(nftCollectionListValidator, SERVER_NFT_COLLECTIONS, "nftCollections");
+  assert.equal(collections.length, 1);
+  assert.equal(collections[0].key, "tiger-art");
+  assert.equal(collections[0].total_supply, 1);
+  assert.equal(collections[0].status, "active");
+});
+
+test("live /nft/config payload satisfies nftMarketplaceConfigValidator", () => {
+  const config = parse(nftMarketplaceConfigValidator, SERVER_NFT_CONFIG, "nftConfig");
+  assert.equal(config.fee_bps, 250);
+  assert.equal(config.max_fee_bps, 500);
+  assert.equal(config.escrow_account, "__nft_escrow__");
+});
+
+test("live /nft/listings payload satisfies nftListingViewListValidator", () => {
+  const listings = parse(nftListingViewListValidator, SERVER_NFT_LISTINGS, "nftListings");
+  assert.equal(listings.length, 1);
+  assert.equal(listings[0].listing.price, "100000");
+  assert.equal(listings[0].listing.payment_token_symbol, "RUSD");
+  assert.equal(listings[0].token.owner_user_id, "__nft_escrow__");
+  assert.equal(listings[0].collection.key, "tiger-art");
+  assert.equal(listings[0].active, true);
+});
+
+test("live /nft/tokens/mine payload satisfies nftTokenListValidator", () => {
+  const tokens = parse(nftTokenListValidator, SERVER_NFT_TOKENS_MINE, "nftTokens");
+  assert.equal(tokens.length, 1);
+  assert.equal(tokens[0].token_id, 1);
+  assert.equal(tokens[0].owner_user_id, "seller-1");
+});
+
+test("live /nft/listings/:id/buy payload satisfies nftListingEnvelopeValidator", () => {
+  const listing = parse(nftListingEnvelopeValidator, SERVER_NFT_BUY, "nftBuy");
+  assert.equal(listing.price, "100000");
+  assert.equal(listing.fee_bps, 250);
+});
+
+const SERVER_NFT_OFFER = `{"offer":{"id":"8e3feacd-9abe-4cef-84b0-e99a19267a22","collection_id":"832d78d4-2ee6-4f68-92f9-600fce6932c9","token_id":2,"buyer_user_id":"buyer-2","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"amount":"50000","fee_bps":250,"deadline":"2026-11-06T13:28:26Z","status":"active","created_at":"2026-11-05T13:28:26.715325729Z","updated_at":"2026-11-05T13:28:26.715325729Z"},"success":true}`;
+
+const SERVER_NFT_OFFERS = `{"offers":[{"offer":{"id":"8e3feacd-9abe-4cef-84b0-e99a19267a22","collection_id":"832d78d4-2ee6-4f68-92f9-600fce6932c9","token_id":2,"buyer_user_id":"buyer-2","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"amount":"50000","fee_bps":250,"deadline":"2026-11-06T13:28:26Z","status":"active","created_at":"2026-11-05T13:28:26.715325729Z","updated_at":"2026-11-05T13:28:26.715325729Z"},"token":{"id":"b0c8cee3-9b3c-4533-ba54-af7dc2bcc738","collection_id":"832d78d4-2ee6-4f68-92f9-600fce6932c9","token_id":2,"owner_user_id":"seller-2","uri":"token.json","minted_by":"admin-1","created_at":"2026-11-05T13:28:26.714751739Z","updated_at":"2026-11-05T13:28:26.714751739Z"},"collection":{"id":"832d78d4-2ee6-4f68-92f9-600fce6932c9","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"0x5555555555555555555555555555555555555555","base_uri":"https://cdn.tigerswap.example/nft/","total_supply":2,"status":"active","created_by":"admin-1","created_at":"2026-11-05T13:28:26.711929419Z","updated_at":"2026-11-05T13:28:26.714821839Z"},"active":true}],"success":true}`;
+
+test("live /nft/offers payload satisfies nftOfferViewListValidator", () => {
+  const offers = parse(nftOfferViewListValidator, SERVER_NFT_OFFERS, "nftOffers");
+  assert.equal(offers.length, 1);
+  assert.equal(offers[0].offer.amount, "50000");
+  assert.equal(offers[0].offer.buyer_user_id, "buyer-2");
+  // The offer view joins the token and collection, so a client can render a
+  // card without a second round trip.
+  assert.equal(offers[0].token.token_id, 2);
+  assert.equal(offers[0].token.owner_user_id, "seller-2");
+  assert.equal(offers[0].collection.key, "tiger-art");
+});
+
+test("live POST /nft/offers payload satisfies nftOfferEnvelopeValidator", () => {
+  const offer = parse(nftOfferEnvelopeValidator, SERVER_NFT_OFFER, "nftOffer");
+  assert.equal(offer.amount, "50000");
+  assert.equal(offer.fee_bps, 250);
+  assert.equal(offer.status, "active");
 });
