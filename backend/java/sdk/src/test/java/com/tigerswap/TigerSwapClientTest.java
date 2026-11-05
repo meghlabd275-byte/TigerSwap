@@ -48,6 +48,10 @@ public final class TigerSwapClientTest {
         farmsAreDecodedWithTheirRewards();
         farmWithNoPriceHasNullApr();
         airdropsAreDecoded();
+        nftCollectionsAreDecoded();
+        nftListingsJoinTheirTokenAndCollection();
+        nftOffersJoinTheirTokenAndCollection();
+        nftConfigIsDecoded();
 
         System.out.println();
         System.out.println("checks run: " + checks);
@@ -346,6 +350,106 @@ public final class TigerSwapClientTest {
             check("campaign funded", "750".equals(campaigns.get(0).funded));
             check("campaign claimed", "500".equals(campaigns.get(0).totalClaimed));
             check("airdrops path", "/api/v1/airdrops".equals(server.lastPath()));
+        }
+    }
+
+    private static void nftCollectionsAreDecoded() throws Exception {
+        String body = "{\"collections\":[{\"id\":\"col-1\",\"key\":\"tiger-art\",\"name\":\"Tiger Art\","
+                + "\"symbol\":\"TART\",\"chain_id\":1,\"contract_address\":\"0x5555555555555555555555555555555555555555\","
+                + "\"base_uri\":\"https://cdn.tigerswap.example/nft/\",\"total_supply\":3,\"status\":\"active\","
+                + "\"created_by\":\"admin-1\",\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"}],"
+                + "\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.NFTCollection> collections =
+                    new TigerSwapClient(server.baseURL(), "").getNFTCollections();
+
+            check("one collection", collections.size() == 1);
+            check("collection key", "tiger-art".equals(collections.get(0).key));
+            check("collection supply", collections.get(0).totalSupply == 3);
+            check("collection status", "active".equals(collections.get(0).status));
+            check("collections path", "/api/v1/nft/collections".equals(server.lastPath()));
+        }
+    }
+
+    private static void nftListingsJoinTheirTokenAndCollection() throws Exception {
+        String body = "{\"listings\":[{\"listing\":{\"id\":\"lst-1\",\"collection_id\":\"col-1\","
+                + "\"token_id\":1,\"seller_user_id\":\"seller-1\","
+                + "\"payment_token_address\":\"0x4444444444444444444444444444444444444444\","
+                + "\"payment_token_symbol\":\"RUSD\",\"payment_token_decimals\":18,\"price\":\"100000\","
+                + "\"fee_bps\":250,\"deadline\":\"2026-11-06T13:20:05Z\",\"status\":\"active\","
+                + "\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"token\":{\"id\":\"tok-1\",\"collection_id\":\"col-1\",\"token_id\":1,"
+                + "\"owner_user_id\":\"__nft_escrow__\",\"uri\":\"token.json\","
+                + "\"escrow_listing_id\":\"lst-1\",\"minted_by\":\"admin-1\","
+                + "\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"collection\":{\"id\":\"col-1\",\"key\":\"tiger-art\",\"name\":\"Tiger Art\","
+                + "\"symbol\":\"TART\",\"chain_id\":1,\"contract_address\":\"\",\"base_uri\":\"\","
+                + "\"total_supply\":1,\"status\":\"active\",\"created_by\":\"admin-1\","
+                + "\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"active\":true}],\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.NFTListingView> listings =
+                    new TigerSwapClient(server.baseURL(), "").getNFTListings();
+
+            check("one listing", listings.size() == 1);
+            check("listing price", "100000".equals(listings.get(0).listing.price));
+            check("listing fee", listings.get(0).listing.feeBps == 250);
+            // The listing escrows the token, so the owner is the escrow sentinel.
+            check("token owner is escrow", "__nft_escrow__".equals(listings.get(0).token.ownerUserId));
+            check("token escrow id", "lst-1".equals(listings.get(0).token.escrowListingId));
+            check("joined collection key", "tiger-art".equals(listings.get(0).collection.key));
+            check("listing active", listings.get(0).active);
+            check("listings path", "/api/v1/nft/listings".equals(server.lastPath()));
+        }
+    }
+
+    private static void nftOffersJoinTheirTokenAndCollection() throws Exception {
+        String body = "{\"offers\":[{\"offer\":{\"id\":\"off-1\",\"collection_id\":\"col-1\","
+                + "\"token_id\":2,\"buyer_user_id\":\"buyer-2\","
+                + "\"payment_token_address\":\"0x4444444444444444444444444444444444444444\","
+                + "\"payment_token_symbol\":\"RUSD\",\"payment_token_decimals\":18,\"amount\":\"50000\","
+                + "\"fee_bps\":250,\"deadline\":\"2026-11-06T13:20:05Z\",\"status\":\"active\","
+                + "\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"token\":{\"id\":\"tok-2\",\"collection_id\":\"col-1\",\"token_id\":2,"
+                + "\"owner_user_id\":\"seller-2\",\"uri\":\"token.json\",\"escrow_listing_id\":null,"
+                + "\"minted_by\":\"admin-1\",\"created_at\":\"2026-11-05T13:20:05Z\","
+                + "\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"collection\":{\"id\":\"col-1\",\"key\":\"tiger-art\",\"name\":\"Tiger Art\","
+                + "\"symbol\":\"TART\",\"chain_id\":1,\"contract_address\":\"\",\"base_uri\":\"\","
+                + "\"total_supply\":2,\"status\":\"active\",\"created_by\":\"admin-1\","
+                + "\"created_at\":\"2026-11-05T13:20:05Z\",\"updated_at\":\"2026-11-05T13:20:05Z\"},"
+                + "\"active\":true}],\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.NFTOfferView> offers =
+                    new TigerSwapClient(server.baseURL(), "").getNFTOffers("col-1", 2);
+
+            check("one offer", offers.size() == 1);
+            check("offer amount", "50000".equals(offers.get(0).offer.amount));
+            check("offer buyer", "buyer-2".equals(offers.get(0).offer.buyerUserId));
+            // A token that is not escrowed has a null escrow id, not an empty one.
+            check("token not escrowed", offers.get(0).token.escrowListingId == null);
+            check("offer token owner", "seller-2".equals(offers.get(0).token.ownerUserId));
+            check("offer joined collection", "tiger-art".equals(offers.get(0).collection.key));
+            check("offers query",
+                    "/api/v1/nft/offers?collection_id=col-1&token_id=2".equals(server.lastPath()));
+        }
+    }
+
+    private static void nftConfigIsDecoded() throws Exception {
+        String body = "{\"escrow_account\":\"__nft_escrow__\",\"fee_account\":\"__nft_fee__\","
+                + "\"fee_bps\":250,\"max_fee_bps\":500,\"success\":true}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            TigerSwapClient.NFTMarketplaceConfig config =
+                    new TigerSwapClient(server.baseURL(), "").getNFTConfig();
+
+            check("fee bps", config.feeBps == 250);
+            check("max fee bps", config.maxFeeBps == 500);
+            check("escrow account", "__nft_escrow__".equals(config.escrowAccount));
+            check("config path", "/api/v1/nft/config".equals(server.lastPath()));
         }
     }
 

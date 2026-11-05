@@ -122,6 +122,62 @@ public final class TigerSwapClient {
     }
 
     /**
+     * Active NFT collections, each with its minted supply.
+     *
+     * A collection starts paused; only an active one can mint. {@code totalSupply}
+     * is the number of tokens minted so far, counted by the node.
+     */
+    public List<NFTCollection> getNFTCollections() {
+        Map<String, Object> root = Json.asObject(get("/nft/collections", null), "response");
+        List<Object> items = Json.asArray(Json.field(root, "collections"), "collections");
+        List<NFTCollection> collections = new ArrayList<>(items.size());
+        for (Object item : items) {
+            collections.add(NFTCollection.fromJson(Json.asObject(item, "collection")));
+        }
+        return collections;
+    }
+
+    /**
+     * Live NFT listings, each joined with its token and collection.
+     *
+     * A listing escrows the token, so {@code token.ownerUserId} is the escrow
+     * sentinel until the listing settles or is cancelled.
+     */
+    public List<NFTListingView> getNFTListings() {
+        Map<String, Object> root = Json.asObject(get("/nft/listings", null), "response");
+        List<Object> items = Json.asArray(Json.field(root, "listings"), "listings");
+        List<NFTListingView> listings = new ArrayList<>(items.size());
+        for (Object item : items) {
+            listings.add(NFTListingView.fromJson(Json.asObject(item, "listing")));
+        }
+        return listings;
+    }
+
+    /**
+     * Live offers on one token, each joined with its token and collection.
+     *
+     * @param collectionId the collection UUID
+     * @param tokenId      the token id within the collection
+     */
+    public List<NFTOfferView> getNFTOffers(String collectionId, long tokenId) {
+        Map<String, String> query = new LinkedHashMap<>();
+        query.put("collection_id", requireText(collectionId, "collectionId"));
+        query.put("token_id", Long.toString(tokenId));
+        Map<String, Object> root = Json.asObject(get("/nft/offers", query), "response");
+        List<Object> items = Json.asArray(Json.field(root, "offers"), "offers");
+        List<NFTOfferView> offers = new ArrayList<>(items.size());
+        for (Object item : items) {
+            offers.add(NFTOfferView.fromJson(Json.asObject(item, "offer")));
+        }
+        return offers;
+    }
+
+    /** The marketplace fee configuration. */
+    public NFTMarketplaceConfig getNFTConfig() {
+        return NFTMarketplaceConfig.fromJson(Json.asObject(get("/nft/config", null), "response"));
+    }
+
+    /**
      * Quote a swap.
      *
      * @param slippageBps allowed slippage in basis points, 50 for 0.5%
@@ -389,6 +445,238 @@ public final class TigerSwapClient {
                     Json.requiredString(object, "funded"),
                     Json.requiredString(object, "total_claimed"),
                     Json.requiredString(object, "status"));
+        }
+    }
+
+    /** An admin-managed ERC-721 collection. */
+    public static final class NFTCollection {
+        public final String id;
+        public final String key;
+        public final String name;
+        public final String symbol;
+        public final long chainId;
+        public final String contractAddress;
+        public final String baseUri;
+        public final long totalSupply;
+        public final String status;
+
+        private NFTCollection(String id, String key, String name, String symbol, long chainId,
+                              String contractAddress, String baseUri, long totalSupply, String status) {
+            this.id = id;
+            this.key = key;
+            this.name = name;
+            this.symbol = symbol;
+            this.chainId = chainId;
+            this.contractAddress = contractAddress;
+            this.baseUri = baseUri;
+            this.totalSupply = totalSupply;
+            this.status = status;
+        }
+
+        static NFTCollection fromJson(Map<String, Object> object) {
+            return new NFTCollection(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "key"),
+                    Json.requiredString(object, "name"),
+                    Json.requiredString(object, "symbol"),
+                    Json.requiredLong(object, "chain_id"),
+                    Json.requiredString(object, "contract_address"),
+                    Json.requiredString(object, "base_uri"),
+                    Json.requiredLong(object, "total_supply"),
+                    Json.requiredString(object, "status"));
+        }
+    }
+
+    /** A minted token belonging to one collection. */
+    public static final class NFTToken {
+        public final String id;
+        public final String collectionId;
+        public final long tokenId;
+        public final String ownerUserId;
+        public final String uri;
+        public final String escrowListingId;
+
+        private NFTToken(String id, String collectionId, long tokenId, String ownerUserId,
+                         String uri, String escrowListingId) {
+            this.id = id;
+            this.collectionId = collectionId;
+            this.tokenId = tokenId;
+            this.ownerUserId = ownerUserId;
+            this.uri = uri;
+            this.escrowListingId = escrowListingId;
+        }
+
+        static NFTToken fromJson(Map<String, Object> object) {
+            Object escrow = Json.field(object, "escrow_listing_id");
+            String escrowListingId = escrow == null ? null : Json.asString(escrow, "escrow_listing_id");
+            return new NFTToken(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "collection_id"),
+                    Json.requiredLong(object, "token_id"),
+                    Json.requiredString(object, "owner_user_id"),
+                    Json.requiredString(object, "uri"),
+                    escrowListingId);
+        }
+    }
+
+    /** A fixed-price listing. The price and fee are exact integer strings. */
+    public static final class NFTListing {
+        public final String id;
+        public final String collectionId;
+        public final long tokenId;
+        public final String sellerUserId;
+        public final String paymentTokenAddress;
+        public final String paymentTokenSymbol;
+        public final int paymentTokenDecimals;
+        public final String price;
+        public final int feeBps;
+        public final String deadline;
+        public final String status;
+
+        private NFTListing(String id, String collectionId, long tokenId, String sellerUserId,
+                           String paymentTokenAddress, String paymentTokenSymbol, int paymentTokenDecimals,
+                           String price, int feeBps, String deadline, String status) {
+            this.id = id;
+            this.collectionId = collectionId;
+            this.tokenId = tokenId;
+            this.sellerUserId = sellerUserId;
+            this.paymentTokenAddress = paymentTokenAddress;
+            this.paymentTokenSymbol = paymentTokenSymbol;
+            this.paymentTokenDecimals = paymentTokenDecimals;
+            this.price = price;
+            this.feeBps = feeBps;
+            this.deadline = deadline;
+            this.status = status;
+        }
+
+        static NFTListing fromJson(Map<String, Object> object) {
+            return new NFTListing(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "collection_id"),
+                    Json.requiredLong(object, "token_id"),
+                    Json.requiredString(object, "seller_user_id"),
+                    Json.requiredString(object, "payment_token_address"),
+                    Json.requiredString(object, "payment_token_symbol"),
+                    Json.requiredInt(object, "payment_token_decimals"),
+                    Json.requiredString(object, "price"),
+                    Json.requiredInt(object, "fee_bps"),
+                    Json.requiredString(object, "deadline"),
+                    Json.requiredString(object, "status"));
+        }
+    }
+
+    /** An escrowed bid on a token. */
+    public static final class NFTOffer {
+        public final String id;
+        public final String collectionId;
+        public final long tokenId;
+        public final String buyerUserId;
+        public final String paymentTokenAddress;
+        public final String paymentTokenSymbol;
+        public final int paymentTokenDecimals;
+        public final String amount;
+        public final int feeBps;
+        public final String deadline;
+        public final String status;
+
+        private NFTOffer(String id, String collectionId, long tokenId, String buyerUserId,
+                         String paymentTokenAddress, String paymentTokenSymbol, int paymentTokenDecimals,
+                         String amount, int feeBps, String deadline, String status) {
+            this.id = id;
+            this.collectionId = collectionId;
+            this.tokenId = tokenId;
+            this.buyerUserId = buyerUserId;
+            this.paymentTokenAddress = paymentTokenAddress;
+            this.paymentTokenSymbol = paymentTokenSymbol;
+            this.paymentTokenDecimals = paymentTokenDecimals;
+            this.amount = amount;
+            this.feeBps = feeBps;
+            this.deadline = deadline;
+            this.status = status;
+        }
+
+        static NFTOffer fromJson(Map<String, Object> object) {
+            return new NFTOffer(
+                    Json.requiredString(object, "id"),
+                    Json.requiredString(object, "collection_id"),
+                    Json.requiredLong(object, "token_id"),
+                    Json.requiredString(object, "buyer_user_id"),
+                    Json.requiredString(object, "payment_token_address"),
+                    Json.requiredString(object, "payment_token_symbol"),
+                    Json.requiredInt(object, "payment_token_decimals"),
+                    Json.requiredString(object, "amount"),
+                    Json.requiredInt(object, "fee_bps"),
+                    Json.requiredString(object, "deadline"),
+                    Json.requiredString(object, "status"));
+        }
+    }
+
+    /** A live listing joined with its token and collection. */
+    public static final class NFTListingView {
+        public final NFTListing listing;
+        public final NFTToken token;
+        public final NFTCollection collection;
+        public final boolean active;
+
+        private NFTListingView(NFTListing listing, NFTToken token, NFTCollection collection, boolean active) {
+            this.listing = listing;
+            this.token = token;
+            this.collection = collection;
+            this.active = active;
+        }
+
+        static NFTListingView fromJson(Map<String, Object> object) {
+            return new NFTListingView(
+                    NFTListing.fromJson(Json.asObject(Json.field(object, "listing"), "listing")),
+                    NFTToken.fromJson(Json.asObject(Json.field(object, "token"), "token")),
+                    NFTCollection.fromJson(Json.asObject(Json.field(object, "collection"), "collection")),
+                    Json.requiredBoolean(object, "active"));
+        }
+    }
+
+    /** A live offer joined with its token and collection. */
+    public static final class NFTOfferView {
+        public final NFTOffer offer;
+        public final NFTToken token;
+        public final NFTCollection collection;
+        public final boolean active;
+
+        private NFTOfferView(NFTOffer offer, NFTToken token, NFTCollection collection, boolean active) {
+            this.offer = offer;
+            this.token = token;
+            this.collection = collection;
+            this.active = active;
+        }
+
+        static NFTOfferView fromJson(Map<String, Object> object) {
+            return new NFTOfferView(
+                    NFTOffer.fromJson(Json.asObject(Json.field(object, "offer"), "offer")),
+                    NFTToken.fromJson(Json.asObject(Json.field(object, "token"), "token")),
+                    NFTCollection.fromJson(Json.asObject(Json.field(object, "collection"), "collection")),
+                    Json.requiredBoolean(object, "active"));
+        }
+    }
+
+    /** The marketplace fee configuration. */
+    public static final class NFTMarketplaceConfig {
+        public final int feeBps;
+        public final int maxFeeBps;
+        public final String feeAccount;
+        public final String escrowAccount;
+
+        private NFTMarketplaceConfig(int feeBps, int maxFeeBps, String feeAccount, String escrowAccount) {
+            this.feeBps = feeBps;
+            this.maxFeeBps = maxFeeBps;
+            this.feeAccount = feeAccount;
+            this.escrowAccount = escrowAccount;
+        }
+
+        static NFTMarketplaceConfig fromJson(Map<String, Object> object) {
+            return new NFTMarketplaceConfig(
+                    Json.requiredInt(object, "fee_bps"),
+                    Json.requiredInt(object, "max_fee_bps"),
+                    Json.requiredString(object, "fee_account"),
+                    Json.requiredString(object, "escrow_account"));
         }
     }
 

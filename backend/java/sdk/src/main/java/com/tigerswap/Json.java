@@ -359,4 +359,19 @@ final class Json {
         }
         return ((Number) value).doubleValue();
     }
+
+    static boolean requiredBoolean(Map<String, Object> object, String key) {
+        Object value = object.get(key);
+        if (!(value instanceof Boolean)) {
+            throw new JsonException("missing or non-boolean field '" + key + "'");
+        }
+        return (Boolean) value;
+    }
+
+    static String asString(Object value, String field) {
+        if (!(value instanceof String)) {
+            throw new JsonException(field + " is not a JSON string");
+        }
+        return (String) value;
+    }
 }
