@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -180,6 +181,89 @@ type AirdropAllocation struct {
 	EndTime      string `json:"end_time"`
 }
 
+// NFTCollection is an admin-managed ERC-721 collection. TotalSupply counts the
+// tokens minted so far, matching the contract's own counter.
+type NFTCollection struct {
+	ID              string `json:"id"`
+	Key             string `json:"key"`
+	Name            string `json:"name"`
+	Symbol          string `json:"symbol"`
+	ChainID         int64  `json:"chain_id"`
+	ContractAddress string `json:"contract_address"`
+	BaseURI         string `json:"base_uri"`
+	TotalSupply     int64  `json:"total_supply"`
+	Status          string `json:"status"`
+}
+
+// NFTToken is one minted token. OwnerUserID is the platform account holding it;
+// while a listing is live the holder is the marketplace escrow account and
+// EscrowListingID names that listing.
+type NFTToken struct {
+	ID              string  `json:"id"`
+	CollectionID    string  `json:"collection_id"`
+	TokenID         uint64  `json:"token_id"`
+	OwnerUserID     string  `json:"owner_user_id"`
+	URI             string  `json:"uri"`
+	EscrowListingID *string `json:"escrow_listing_id"`
+}
+
+// NFTListing is a fixed-price sale. Price is an exact integer string in the
+// payment token's smallest unit, and FeeBps is frozen at listing time.
+type NFTListing struct {
+	ID                   string `json:"id"`
+	CollectionID         string `json:"collection_id"`
+	TokenID              uint64 `json:"token_id"`
+	SellerUserID         string `json:"seller_user_id"`
+	PaymentTokenAddress  string `json:"payment_token_address"`
+	PaymentTokenSymbol   string `json:"payment_token_symbol"`
+	PaymentTokenDecimals int    `json:"payment_token_decimals"`
+	Price                string `json:"price"`
+	FeeBps               int    `json:"fee_bps"`
+	Deadline             string `json:"deadline"`
+	Status               string `json:"status"`
+}
+
+// NFTOffer is an escrowed bid. Amount is an exact integer string in the payment
+// token's smallest unit.
+type NFTOffer struct {
+	ID                   string `json:"id"`
+	CollectionID         string `json:"collection_id"`
+	TokenID              uint64 `json:"token_id"`
+	BuyerUserID          string `json:"buyer_user_id"`
+	PaymentTokenAddress  string `json:"payment_token_address"`
+	PaymentTokenSymbol   string `json:"payment_token_symbol"`
+	PaymentTokenDecimals int    `json:"payment_token_decimals"`
+	Amount               string `json:"amount"`
+	FeeBps               int    `json:"fee_bps"`
+	Deadline             string `json:"deadline"`
+	Status               string `json:"status"`
+}
+
+// NFTListingView is a live listing joined with its token and collection, so a
+// caller renders a card without a second round trip.
+type NFTListingView struct {
+	Listing    NFTListing    `json:"listing"`
+	Token      NFTToken      `json:"token"`
+	Collection NFTCollection `json:"collection"`
+	Active     bool          `json:"active"`
+}
+
+// NFTOfferView is a live offer joined with its token and collection.
+type NFTOfferView struct {
+	Offer      NFTOffer      `json:"offer"`
+	Token      NFTToken      `json:"token"`
+	Collection NFTCollection `json:"collection"`
+	Active     bool          `json:"active"`
+}
+
+// NFTMarketplaceConfig is the marketplace fee configuration.
+type NFTMarketplaceConfig struct {
+	FeeBps        int    `json:"fee_bps"`
+	MaxFeeBps     int    `json:"max_fee_bps"`
+	FeeAccount    string `json:"fee_account"`
+	EscrowAccount string `json:"escrow_account"`
+}
+
 // GetFarms returns the active farms a user can stake in.
 func (c *Client) GetFarms(ctx context.Context) ([]FarmView, error) {
 	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/farms", nil)
@@ -344,6 +428,121 @@ func (c *Client) ClaimAirdrop(ctx context.Context, campaignID string) error {
 		return fmt.Errorf("claim airdrop: unexpected status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// GetNFTCollections returns the active NFT collections and their minted supply.
+func (c *Client) GetNFTCollections(ctx context.Context) ([]NFTCollection, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/nft/collections", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get nft collections: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Collections []NFTCollection `json:"collections"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Collections, nil
+}
+
+// GetNFTListings returns the live listings, each joined with its token and
+// collection. A listing escrows the token, so the joined token's owner is the
+// marketplace escrow account until the listing settles or is cancelled.
+func (c *Client) GetNFTListings(ctx context.Context) ([]NFTListingView, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/nft/listings", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get nft listings: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Listings []NFTListingView `json:"listings"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Listings, nil
+}
+
+// GetNFTOffers returns the live offers on one token, each joined with its token
+// and collection.
+func (c *Client) GetNFTOffers(ctx context.Context, collectionID string, tokenID uint64) ([]NFTOfferView, error) {
+	url := fmt.Sprintf("%s/api/v1/nft/offers?collection_id=%s&token_id=%d",
+		c.baseURL, url.QueryEscape(collectionID), tokenID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get nft offers: unexpected status %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		Offers []NFTOfferView `json:"offers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Offers, nil
+}
+
+// GetNFTConfig returns the marketplace fee configuration.
+func (c *Client) GetNFTConfig(ctx context.Context) (*NFTMarketplaceConfig, error) {
+	req, err := http.NewRequest("GET", c.baseURL+"/api/v1/nft/config", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get nft config: unexpected status %d", resp.StatusCode)
+	}
+
+	var config NFTMarketplaceConfig
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return nil, err
+	}
+	return &config, nil
 }
 
 // GetChains returns all supported chains

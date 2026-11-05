@@ -300,3 +300,89 @@ func TestFarmRequestsFailOnNonOKStatus(t *testing.T) {
 		t.Fatal("GetFarms should report a non-200 status instead of returning an empty slice")
 	}
 }
+
+func TestNFTReadsDecodeTheMarketplaceSurface(t *testing.T) {
+	var offersQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/nft/collections":
+			_, _ = w.Write([]byte(`{"collections":[{"id":"col-1","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"0x5555555555555555555555555555555555555555","base_uri":"https://cdn.tigerswap.example/nft/","total_supply":2,"status":"active"}],"success":true}`))
+		case "/api/v1/nft/listings":
+			_, _ = w.Write([]byte(`{"listings":[{"listing":{"id":"lst-1","collection_id":"col-1","token_id":1,"seller_user_id":"seller-1","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"price":"100000","fee_bps":250,"deadline":"2026-11-06T13:20:05Z","status":"active"},"token":{"id":"tok-1","collection_id":"col-1","token_id":1,"owner_user_id":"__nft_escrow__","uri":"token.json","escrow_listing_id":"lst-1"},"collection":{"id":"col-1","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"","base_uri":"","total_supply":1,"status":"active"},"active":true}],"success":true}`))
+		case "/api/v1/nft/offers":
+			offersQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"offers":[{"offer":{"id":"off-1","collection_id":"col-1","token_id":2,"buyer_user_id":"buyer-2","payment_token_address":"0x4444444444444444444444444444444444444444","payment_token_symbol":"RUSD","payment_token_decimals":18,"amount":"50000","fee_bps":250,"deadline":"2026-11-06T13:20:05Z","status":"active"},"token":{"id":"tok-2","collection_id":"col-1","token_id":2,"owner_user_id":"seller-2","uri":"token.json","escrow_listing_id":null},"collection":{"id":"col-1","key":"tiger-art","name":"Tiger Art","symbol":"TART","chain_id":1,"contract_address":"","base_uri":"","total_supply":2,"status":"active"},"active":true}],"success":true}`))
+		case "/api/v1/nft/config":
+			_, _ = w.Write([]byte(`{"escrow_account":"__nft_escrow__","fee_account":"__nft_fee__","fee_bps":250,"max_fee_bps":500,"success":true}`))
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+
+	collections, err := client.GetNFTCollections(context.Background())
+	if err != nil {
+		t.Fatalf("GetNFTCollections: %v", err)
+	}
+	if len(collections) != 1 || collections[0].TotalSupply != 2 {
+		t.Fatalf("collections = %+v", collections)
+	}
+
+	listings, err := client.GetNFTListings(context.Background())
+	if err != nil {
+		t.Fatalf("GetNFTListings: %v", err)
+	}
+	if len(listings) != 1 || listings[0].Listing.Price != "100000" || listings[0].Listing.FeeBps != 250 {
+		t.Fatalf("listings = %+v", listings)
+	}
+	// A listed token is escrowed, so the joined token carries the escrow id.
+	if listings[0].Token.EscrowListingID == nil || *listings[0].Token.EscrowListingID != "lst-1" {
+		t.Fatalf("listing token escrow = %+v", listings[0].Token.EscrowListingID)
+	}
+	if listings[0].Collection.Key != "tiger-art" {
+		t.Fatalf("listing collection = %+v", listings[0].Collection)
+	}
+
+	offers, err := client.GetNFTOffers(context.Background(), "col-1", 2)
+	if err != nil {
+		t.Fatalf("GetNFTOffers: %v", err)
+	}
+	if len(offers) != 1 || offers[0].Offer.Amount != "50000" {
+		t.Fatalf("offers = %+v", offers)
+	}
+	// A token that is not escrowed has a nil escrow id, not an empty one.
+	if offers[0].Token.EscrowListingID != nil {
+		t.Fatalf("offer token escrow should be nil, got %v", *offers[0].Token.EscrowListingID)
+	}
+	if offersQuery != "collection_id=col-1&token_id=2" {
+		t.Fatalf("offers query = %q", offersQuery)
+	}
+
+	config, err := client.GetNFTConfig(context.Background())
+	if err != nil {
+		t.Fatalf("GetNFTConfig: %v", err)
+	}
+	if config.FeeBps != 250 || config.MaxFeeBps != 500 || config.EscrowAccount != "__nft_escrow__" {
+		t.Fatalf("config = %+v", config)
+	}
+}
+
+func TestNFTReadsFailOnNonOKStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"ledger is not configured"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "")
+	if _, err := client.GetNFTListings(context.Background()); err == nil {
+		t.Fatal("GetNFTListings should report a non-200 status instead of returning an empty slice")
+	}
+	if _, err := client.GetNFTConfig(context.Background()); err == nil {
+		t.Fatal("GetNFTConfig should report a non-200 status instead of returning a zero config")
+	}
+}
