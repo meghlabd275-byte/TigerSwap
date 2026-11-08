@@ -214,6 +214,14 @@ func main() {
 	// books rather than an external indexer. The rollup is idempotent.
 	analyticsService := services.NewAnalyticsService(db, priceAggregator)
 
+	// Account portfolio and transaction history. Holdings come from the
+	// caller's own ledger rows, valued at the oracle price; nothing is
+	// derived from a client-supplied identity or an external indexer. The
+	// derivatives engine is attached so unrealized PnL is the live, re-marked
+	// value rather than the row the engine last persisted.
+	portfolioService := services.NewPortfolioService(db, priceAggregator)
+	portfolioService.SetPositionSource(perpetualEngine)
+
 	var walletService *services.WalletService
 	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
@@ -272,6 +280,7 @@ func main() {
 		optionService:      optionService,
 		nftService:         nftService,
 		analyticsService:   analyticsService,
+		portfolioService:   portfolioService,
 	})
 
 	// Get port from environment or default

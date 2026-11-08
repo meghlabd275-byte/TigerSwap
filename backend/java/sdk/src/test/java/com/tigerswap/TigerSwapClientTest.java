@@ -57,6 +57,8 @@ public final class TigerSwapClientTest {
         analyticsPairsDecodeEnvelope();
         analyticsTradersDecodeEnvelope();
         analyticsReadsRejectServerErrors();
+        portfolioDecodesRealPayload();
+        transactionsDecodeArrayPayload();
 
         System.out.println();
         System.out.println("checks run: " + checks);
@@ -553,6 +555,45 @@ public final class TigerSwapClientTest {
                 tradersThrew = e.getStatusCode() == 500;
             }
             check("traders surfaces 500", tradersThrew);
+        }
+    }
+
+    private static void portfolioDecodesRealPayload() throws Exception {
+        String body = "{\"totalValueUSD\":4000,\"assets\":[{\"chainId\":1,"
+                + "\"tokenAddress\":\"0x0000000000000000000000000000000000000001\","
+                + "\"symbol\":\"ETH\",\"decimals\":18,\"balance\":\"2000000000000000000\","
+                + "\"valueUSD\":4000}],\"realizedPnlUsd\":-40.25,\"unrealizedPnlUsd\":150.5,"
+                + "\"openPositions\":1,\"updatedAt\":\"2026-11-08T12:20:36Z\"}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            TigerSwapClient.Portfolio portfolio =
+                    new TigerSwapClient(server.baseURL(), "").getPortfolio();
+
+            check("portfolio total", portfolio.totalValueUsd == 4000.0);
+            check("portfolio assets", portfolio.assets.size() == 1);
+            check("portfolio asset symbol", "ETH".equals(portfolio.assets.get(0).symbol));
+            check("portfolio asset value", portfolio.assets.get(0).valueUsd == 4000.0);
+            check("portfolio realized pnl", portfolio.realizedPnlUsd == -40.25);
+            check("portfolio unrealized pnl", portfolio.unrealizedPnlUsd == 150.5);
+            check("portfolio open positions", portfolio.openPositions == 1);
+            check("portfolio path", "/api/v1/user/portfolio".equals(server.lastPath()));
+        }
+    }
+
+    private static void transactionsDecodeArrayPayload() throws Exception {
+        String body = "[{\"hash\":\"0xdeadbeef\",\"chainId\":1,\"type\":\"swap\","
+                + "\"status\":\"confirmed\",\"amount\":\"1000000000000000000\","
+                + "\"tokenSymbol\":\"ETH\",\"createdAt\":\"2026-11-08T12:20:36Z\"}]";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.UserTransaction> txs =
+                    new TigerSwapClient(server.baseURL(), "").getTransactions();
+
+            check("transactions count", txs.size() == 1);
+            check("transaction hash", "0xdeadbeef".equals(txs.get(0).hash));
+            check("transaction symbol", "ETH".equals(txs.get(0).tokenSymbol));
+            check("transaction status", "confirmed".equals(txs.get(0).status));
+            check("transactions path", "/api/v1/user/transactions".equals(server.lastPath()));
         }
     }
 

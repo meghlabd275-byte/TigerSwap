@@ -288,6 +288,30 @@ public final class TigerSwapClient {
     }
 
     // ------------------------------------------------------------------
+    // portfolio
+    // ------------------------------------------------------------------
+
+    /**
+     * The authenticated account's portfolio: holdings valued at the node's
+     * oracle price, plus realized and unrealized PnL from the derivatives book.
+     * The bearer token set on the client identifies the account, so the node
+     * scopes the response to that account and never to a caller-supplied id.
+     */
+    public Portfolio getPortfolio() {
+        return Portfolio.fromJson(Json.asObject(get("/user/portfolio", null), "response"));
+    }
+
+    /** The authenticated account's transaction history, newest first. */
+    public List<UserTransaction> getTransactions() {
+        List<Object> items = Json.asArray(get("/user/transactions", null), "transactions");
+        List<UserTransaction> txs = new ArrayList<>(items.size());
+        for (Object item : items) {
+            txs.add(UserTransaction.fromJson(Json.asObject(item, "transaction")));
+        }
+        return txs;
+    }
+
+    // ------------------------------------------------------------------
     // transport
     // ------------------------------------------------------------------
 
@@ -1166,4 +1190,104 @@ public final class TigerSwapClient {
                     Json.requiredLong(object, "liquidations"));
         }
     }
+
+    /** One holding in an account portfolio. */
+    public static final class PortfolioAsset {
+        public final long chainId;
+        public final String tokenAddress;
+        public final String symbol;
+        public final int decimals;
+        public final String balance;
+        /** Null when the node had no oracle price for the token. */
+        public final Double valueUsd;
+
+        private PortfolioAsset(long chainId, String tokenAddress, String symbol, int decimals,
+                               String balance, Double valueUsd) {
+            this.chainId = chainId;
+            this.tokenAddress = tokenAddress;
+            this.symbol = symbol;
+            this.decimals = decimals;
+            this.balance = balance;
+            this.valueUsd = valueUsd;
+        }
+
+        static PortfolioAsset fromJson(Map<String, Object> object) {
+            return new PortfolioAsset(
+                    Json.requiredLong(object, "chainId"),
+                    Json.requiredString(object, "tokenAddress"),
+                    Json.requiredString(object, "symbol"),
+                    Json.requiredInt(object, "decimals"),
+                    Json.requiredString(object, "balance"),
+                    Json.optionalDouble(object, "valueUSD"));
+        }
+    }
+
+    /** The account portfolio snapshot. */
+    public static final class Portfolio {
+        public final double totalValueUsd;
+        public final List<PortfolioAsset> assets;
+        public final double realizedPnlUsd;
+        public final double unrealizedPnlUsd;
+        public final int openPositions;
+        public final String updatedAt;
+
+        private Portfolio(double totalValueUsd, List<PortfolioAsset> assets, double realizedPnlUsd,
+                          double unrealizedPnlUsd, int openPositions, String updatedAt) {
+            this.totalValueUsd = totalValueUsd;
+            this.assets = assets;
+            this.realizedPnlUsd = realizedPnlUsd;
+            this.unrealizedPnlUsd = unrealizedPnlUsd;
+            this.openPositions = openPositions;
+            this.updatedAt = updatedAt;
+        }
+
+        static Portfolio fromJson(Map<String, Object> object) {
+            List<Object> items = Json.asArray(Json.field(object, "assets"), "assets");
+            List<PortfolioAsset> assets = new ArrayList<>(items.size());
+            for (Object item : items) {
+                assets.add(PortfolioAsset.fromJson(Json.asObject(item, "asset")));
+            }
+            return new Portfolio(
+                    Json.requiredDouble(object, "totalValueUSD"),
+                    assets,
+                    Json.requiredDouble(object, "realizedPnlUsd"),
+                    Json.requiredDouble(object, "unrealizedPnlUsd"),
+                    Json.requiredInt(object, "openPositions"),
+                    Json.optionalString(object, "updatedAt"));
+        }
+    }
+
+    /** One transaction in the account history. */
+    public static final class UserTransaction {
+        public final String hash;
+        public final long chainId;
+        public final String type;
+        public final String status;
+        public final String amount;
+        public final String tokenSymbol;
+        public final String createdAt;
+
+        private UserTransaction(String hash, long chainId, String type, String status,
+                                String amount, String tokenSymbol, String createdAt) {
+            this.hash = hash;
+            this.chainId = chainId;
+            this.type = type;
+            this.status = status;
+            this.amount = amount;
+            this.tokenSymbol = tokenSymbol;
+            this.createdAt = createdAt;
+        }
+
+        static UserTransaction fromJson(Map<String, Object> object) {
+            return new UserTransaction(
+                    Json.requiredString(object, "hash"),
+                    Json.requiredLong(object, "chainId"),
+                    Json.requiredString(object, "type"),
+                    Json.requiredString(object, "status"),
+                    Json.requiredString(object, "amount"),
+                    Json.requiredString(object, "tokenSymbol"),
+                    Json.requiredString(object, "createdAt"));
+        }
+    }
+
 }

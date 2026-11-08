@@ -66,6 +66,16 @@ export function Portfolio({ explorerURL }: PortfolioProps) {
 
   const total = portfolio?.totalValueUSD ?? null;
 
+  const pnl = (value: number | null) => {
+    if (!showBalances) return '••••••';
+    if (value === null) return '—';
+    const sign = value > 0 ? '+' : '';
+    return `${sign}$${value.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+  };
+
   return (
     <div className="space-y-6">
       <div className="glass-dark rounded-2xl p-6">
@@ -102,6 +112,43 @@ export function Portfolio({ explorerURL }: PortfolioProps) {
             </div>
           )}
         </div>
+
+        {portfolio && (
+          <div className="grid grid-cols-3 gap-3 mb-6">
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-gray-400 text-xs mb-1">Realized PnL</div>
+              <div
+                className={`font-medium ${
+                  portfolio.realizedPnlUsd > 0
+                    ? 'text-green-400'
+                    : portfolio.realizedPnlUsd < 0
+                      ? 'text-red-400'
+                      : 'text-white'
+                }`}
+              >
+                {pnl(portfolio.realizedPnlUsd)}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-gray-400 text-xs mb-1">Unrealized PnL</div>
+              <div
+                className={`font-medium ${
+                  portfolio.unrealizedPnlUsd > 0
+                    ? 'text-green-400'
+                    : portfolio.unrealizedPnlUsd < 0
+                      ? 'text-red-400'
+                      : 'text-white'
+                }`}
+              >
+                {pnl(portfolio.unrealizedPnlUsd)}
+              </div>
+            </div>
+            <div className="bg-white/5 rounded-xl p-3">
+              <div className="text-gray-400 text-xs mb-1">Open positions</div>
+              <div className="text-white font-medium">{portfolio.openPositions}</div>
+            </div>
+          </div>
+        )}
 
         <div className="flex space-x-2 mb-4">
           <button

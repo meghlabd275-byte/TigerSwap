@@ -194,6 +194,11 @@ export const portfolioAssetValidator = object<PortfolioAsset>({
 export interface Portfolio {
   totalValueUSD: number;
   assets: PortfolioAsset[];
+  /** Realized PnL from closed derivatives positions, in USD. May be negative. */
+  realizedPnlUsd: number;
+  /** Unrealized PnL on open derivatives positions, in USD. May be negative. */
+  unrealizedPnlUsd: number;
+  openPositions: number;
   updatedAt: string | null;
 }
 
@@ -201,6 +206,9 @@ export const portfolioValidator = object<Portfolio>(
   {
     totalValueUSD: nonNegative,
     assets: arrayLenient(portfolioAssetValidator),
+    realizedPnlUsd: number,
+    unrealizedPnlUsd: number,
+    openPositions: integer,
     updatedAt: nullable(timestamp),
   },
   { optional: ["updatedAt"] },

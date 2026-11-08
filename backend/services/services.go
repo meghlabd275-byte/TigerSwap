@@ -1041,51 +1041,6 @@ func (s *AuthService) UpdateProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// GetPortfolio aggregates the caller's confirmed transaction value from the
-// database. It does not invent balances: assets are derived from recorded
-// transactions only.
-func (s *AuthService) GetPortfolio(c *gin.Context) {
-	userID := c.GetString("user_id")
-
-	var txs []models.Transaction
-	if err := s.db.Where("user_id = ? AND status = ?", userID, "confirmed").Order("timestamp DESC").Limit(500).Find(&txs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load portfolio"})
-		return
-	}
-
-	assets := make([]gin.H, 0, len(txs))
-	var total float64
-	for _, tx := range txs {
-		total += tx.AmountUSD
-		assets = append(assets, gin.H{
-			"hash":       tx.Hash,
-			"chain_id":   tx.ChainID,
-			"symbol":     tx.ToToken,
-			"amount":     tx.ToAmount,
-			"value_usd":  tx.AmountUSD,
-			"created_at": tx.Timestamp,
-		})
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"total_value": total,
-		"assets":      assets,
-		"updated_at":  time.Now().UTC(),
-	})
-}
-
-func (s *AuthService) GetTransactions(c *gin.Context) {
-	userID := c.GetString("user_id")
-
-	var txs []models.Transaction
-	if err := s.db.Where("user_id = ?", userID).Order("timestamp DESC").Limit(200).Find(&txs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load transactions"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"transactions": txs, "count": len(txs)})
-}
-
 // ConnectWallet records the caller's wallet address against their account.
 func (s *AuthService) ConnectWallet(c *gin.Context) {
 	var req struct {

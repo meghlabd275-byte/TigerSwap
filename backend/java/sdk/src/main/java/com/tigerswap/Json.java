@@ -360,6 +360,18 @@ final class Json {
         return ((Number) value).doubleValue();
     }
 
+    /** A double that may be absent or JSON null, returned as a boxed value. */
+    static Double optionalDouble(Map<String, Object> object, String key) {
+        Object value = object.get(key);
+        if (value == null) {
+            return null;
+        }
+        if (!(value instanceof Number)) {
+            throw new JsonException("field '" + key + "' is not a number");
+        }
+        return ((Number) value).doubleValue();
+    }
+
     static boolean requiredBoolean(Map<String, Object> object, String key) {
         Object value = object.get(key);
         if (!(value instanceof Boolean)) {

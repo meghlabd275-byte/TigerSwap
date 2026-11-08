@@ -440,3 +440,30 @@ the admin panel is `frontend/src/components/AdminAnalyticsPanel.tsx`.
   and the SDK decoders together; the contract fixtures in
   `frontend/src/lib/serverContract.test.ts` are captured from a running server,
   not hand-written.
+
+## Portfolio and transaction history
+
+`services/portfolio_service.go` answers `GET /user/portfolio` and
+`GET /user/transactions`; the panel is `frontend/src/components/Portfolio.tsx`
+and the wallet page reads the same hook.
+
+- Holdings come from the caller's own `account_balances` rows. A balance is
+  `available + locked`; a zero balance is omitted. Each holding is valued at the
+  oracle price, and a token the oracle cannot price is reported with a null
+  `valueUSD` and excluded from `totalValueUSD`, never valued at a guessed
+  number. The PnL block totals realized PnL from closed derivatives positions
+  and unrealized PnL from open ones; a row whose PnL column does not parse is
+  skipped rather than treated as zero. Unrealized PnL and the open-position
+  count come from the live `PerpetualEngine` (attached with
+  `SetPositionSource`), because the engine re-marks positions against the oracle
+  every few seconds while the persisted row keeps the value it was opened with;
+  without an engine attached the summary falls back to the stored rows.
+- Identity is never read from the request body. Both handlers resolve the caller
+  with `authenticatedUserID(c)`, so one account can never read another's rows.
+- The wire format is camelCase DTOs. `/user/transactions` returns a bare JSON
+  array, because the frontend's list validator rejects an object wrapper. The
+  Go SDK (`backend/go/sdk/portfolio.go`) and the Java SDK
+  (`TigerSwapClient.getPortfolio` / `getTransactions`) decode the same shapes.
+- Contract fixtures live in `frontend/src/lib/serverContract.test.ts` and are
+  captured from the handlers by `TestPortfolioWireFormat` in
+  `backend/services/portfolio_service_test.go` (run with `-v` to regenerate).

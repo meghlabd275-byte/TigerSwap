@@ -53,6 +53,8 @@ import {
   airdropCampaignListValidator,
   farmStakeViewListValidator,
   farmViewListValidator,
+  portfolioValidator,
+  userTransactionListValidator,
 } from "./types";
 
 // Every payload below was captured verbatim from a running TigerSwap API
@@ -60,6 +62,13 @@ import {
 // to lock the wire format the backend actually emits to the validators the UI
 // enforces. A change on either side that breaks the other fails here, in a
 // unit test, instead of blanking a page in production.
+
+// The portfolio and transaction payloads were captured by running the real
+// handlers against an in-memory database in
+// `backend/services/portfolio_service_test.go` and copying the logged JSON.
+const SERVER_PORTFOLIO = `{"totalValueUSD":4000,"assets":[{"chainId":1,"tokenAddress":"0x0000000000000000000000000000000000000001","symbol":"ETH","decimals":18,"balance":"2000000000000000000","valueUSD":4000}],"realizedPnlUsd":0,"unrealizedPnlUsd":0,"openPositions":0,"updatedAt":"2026-11-08T12:20:36.201522492Z"}`;
+
+const SERVER_TRANSACTIONS = `[{"hash":"0xdeadbeef","chainId":1,"type":"swap","status":"confirmed","amount":"1000000000000000000","tokenSymbol":"ETH","createdAt":"2026-11-08T12:20:36.201140162Z"}]`;
 
 const SERVER_CHAINS = `[{"id":1,"name":"Ethereum","chainType":"evm","nativeSymbol":"ETH","explorerURL":"https://etherscan.io","isActive":true},{"id":10,"name":"Optimism","chainType":"evm","nativeSymbol":"ETH","explorerURL":"https://optimistic.etherscan.io","isActive":true}]`;
 
@@ -550,4 +559,23 @@ test("live /admin/analytics/rollup payload satisfies its envelope", () => {
   const result = parse(analyticsRollupValidator, SERVER_ANALYTICS_ROLLUP, "rollup");
   assert.equal(result.buckets_written, 2);
   assert.equal(result.from, "2026-11-08T02:31:00Z");
+});
+
+test("live /user/portfolio payload satisfies portfolioValidator", () => {
+  const portfolio = parse(portfolioValidator, SERVER_PORTFOLIO, "portfolio");
+  assert.equal(portfolio.totalValueUSD, 4000);
+  assert.equal(portfolio.assets.length, 1);
+  assert.equal(portfolio.assets[0].symbol, "ETH");
+  assert.equal(portfolio.assets[0].valueUSD, 4000);
+  assert.equal(portfolio.realizedPnlUsd, 0);
+  assert.equal(portfolio.openPositions, 0);
+});
+
+test("live /user/transactions payload satisfies userTransactionListValidator", () => {
+  const txs = parse(userTransactionListValidator, SERVER_TRANSACTIONS, "transactions");
+  assert.equal(txs.length, 1);
+  assert.equal(txs[0].hash, "0xdeadbeef");
+  assert.equal(txs[0].chainId, 1);
+  assert.equal(txs[0].tokenSymbol, "ETH");
+  assert.equal(txs[0].status, "confirmed");
 });

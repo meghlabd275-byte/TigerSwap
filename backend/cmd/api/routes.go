@@ -42,6 +42,7 @@ type apiDeps struct {
 	optionService      *services.OptionService
 	nftService         *services.NFTMarketplaceService
 	analyticsService   *services.AnalyticsService
+	portfolioService   *services.PortfolioService
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -122,8 +123,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// User routes
 			protected.GET("/user/profile", deps.authService.GetProfile)
 			protected.PUT("/user/profile", deps.authService.UpdateProfile)
-			protected.GET("/user/portfolio", deps.authService.GetPortfolio)
-			protected.GET("/user/transactions", deps.authService.GetTransactions)
+			// Portfolio and transaction history. Both are served as camelCase
+			// DTOs from the caller's own ledger rows, so the frontend validators
+			// pass against the real server rather than a hand-written shape.
+			protected.GET("/user/portfolio", deps.portfolioService.GetPortfolioHandler)
+			protected.GET("/user/transactions", deps.portfolioService.GetTransactionsHandler)
 
 			// Wallet routes
 			protected.POST("/wallet/connect", deps.authService.ConnectWallet)
