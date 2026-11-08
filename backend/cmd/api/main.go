@@ -120,6 +120,7 @@ func main() {
 		&models.NFTToken{},
 		&models.NFTListing{},
 		&models.NFTOffer{},
+		&models.VolumeBucket{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -208,6 +209,11 @@ func main() {
 		}
 	}
 
+	// Protocol and market analytics. Every figure is aggregated from rows
+	// TigerSwap wrote, so the dashboard reads the platform's own ledger and
+	// books rather than an external indexer. The rollup is idempotent.
+	analyticsService := services.NewAnalyticsService(db, priceAggregator)
+
 	var walletService *services.WalletService
 	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
@@ -265,6 +271,7 @@ func main() {
 		airdropService:     airdropService,
 		optionService:      optionService,
 		nftService:         nftService,
+		analyticsService:   analyticsService,
 	})
 
 	// Get port from environment or default

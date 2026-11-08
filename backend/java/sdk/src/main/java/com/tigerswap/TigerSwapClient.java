@@ -212,6 +212,82 @@ public final class TigerSwapClient {
     }
 
     // ------------------------------------------------------------------
+    // analytics
+    // ------------------------------------------------------------------
+
+    /**
+     * The protocol dashboard snapshot.
+     *
+     * Every figure is aggregated by the node from rows TigerSwap itself wrote.
+     * A value the node cannot compute (for example open interest with no price
+     * source) comes back as zero, never as an invented number.
+     */
+    public ProtocolOverview getAnalyticsOverview() {
+        return ProtocolOverview.fromJson(Json.asObject(get("/analytics/overview", null), "response"));
+    }
+
+    /**
+     * A volume series. {@code interval} and {@code window} are in seconds;
+     * {@code interval} must be a whole multiple of the node's rollup bucket. A
+     * zero interval or window leaves the node's default in place.
+     */
+    public VolumeSeries getAnalyticsVolume(String pair, long chainId, int interval, int window) {
+        Map<String, String> query = new LinkedHashMap<>();
+        if (pair != null && !pair.isBlank()) {
+            query.put("pair", pair);
+        }
+        if (chainId != 0) {
+            query.put("chain_id", Long.toString(chainId));
+        }
+        if (interval > 0) {
+            query.put("interval", Integer.toString(interval));
+        }
+        if (window > 0) {
+            query.put("window", Integer.toString(window));
+        }
+        return VolumeSeries.fromJson(Json.asObject(get("/analytics/volume", query), "response"));
+    }
+
+    /** The per-market volume leaderboard over a window in seconds. */
+    public List<PairAnalytics> getAnalyticsPairs(long chainId, int window, int limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        if (chainId != 0) {
+            query.put("chain_id", Long.toString(chainId));
+        }
+        if (window > 0) {
+            query.put("window", Integer.toString(window));
+        }
+        if (limit > 0) {
+            query.put("limit", Integer.toString(limit));
+        }
+        Map<String, Object> root = Json.asObject(get("/analytics/pairs", query), "response");
+        List<Object> items = Json.asArray(Json.field(root, "pairs"), "pairs");
+        List<PairAnalytics> pairs = new ArrayList<>(items.size());
+        for (Object item : items) {
+            pairs.add(PairAnalytics.fromJson(Json.asObject(item, "pair")));
+        }
+        return pairs;
+    }
+
+    /** The realized-PnL leaderboard. A zero {@code window} means all time. */
+    public List<TopTrader> getAnalyticsTraders(int window, int limit) {
+        Map<String, String> query = new LinkedHashMap<>();
+        if (window > 0) {
+            query.put("window", Integer.toString(window));
+        }
+        if (limit > 0) {
+            query.put("limit", Integer.toString(limit));
+        }
+        Map<String, Object> root = Json.asObject(get("/analytics/traders", query), "response");
+        List<Object> items = Json.asArray(Json.field(root, "traders"), "traders");
+        List<TopTrader> traders = new ArrayList<>(items.size());
+        for (Object item : items) {
+            traders.add(TopTrader.fromJson(Json.asObject(item, "trader")));
+        }
+        return traders;
+    }
+
+    // ------------------------------------------------------------------
     // transport
     // ------------------------------------------------------------------
 
@@ -897,6 +973,197 @@ public final class TigerSwapClient {
                     Json.requiredLong(object, "totalPairs"),
                     Json.requiredLong(object, "totalUsers"),
                     Json.optionalString(object, "updatedAt"));
+        }
+    }
+
+    /** The protocol dashboard snapshot from {@code GET /analytics/overview}. */
+    public static final class ProtocolOverview {
+        public final double totalTvlUsd;
+        public final double volume24hUsd;
+        public final double fees24hUsd;
+        public final double volume7dUsd;
+        public final double fees7dUsd;
+        public final long totalPools;
+        public final long activePools;
+        public final long totalFarms;
+        public final long activeFarms;
+        public final long totalTokens;
+        public final long totalChains;
+        public final long activeChains;
+        public final long totalUsers;
+        public final long totalTrades24h;
+        public final double openInterestUsd;
+        public final double marginBorrowedUsd;
+        public final long nftListingsActive;
+        public final String updatedAt;
+
+        private ProtocolOverview(double totalTvlUsd, double volume24hUsd, double fees24hUsd,
+                                 double volume7dUsd, double fees7dUsd, long totalPools,
+                                 long activePools, long totalFarms, long activeFarms,
+                                 long totalTokens, long totalChains, long activeChains,
+                                 long totalUsers, long totalTrades24h, double openInterestUsd,
+                                 double marginBorrowedUsd, long nftListingsActive, String updatedAt) {
+            this.totalTvlUsd = totalTvlUsd;
+            this.volume24hUsd = volume24hUsd;
+            this.fees24hUsd = fees24hUsd;
+            this.volume7dUsd = volume7dUsd;
+            this.fees7dUsd = fees7dUsd;
+            this.totalPools = totalPools;
+            this.activePools = activePools;
+            this.totalFarms = totalFarms;
+            this.activeFarms = activeFarms;
+            this.totalTokens = totalTokens;
+            this.totalChains = totalChains;
+            this.activeChains = activeChains;
+            this.totalUsers = totalUsers;
+            this.totalTrades24h = totalTrades24h;
+            this.openInterestUsd = openInterestUsd;
+            this.marginBorrowedUsd = marginBorrowedUsd;
+            this.nftListingsActive = nftListingsActive;
+            this.updatedAt = updatedAt;
+        }
+
+        static ProtocolOverview fromJson(Map<String, Object> object) {
+            return new ProtocolOverview(
+                    Json.requiredDouble(object, "total_tvl_usd"),
+                    Json.requiredDouble(object, "volume_24h_usd"),
+                    Json.requiredDouble(object, "fees_24h_usd"),
+                    Json.requiredDouble(object, "volume_7d_usd"),
+                    Json.requiredDouble(object, "fees_7d_usd"),
+                    Json.requiredLong(object, "total_pools"),
+                    Json.requiredLong(object, "active_pools"),
+                    Json.requiredLong(object, "total_farms"),
+                    Json.requiredLong(object, "active_farms"),
+                    Json.requiredLong(object, "total_tokens"),
+                    Json.requiredLong(object, "total_chains"),
+                    Json.requiredLong(object, "active_chains"),
+                    Json.requiredLong(object, "total_users"),
+                    Json.requiredLong(object, "total_trades_24h"),
+                    Json.requiredDouble(object, "open_interest_usd"),
+                    Json.requiredDouble(object, "margin_borrowed_usd"),
+                    Json.requiredLong(object, "nft_listings_active"),
+                    Json.optionalString(object, "updated_at"));
+        }
+    }
+
+    /** One point of a volume series. */
+    public static final class VolumePoint {
+        public final String timestamp;
+        public final double volumeUsd;
+        public final double feesUsd;
+        public final long tradeCount;
+        public final double takerBuyVolumeUsd;
+        public final double takerSellVolumeUsd;
+
+        private VolumePoint(String timestamp, double volumeUsd, double feesUsd, long tradeCount,
+                            double takerBuyVolumeUsd, double takerSellVolumeUsd) {
+            this.timestamp = timestamp;
+            this.volumeUsd = volumeUsd;
+            this.feesUsd = feesUsd;
+            this.tradeCount = tradeCount;
+            this.takerBuyVolumeUsd = takerBuyVolumeUsd;
+            this.takerSellVolumeUsd = takerSellVolumeUsd;
+        }
+
+        static VolumePoint fromJson(Map<String, Object> object) {
+            return new VolumePoint(
+                    Json.requiredString(object, "timestamp"),
+                    Json.requiredDouble(object, "volume_usd"),
+                    Json.requiredDouble(object, "fees_usd"),
+                    Json.requiredLong(object, "trade_count"),
+                    Json.requiredDouble(object, "taker_buy_volume_usd"),
+                    Json.requiredDouble(object, "taker_sell_volume_usd"));
+        }
+    }
+
+    /** The envelope returned by {@code GET /analytics/volume}. */
+    public static final class VolumeSeries {
+        public final String pair;
+        public final long chainId;
+        public final int interval;
+        public final List<VolumePoint> series;
+
+        private VolumeSeries(String pair, long chainId, int interval, List<VolumePoint> series) {
+            this.pair = pair;
+            this.chainId = chainId;
+            this.interval = interval;
+            this.series = series;
+        }
+
+        static VolumeSeries fromJson(Map<String, Object> object) {
+            List<Object> items = Json.asArray(Json.field(object, "series"), "series");
+            List<VolumePoint> points = new ArrayList<>(items.size());
+            for (Object item : items) {
+                points.add(VolumePoint.fromJson(Json.asObject(item, "point")));
+            }
+            return new VolumeSeries(
+                    Json.optionalString(object, "pair"),
+                    Json.requiredLong(object, "chain_id"),
+                    Json.requiredInt(object, "interval"),
+                    points);
+        }
+    }
+
+    /** Per-market activity over a window. */
+    public static final class PairAnalytics {
+        public final String pair;
+        public final long chainId;
+        public final double volumeUsd;
+        public final double feesUsd;
+        public final long tradeCount;
+        public final double takerBuyVolumeUsd;
+        public final double takerSellVolumeUsd;
+
+        private PairAnalytics(String pair, long chainId, double volumeUsd, double feesUsd,
+                              long tradeCount, double takerBuyVolumeUsd, double takerSellVolumeUsd) {
+            this.pair = pair;
+            this.chainId = chainId;
+            this.volumeUsd = volumeUsd;
+            this.feesUsd = feesUsd;
+            this.tradeCount = tradeCount;
+            this.takerBuyVolumeUsd = takerBuyVolumeUsd;
+            this.takerSellVolumeUsd = takerSellVolumeUsd;
+        }
+
+        static PairAnalytics fromJson(Map<String, Object> object) {
+            return new PairAnalytics(
+                    Json.requiredString(object, "pair"),
+                    Json.requiredLong(object, "chain_id"),
+                    Json.requiredDouble(object, "volume_usd"),
+                    Json.requiredDouble(object, "fees_usd"),
+                    Json.requiredLong(object, "trade_count"),
+                    Json.requiredDouble(object, "taker_buy_volume_usd"),
+                    Json.requiredDouble(object, "taker_sell_volume_usd"));
+        }
+    }
+
+    /** One row of the realized-PnL leaderboard. */
+    public static final class TopTrader {
+        public final String userId;
+        public final double realizedPnl;
+        public final double volumeUsd;
+        public final long closedTrades;
+        public final double winRate;
+        public final long liquidations;
+
+        private TopTrader(String userId, double realizedPnl, double volumeUsd, long closedTrades,
+                          double winRate, long liquidations) {
+            this.userId = userId;
+            this.realizedPnl = realizedPnl;
+            this.volumeUsd = volumeUsd;
+            this.closedTrades = closedTrades;
+            this.winRate = winRate;
+            this.liquidations = liquidations;
+        }
+
+        static TopTrader fromJson(Map<String, Object> object) {
+            return new TopTrader(
+                    Json.requiredString(object, "user_id"),
+                    Json.requiredDouble(object, "realized_pnl"),
+                    Json.requiredDouble(object, "volume_usd"),
+                    Json.requiredLong(object, "closed_trades"),
+                    Json.requiredDouble(object, "win_rate"),
+                    Json.requiredLong(object, "liquidations"));
         }
     }
 }

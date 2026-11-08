@@ -409,3 +409,34 @@ pricing and settlement layer; `services/option_math.go` and
   `/options/series/:id`; protected `POST /options/series/:id/{buy,collateral,
   collateral/remove,exercise,withdraw}`, `GET /options/positions`; admin CRUD
   and `settle`/`refresh-price` under `/admin/options/series`.
+
+## Analytics
+
+`services/analytics_service.go` and `models/analytics.go` are the protocol and
+market analytics layer; the panel is `frontend/src/components/Analytics.tsx` and
+the admin panel is `frontend/src/components/AdminAnalyticsPanel.tsx`.
+
+- Every figure is aggregated from rows TigerSwap itself wrote: confirmed swap
+  transactions, the derivatives book, the margin book, farms, listings and the
+  marketplace. Nothing calls an external indexer, and a value the server cannot
+  compute (for example open interest with no price source) comes back as zero
+  rather than an estimate.
+- `RollupVolume` folds confirmed swaps into `volume_buckets` keyed by the unique
+  `(bucket_start, pair, chain_id, bucket_seconds)` index. It rebuilds a window
+  delete-then-insert inside one transaction, so re-running it after a late
+  confirmation or a reorg converges on the same numbers instead of
+  double-counting.
+- A swap only contributes USD volume when its quote asset is one of
+  `analyticsVolumeSymbols` (RUSD/RYUSD/USDT/USDC); a pair with no unambiguous USD
+  notional is counted in trade count only, never valued at a guessed price. Fees
+  use each pool's own fee tier, looked up once per pair, falling back to the
+  protocol default only when the pool is genuinely absent.
+- Routes: public `GET /analytics/{overview,volume,pairs,traders}`; admin
+  `POST /admin/analytics/rollup`. Query params that are present but malformed are
+  rejected with 400 rather than silently defaulted.
+- The Go SDK (`backend/go/sdk/analytics.go`) and the Java SDK
+  (`TigerSwapClient.getAnalytics*`) read the same endpoints. When a handler's
+  JSON shape changes, update the matching validator in `frontend/src/lib/types.ts`
+  and the SDK decoders together; the contract fixtures in
+  `frontend/src/lib/serverContract.test.ts` are captured from a running server,
+  not hand-written.

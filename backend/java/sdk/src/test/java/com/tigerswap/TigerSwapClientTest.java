@@ -52,6 +52,11 @@ public final class TigerSwapClientTest {
         nftListingsJoinTheirTokenAndCollection();
         nftOffersJoinTheirTokenAndCollection();
         nftConfigIsDecoded();
+        analyticsOverviewIsDecoded();
+        analyticsVolumeDecodesSeries();
+        analyticsPairsDecodeEnvelope();
+        analyticsTradersDecodeEnvelope();
+        analyticsReadsRejectServerErrors();
 
         System.out.println();
         System.out.println("checks run: " + checks);
@@ -450,6 +455,104 @@ public final class TigerSwapClientTest {
             check("max fee bps", config.maxFeeBps == 500);
             check("escrow account", "__nft_escrow__".equals(config.escrowAccount));
             check("config path", "/api/v1/nft/config".equals(server.lastPath()));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // analytics
+    // ------------------------------------------------------------------
+
+    private static void analyticsOverviewIsDecoded() throws Exception {
+        String body = "{\"total_tvl_usd\":0,\"volume_24h_usd\":1500,\"fees_24h_usd\":4.5,"
+                + "\"volume_7d_usd\":1500,\"fees_7d_usd\":4.5,\"total_pools\":0,\"active_pools\":0,"
+                + "\"total_farms\":0,\"active_farms\":0,\"total_tokens\":0,\"total_chains\":0,"
+                + "\"active_chains\":0,\"total_users\":0,\"total_trades_24h\":2,"
+                + "\"open_interest_usd\":2500,\"margin_borrowed_usd\":0,\"nft_listings_active\":0,"
+                + "\"updated_at\":\"2026-11-08T03:30:30.928888113Z\"}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            TigerSwapClient.ProtocolOverview overview =
+                    new TigerSwapClient(server.baseURL(), "").getAnalyticsOverview();
+
+            check("overview volume 24h", overview.volume24hUsd == 1500.0);
+            check("overview fees 24h", overview.fees24hUsd == 4.5);
+            check("overview trades 24h", overview.totalTrades24h == 2);
+            check("overview open interest", overview.openInterestUsd == 2500.0);
+            check("overview path", "/api/v1/analytics/overview".equals(server.lastPath()));
+        }
+    }
+
+    private static void analyticsVolumeDecodesSeries() throws Exception {
+        String body = "{\"chain_id\":0,\"interval\":60,\"pair\":\"TGR/RUSD\",\"series\":["
+                + "{\"timestamp\":\"2026-11-08T03:25:00Z\",\"volume_usd\":1000,\"fees_usd\":3,"
+                + "\"trade_count\":1,\"taker_buy_volume_usd\":1000,\"taker_sell_volume_usd\":0}]}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            TigerSwapClient.VolumeSeries series =
+                    new TigerSwapClient(server.baseURL(), "").getAnalyticsVolume("TGR/RUSD", 0, 60, 3600);
+
+            check("volume pair", "TGR/RUSD".equals(series.pair));
+            check("volume interval", series.interval == 60);
+            check("volume points", series.series.size() == 1);
+            check("volume first point", series.series.get(0).volumeUsd == 1000.0);
+            check("volume buy side", series.series.get(0).takerBuyVolumeUsd == 1000.0);
+            check("volume query", server.lastPath().contains("pair=TGR%2FRUSD"));
+            check("volume window query", server.lastPath().contains("window=3600"));
+        }
+    }
+
+    private static void analyticsPairsDecodeEnvelope() throws Exception {
+        String body = "{\"pairs\":[{\"pair\":\"TGR/RUSD\",\"chain_id\":1,\"volume_usd\":1000,"
+                + "\"fees_usd\":3,\"trade_count\":1,\"taker_buy_volume_usd\":1000,"
+                + "\"taker_sell_volume_usd\":0},{\"pair\":\"ETH/RUSD\",\"chain_id\":1,"
+                + "\"volume_usd\":500,\"fees_usd\":1.5,\"trade_count\":1,"
+                + "\"taker_buy_volume_usd\":0,\"taker_sell_volume_usd\":500}],\"window\":3600}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.PairAnalytics> pairs =
+                    new TigerSwapClient(server.baseURL(), "").getAnalyticsPairs(0, 3600, 10);
+
+            check("pairs count", pairs.size() == 2);
+            check("pairs first", "TGR/RUSD".equals(pairs.get(0).pair));
+            check("pairs second sell", pairs.get(1).takerSellVolumeUsd == 500.0);
+        }
+    }
+
+    private static void analyticsTradersDecodeEnvelope() throws Exception {
+        String body = "{\"traders\":[{\"user_id\":\"u1\",\"realized_pnl\":120,\"volume_usd\":2500,"
+                + "\"closed_trades\":1,\"win_rate\":1,\"liquidations\":0}]}";
+        try (StubServer server = new StubServer()) {
+            server.respond(200, body);
+            List<TigerSwapClient.TopTrader> traders =
+                    new TigerSwapClient(server.baseURL(), "").getAnalyticsTraders(0, 10);
+
+            check("traders count", traders.size() == 1);
+            check("trader id", "u1".equals(traders.get(0).userId));
+            check("trader pnl", traders.get(0).realizedPnl == 120.0);
+            check("trader win rate", traders.get(0).winRate == 1.0);
+        }
+    }
+
+    private static void analyticsReadsRejectServerErrors() throws Exception {
+        try (StubServer server = new StubServer()) {
+            server.respond(500, "{\"error\":\"boom\"}");
+            TigerSwapClient client = new TigerSwapClient(server.baseURL(), "");
+
+            boolean overviewThrew = false;
+            try {
+                client.getAnalyticsOverview();
+            } catch (TigerSwapClient.ApiException e) {
+                overviewThrew = e.getStatusCode() == 500;
+            }
+            check("overview surfaces 500", overviewThrew);
+
+            boolean tradersThrew = false;
+            try {
+                client.getAnalyticsTraders(0, 10);
+            } catch (TigerSwapClient.ApiException e) {
+                tradersThrew = e.getStatusCode() == 500;
+            }
+            check("traders surfaces 500", tradersThrew);
         }
     }
 

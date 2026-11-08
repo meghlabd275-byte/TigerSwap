@@ -6,6 +6,7 @@ import {
   adminChainListValidator,
   adminDashboardValidator,
   adminSettingsValidator,
+  analyticsRollupValidator,
   adminTokenListValidator,
   botListValidator,
   botOrderListValidator,
@@ -38,11 +39,15 @@ import {
   otcOrderListValidator,
   perpMarketListValidator,
   perpsListingListValidator,
+  pairAnalyticsListValidator,
   poolListValidator,
+  protocolOverviewValidator,
   priceListValidator,
   swapQuoteValidator,
   tokenListValidator,
+  topTraderListValidator,
   tradeListValidator,
+  volumeSeriesValidator,
   twammOrderListValidator,
   airdropAllocationViewListValidator,
   airdropCampaignListValidator,
@@ -485,4 +490,64 @@ test("live POST /nft/offers payload satisfies nftOfferEnvelopeValidator", () => 
   assert.equal(offer.amount, "50000");
   assert.equal(offer.fee_bps, 250);
   assert.equal(offer.status, "active");
+});
+
+// ------------------------------------------------ analytics (Go handler capture)
+//
+// Captured verbatim from `TestAnalyticsResponseWireFormat` in
+// backend/services/analytics_service_test.go, which seeds real swaps and
+// positions and logs each handler's response.
+
+const SERVER_ANALYTICS_OVERVIEW = `{"total_tvl_usd":0,"volume_24h_usd":1500,"fees_24h_usd":4.5,"volume_7d_usd":1500,"fees_7d_usd":4.5,"total_pools":0,"active_pools":0,"total_farms":0,"active_farms":0,"total_tokens":0,"total_chains":0,"active_chains":0,"total_users":0,"total_trades_24h":2,"open_interest_usd":2500,"margin_borrowed_usd":0,"nft_listings_active":0,"updated_at":"2026-11-08T03:30:30.928888113Z"}`;
+
+const SERVER_ANALYTICS_VOLUME = `{"chain_id":0,"interval":60,"pair":"TGR/RUSD","series":[{"timestamp":"2026-11-08T03:25:00Z","volume_usd":1000,"fees_usd":3,"trade_count":1,"taker_buy_volume_usd":1000,"taker_sell_volume_usd":0}]}`;
+
+const SERVER_ANALYTICS_PAIRS = `{"pairs":[{"pair":"TGR/RUSD","chain_id":1,"volume_usd":1000,"fees_usd":3,"trade_count":1,"taker_buy_volume_usd":1000,"taker_sell_volume_usd":0},{"pair":"ETH/RUSD","chain_id":1,"volume_usd":500,"fees_usd":1.5,"trade_count":1,"taker_buy_volume_usd":0,"taker_sell_volume_usd":500}],"window":3600}`;
+
+const SERVER_ANALYTICS_TRADERS = `{"traders":[{"user_id":"u1","realized_pnl":120,"volume_usd":2500,"closed_trades":1,"win_rate":1,"liquidations":0}]}`;
+
+const SERVER_ANALYTICS_ROLLUP = `{"buckets_written":2,"from":"2026-11-08T02:31:00Z","to":"2026-11-08T03:31:00Z"}`;
+
+test("live /analytics/overview payload satisfies protocolOverviewValidator", () => {
+  const overview = parse(protocolOverviewValidator, SERVER_ANALYTICS_OVERVIEW, "overview");
+  assert.equal(overview.volume_24h_usd, 1500);
+  assert.equal(overview.fees_24h_usd, 4.5);
+  assert.equal(overview.total_trades_24h, 2);
+  assert.equal(overview.open_interest_usd, 2500);
+  // A value the protocol cannot compute is reported as zero, never invented.
+  assert.equal(overview.margin_borrowed_usd, 0);
+});
+
+test("live /analytics/volume payload satisfies volumeSeriesValidator", () => {
+  const series = parse(volumeSeriesValidator, SERVER_ANALYTICS_VOLUME, "volume");
+  assert.equal(series.pair, "TGR/RUSD");
+  assert.equal(series.interval, 60);
+  assert.equal(series.series.length, 1);
+  assert.equal(series.series[0].volume_usd, 1000);
+  assert.equal(series.series[0].trade_count, 1);
+  assert.equal(series.series[0].taker_buy_volume_usd, 1000);
+});
+
+test("live /analytics/pairs payload satisfies pairAnalyticsListValidator", () => {
+  const pairs = parse(pairAnalyticsListValidator, SERVER_ANALYTICS_PAIRS, "pairs");
+  assert.equal(pairs.length, 2);
+  assert.equal(pairs[0].pair, "TGR/RUSD");
+  assert.equal(pairs[1].pair, "ETH/RUSD");
+  // The series carries the two sides so the UI can draw buy/sell pressure.
+  assert.equal(pairs[1].taker_sell_volume_usd, 500);
+});
+
+test("live /analytics/traders payload satisfies topTraderListValidator", () => {
+  const traders = parse(topTraderListValidator, SERVER_ANALYTICS_TRADERS, "traders");
+  assert.equal(traders.length, 1);
+  assert.equal(traders[0].user_id, "u1");
+  assert.equal(traders[0].realized_pnl, 120);
+  assert.equal(traders[0].win_rate, 1);
+  assert.equal(traders[0].liquidations, 0);
+});
+
+test("live /admin/analytics/rollup payload satisfies its envelope", () => {
+  const result = parse(analyticsRollupValidator, SERVER_ANALYTICS_ROLLUP, "rollup");
+  assert.equal(result.buckets_written, 2);
+  assert.equal(result.from, "2026-11-08T02:31:00Z");
 });

@@ -801,6 +801,7 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
         record.option_series ??
         record.collections ??
         record.offers ??
+        record.pairs ??
         record.nft_listings;
       if (items !== undefined) {
         // A Go nil slice serialises as `null`; treat it as an empty list
@@ -2144,3 +2145,148 @@ export const nftCollectionListValidator = listingArray(nftCollectionValidator);
 export const nftTokenListValidator = listingArray(nftTokenValidator);
 export const nftListingListValidator = listingArray(nftListingValidator);
 export const nftOfferListValidator = listingArray(nftOfferValidator);
+
+/* ------------------------------------------------------------- analytics */
+
+/**
+ * The protocol dashboard snapshot from `GET /analytics/overview`. Every field
+ * is a real count or sum computed from rows TigerSwap wrote; a field the server
+ * could not value (for example open interest with no price source) comes back as
+ * zero rather than a guess.
+ */
+export interface ProtocolOverview {
+  total_tvl_usd: number;
+  volume_24h_usd: number;
+  fees_24h_usd: number;
+  volume_7d_usd: number;
+  fees_7d_usd: number;
+  total_pools: number;
+  active_pools: number;
+  total_farms: number;
+  active_farms: number;
+  total_tokens: number;
+  total_chains: number;
+  active_chains: number;
+  total_users: number;
+  total_trades_24h: number;
+  open_interest_usd: number;
+  margin_borrowed_usd: number;
+  nft_listings_active: number;
+  updated_at: string | null;
+}
+
+export const protocolOverviewValidator = object<ProtocolOverview>({
+  total_tvl_usd: nonNegative,
+  volume_24h_usd: nonNegative,
+  fees_24h_usd: nonNegative,
+  volume_7d_usd: nonNegative,
+  fees_7d_usd: nonNegative,
+  total_pools: integer,
+  active_pools: integer,
+  total_farms: integer,
+  active_farms: integer,
+  total_tokens: integer,
+  total_chains: integer,
+  active_chains: integer,
+  total_users: integer,
+  total_trades_24h: integer,
+  open_interest_usd: nonNegative,
+  margin_borrowed_usd: nonNegative,
+  nft_listings_active: integer,
+  updated_at: nullable(timestamp),
+});
+
+/** One point of a volume series from `GET /analytics/volume`. */
+export interface VolumePoint {
+  timestamp: string;
+  volume_usd: number;
+  fees_usd: number;
+  trade_count: number;
+  taker_buy_volume_usd: number;
+  taker_sell_volume_usd: number;
+}
+
+export const volumePointValidator = object<VolumePoint>({
+  timestamp: timestamp,
+  volume_usd: nonNegative,
+  fees_usd: nonNegative,
+  trade_count: integer,
+  taker_buy_volume_usd: nonNegative,
+  taker_sell_volume_usd: nonNegative,
+});
+
+/** The envelope returned by `/analytics/volume`: the series plus its params. */
+export interface VolumeSeriesResponse {
+  pair: string;
+  chain_id: number;
+  interval: number;
+  series: VolumePoint[];
+}
+
+export const volumeSeriesValidator = object<VolumeSeriesResponse>({
+  pair: withDefault(string, ""),
+  chain_id: integer,
+  interval: integer,
+  series: array(volumePointValidator),
+});
+
+/** Per-market activity from `GET /analytics/pairs`. */
+export interface PairAnalytics {
+  pair: string;
+  chain_id: number;
+  volume_usd: number;
+  fees_usd: number;
+  trade_count: number;
+  taker_buy_volume_usd: number;
+  taker_sell_volume_usd: number;
+}
+
+export const pairAnalyticsValidator = object<PairAnalytics>({
+  pair: string,
+  chain_id: integer,
+  volume_usd: nonNegative,
+  fees_usd: nonNegative,
+  trade_count: integer,
+  taker_buy_volume_usd: nonNegative,
+  taker_sell_volume_usd: nonNegative,
+});
+
+export const pairAnalyticsListValidator = listingArray(pairAnalyticsValidator);
+
+/** One row of the PnL leaderboard from `GET /analytics/traders`. */
+export interface TopTrader {
+  user_id: string;
+  realized_pnl: number;
+  volume_usd: number;
+  closed_trades: number;
+  win_rate: number;
+  liquidations: number;
+}
+
+export const topTraderValidator = object<TopTrader>({
+  user_id: string,
+  realized_pnl: number,
+  volume_usd: nonNegative,
+  closed_trades: integer,
+  win_rate: nonNegative,
+  liquidations: integer,
+});
+
+export const topTraderListValidator = listingArray(topTraderValidator);
+
+/**
+ * The result of an admin rollup from `POST /admin/analytics/rollup`. The window
+ * is rebuilt rather than appended to, so the same call can be repeated after a
+ * reorg without double-counting.
+ */
+export interface AnalyticsRollupResult {
+  buckets_written: number;
+  from: string;
+  to: string;
+}
+
+export const analyticsRollupValidator = object<AnalyticsRollupResult>({
+  buckets_written: integer,
+  from: timestamp,
+  to: timestamp,
+});

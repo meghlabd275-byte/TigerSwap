@@ -29,6 +29,7 @@ import {
   Bot,
   Users,
   Gem,
+  BarChart3,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -48,8 +49,9 @@ import { CopyTrading } from '@/components/CopyTrading';
 import { Farming } from '@/components/Farming';
 import { OptionsTrading } from '@/components/OptionsTrading';
 import { NFTMarketplace } from '@/components/NFTMarketplace';
+import { Analytics } from '@/components/Analytics';
 
-type Tab = 'swap' | 'perpetuals' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading';
+type Tab = 'swap' | 'perpetuals' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading' | 'analytics';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -86,6 +88,7 @@ export default function Home() {
     { id: 'otc' as const, label: 'OTC / TWAMM', icon: Clock },
     { id: 'bots' as const, label: 'Bots', icon: Bot },
     { id: 'copy-trading' as const, label: 'Copy Trading', icon: Users },
+    { id: 'analytics' as const, label: 'Analytics', icon: BarChart3 },
   ];
 
   return (
@@ -160,6 +163,7 @@ export default function Home() {
                 {activeTab === 'otc' && <OtcTwamm />}
                 {activeTab === 'bots' && <Bots />}
                 {activeTab === 'copy-trading' && <CopyTrading />}
+                {activeTab === 'analytics' && <Analytics />}
               </motion.div>
             </AnimatePresence>
           </div>

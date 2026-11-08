@@ -41,6 +41,7 @@ type apiDeps struct {
 	airdropService     *services.AirdropService
 	optionService      *services.OptionService
 	nftService         *services.NFTMarketplaceService
+	analyticsService   *services.AnalyticsService
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -407,6 +408,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			admin.POST("/nft/collections/:id/mint", deps.nftService.Mint)
 			admin.GET("/nft/listings", deps.nftService.GetListings)
 			admin.PUT("/nft/config", deps.nftService.UpdateMarketplaceConfig)
+
+			// Analytics rollup. The rollup is idempotent, so an operator can
+			// re-run a window after a late confirmation or a reorg without
+			// inflating volume.
+			admin.POST("/analytics/rollup", deps.analyticsService.RollupHandler)
 		}
 
 		// Price aggregation (public)
@@ -447,6 +453,14 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		public.GET("/nft/collections", deps.nftService.GetActiveCollections)
 		public.GET("/nft/offers", deps.nftService.GetOffers)
 		public.GET("/nft/config", deps.nftService.GetMarketplaceConfig)
+
+		// Analytics (public read). Every figure is aggregated from rows
+		// TigerSwap wrote: confirmed swaps, the derivatives book, the
+		// margin book and the marketplace. No external indexer is called.
+		public.GET("/analytics/overview", deps.analyticsService.GetOverviewHandler)
+		public.GET("/analytics/volume", deps.analyticsService.GetVolumeHandler)
+		public.GET("/analytics/pairs", deps.analyticsService.GetPairsHandler)
+		public.GET("/analytics/traders", deps.analyticsService.GetTopTradersHandler)
 
 		// TigerSwap router (public read, protected broadcast)
 		public.GET("/tigerswap/supported", deps.swapExecutor.GetSupportedDEXHandler)

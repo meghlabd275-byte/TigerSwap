@@ -64,14 +64,19 @@ import {
   PerpsListing,
   PerpsListingInput,
   Pool,
+  AnalyticsRollupResult,
+  PairAnalytics,
   Portfolio,
+  ProtocolOverview,
   PriceEntry,
   SwapQuote,
   Token,
   Trade,
+  TopTrader,
   TwammOrder,
   UserProfile,
   UserTransaction,
+  VolumeSeriesResponse,
   VeLock,
   accountBalanceListValidator,
   adminAuditLogListValidator,
@@ -137,10 +142,13 @@ import {
   nftOfferViewListValidator,
   nftTokenEnvelopeValidator,
   nftTokenListValidator,
+  analyticsRollupValidator,
+  pairAnalyticsListValidator,
   otcOrderListValidator,
   otcOrderValidator,
   perpMarketListValidator,
   perpOpenResultValidator,
+  protocolOverviewValidator,
   perpPositionListValidator,
   perpsListingListValidator,
   perpsListingValidator,
@@ -150,9 +158,11 @@ import {
   swapQuoteValidator,
   tokenListValidator,
   tradeListValidator,
+  topTraderListValidator,
   twammOrderListValidator,
   twammOrderValidator,
   userProfileValidator,
+  volumeSeriesValidator,
   userTransactionListValidator,
   veLockListValidator,
   veLockValidator,
@@ -1222,5 +1232,64 @@ export const endpoints = {
   async updateNFTConfig(payload: { fee_bps?: number; fee_account?: string }): Promise<NFTMarketplaceConfig> {
     const body = await api.put("/admin/nft/config", payload);
     return nftMarketplaceConfigValidator(body);
+  },
+
+  /* ------------------------------------------------------------ analytics */
+
+  /** The protocol dashboard snapshot: TVL, volume, fees, counts and open interest. */
+  async getAnalyticsOverview(): Promise<ProtocolOverview> {
+    const body = await api.get("/analytics/overview", { authenticated: false });
+    return protocolOverviewValidator(body);
+  },
+
+  /**
+   * A volume series for one market (or every market when `pair` is omitted).
+   * `interval` and `window` are in seconds; the server requires `interval` to be
+   * a whole multiple of its rollup bucket.
+   */
+  async getAnalyticsVolume(params: {
+    pair?: string;
+    chainId?: number;
+    interval?: number;
+    window?: number;
+  } = {}): Promise<VolumeSeriesResponse> {
+    const body = await api.get("/analytics/volume", {
+      authenticated: false,
+      query: {
+        pair: params.pair,
+        chain_id: params.chainId,
+        interval: params.interval,
+        window: params.window,
+      },
+    });
+    return volumeSeriesValidator(body);
+  },
+
+  /** The per-market volume leaderboard over a window. */
+  async getAnalyticsPairs(params: { chainId?: number; window?: number; limit?: number } = {}): Promise<
+    PairAnalytics[]
+  > {
+    const body = await api.get("/analytics/pairs", {
+      authenticated: false,
+      query: { chain_id: params.chainId, window: params.window, limit: params.limit },
+    });
+    return pairAnalyticsListValidator(body);
+  },
+
+  /** The realized-PnL leaderboard. `window` in seconds; 0 means all time. */
+  async getAnalyticsTraders(params: { window?: number; limit?: number } = {}): Promise<TopTrader[]> {
+    const body = await api.get("/analytics/traders", {
+      authenticated: false,
+      query: { window: params.window, limit: params.limit },
+    });
+    return topTraderListValidator(body);
+  },
+
+  /** Admin: rebuild the volume rollup for a window. Idempotent. */
+  async runAnalyticsRollup(windowSeconds = 3600): Promise<AnalyticsRollupResult> {
+    const body = await api.post("/admin/analytics/rollup", undefined, {
+      query: { window: windowSeconds },
+    });
+    return analyticsRollupValidator(body);
   },
 };

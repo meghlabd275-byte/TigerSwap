@@ -52,13 +52,17 @@ import type {
   PerpMarket,
   PerpPosition,
   Pool,
+  PairAnalytics,
+  ProtocolOverview,
   Portfolio,
   PriceEntry,
   SwapQuote,
   Token,
+  TopTrader,
   Trade,
   TwammOrder,
   UserTransaction,
+  VolumeSeriesResponse,
 } from "@/lib/types";
 
 /** Refetch cadences, in milliseconds. */
@@ -1117,6 +1121,74 @@ export function useUpdateNFTConfig() {
       endpoints.updateNFTConfig(payload),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["nft"] });
+    },
+  });
+}
+
+/* ------------------------------------------------------------- analytics */
+
+/**
+ * The protocol dashboard snapshot. This is the one screen that answers "how big
+ * is the protocol right now" from real rows, so it refreshes on the slow
+ * cadence rather than the fast one.
+ */
+export function useAnalyticsOverview(): UseQueryResult<ProtocolOverview, Error> {
+  return useQuery<ProtocolOverview, Error>({
+    queryKey: ["analytics", "overview"],
+    queryFn: () => endpoints.getAnalyticsOverview(),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** A volume series for one market, or every market when `pair` is omitted. */
+export function useAnalyticsVolume(params: {
+  pair?: string;
+  chainId?: number;
+  interval?: number;
+  window?: number;
+} = {}): UseQueryResult<VolumeSeriesResponse, Error> {
+  return useQuery<VolumeSeriesResponse, Error>({
+    queryKey: ["analytics", "volume", params.pair ?? "", params.chainId ?? 0, params.interval ?? 0, params.window ?? 0],
+    queryFn: () => endpoints.getAnalyticsVolume(params),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** The per-market volume leaderboard. */
+export function useAnalyticsPairs(params: { chainId?: number; window?: number; limit?: number } = {}): UseQueryResult<
+  PairAnalytics[],
+  Error
+> {
+  return useQuery<PairAnalytics[], Error>({
+    queryKey: ["analytics", "pairs", params.chainId ?? 0, params.window ?? 0, params.limit ?? 0],
+    queryFn: () => endpoints.getAnalyticsPairs(params),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** The realized-PnL trader leaderboard. */
+export function useAnalyticsTraders(params: { window?: number; limit?: number } = {}): UseQueryResult<
+  TopTrader[],
+  Error
+> {
+  return useQuery<TopTrader[], Error>({
+    queryKey: ["analytics", "traders", params.window ?? 0, params.limit ?? 0],
+    queryFn: () => endpoints.getAnalyticsTraders(params),
+    refetchInterval: REFRESH.slow,
+    retry: shouldRetry,
+  });
+}
+
+/** Admin: rebuild the volume rollup for a window. */
+export function useRunAnalyticsRollup() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (windowSeconds?: number) => endpoints.runAnalyticsRollup(windowSeconds),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["analytics"] });
     },
   });
 }
