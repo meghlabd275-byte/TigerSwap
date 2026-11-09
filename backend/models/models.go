@@ -7,6 +7,26 @@ import (
 	"gorm.io/gorm"
 )
 
+// Platform account roles. These exact strings are stored on the User row and
+// copied verbatim into the JWT `role` claim, so authorization checks must
+// compare against these constants rather than a hand-written literal.
+const (
+	RoleUser       = "user"
+	RoleAdmin      = "admin"
+	RoleSuperAdmin = "superadmin"
+)
+
+// IsAdminRole reports whether a role grants operator access. A super admin is
+// the most privileged role and therefore also an admin.
+func IsAdminRole(role string) bool {
+	return role == RoleAdmin || role == RoleSuperAdmin
+}
+
+// ValidRole reports whether a role string may be assigned to an account.
+func ValidRole(role string) bool {
+	return role == RoleUser || role == RoleAdmin || role == RoleSuperAdmin
+}
+
 // User represents a user account
 type User struct {
 	ID            uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
@@ -14,7 +34,7 @@ type User struct {
 	Username      string         `gorm:"uniqueIndex;size:100" json:"username"`
 	PasswordHash  string         `json:"-" gorm:"size:255"`
 	WalletAddress string         `gorm:"index;size:42" json:"wallet_address,omitempty"`
-	Role          string         `gorm:"size:20;default:'user'" json:"role"` // user, admin
+	Role          string         `gorm:"size:20;default:'user'" json:"role"` // user, admin, superadmin
 	IsVerified    bool           `gorm:"default:false" json:"is_verified"`
 	IsActive      bool           `gorm:"default:true" json:"is_active"`
 	CreatedAt     time.Time      `json:"created_at"`

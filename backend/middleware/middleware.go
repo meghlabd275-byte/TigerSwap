@@ -3,12 +3,67 @@ package middleware
 import (
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
+	"tigerswap/backend/models"
 	"tigerswap/backend/services"
 )
+
+// Platform role names, re-exported from the model layer so a middleware check
+// and the value stored on the User row cannot drift apart.
+const (
+	RoleUser       = models.RoleUser
+	RoleAdmin      = models.RoleAdmin
+	RoleSuperAdmin = models.RoleSuperAdmin
+)
+
+// hasRole reports whether the token claims carry one of the supplied roles.
+func hasRole(claims jwt.MapClaims, roles ...string) bool {
+	current, ok := claims["role"].(string)
+	if !ok {
+		return false
+	}
+	for _, role := range roles {
+		if current == role {
+			return true
+		}
+	}
+	return false
+}
+
+// authenticate validates the bearer token and returns its claims. On failure it
+// writes the 401 response and aborts the context, and the caller must return.
+func authenticate(c *gin.Context, authService *services.AuthService) (jwt.MapClaims, bool) {
+	authHeader := c.GetHeader("Authorization")
+	if authHeader == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authorization header required"})
+		return nil, false
+	}
+
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
+		return nil, false
+	}
+
+	claims, err := authService.ValidateToken(parts[1])
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+		return nil, false
+	}
+	return claims, true
+}
+
+// setAuthContext copies the validated identity into the request context.
+func setAuthContext(c *gin.Context, claims jwt.MapClaims) {
+	c.Set("user_id", claims["user_id"])
+	c.Set("email", claims["email"])
+	c.Set("role", claims["role"])
+}
 
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -30,6 +85,28 @@ func RequestLogger() gin.HandlerFunc {
 	}
 }
 
+// BodySizeLimit caps the size of a request body. A handler that decodes JSON
+// from an unbounded reader can be driven out of memory by a single client, so
+// every API request is bounded before it reaches a handler. A declared
+// Content-Length over the limit is rejected up front; a chunked body is bounded
+// by the reader so a lying or absent Content-Length cannot bypass the cap.
+func BodySizeLimit(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes > 0 {
+			if c.Request.ContentLength > maxBytes {
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{
+					"error":    "request body too large",
+					"max_size": maxBytes,
+				})
+				return
+			}
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBytes)
+		}
+		c.Next()
+	}
+}
+
+// SecurityHeaders sets the browser-facing hardening headers on every response.
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
@@ -41,8 +118,49 @@ func SecurityHeaders() gin.HandlerFunc {
 	}
 }
 
-// RedisRateLimiter applies a distributed rate limit backed by Redis.
+// localRateLimiter is a fixed-window per-key limiter used as a fallback when the
+// distributed limiter (Redis) is unreachable. It keeps the API from becoming an
+// open door during a Redis outage, at the cost of being per-process.
+type localRateLimiter struct {
+	mu      sync.Mutex
+	counts  map[string]int
+	resetAt map[string]time.Time
+	limit   int
+	window  time.Duration
+}
+
+func newLocalRateLimiter(limit int, window time.Duration) *localRateLimiter {
+	return &localRateLimiter{
+		counts:  make(map[string]int),
+		resetAt: make(map[string]time.Time),
+		limit:   limit,
+		window:  window,
+	}
+}
+
+func (l *localRateLimiter) allow(key string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if expiry, ok := l.resetAt[key]; !ok || now.After(expiry) {
+		l.counts[key] = 0
+		l.resetAt[key] = now.Add(l.window)
+	}
+	l.counts[key]++
+	return l.counts[key] <= l.limit
+}
+
+// RedisRateLimiter applies a distributed rate limit backed by Redis. When Redis
+// is unreachable it falls back to an in-process limiter rather than allowing
+// every request through, so a Redis outage cannot be used to bypass the limit.
 func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
+	const (
+		limit  = 100 // requests per minute per client
+		window = time.Minute
+	)
+	fallback := newLocalRateLimiter(limit, window)
+
 	return func(c *gin.Context) {
 		// Skip rate limiting for health check
 		if c.Request.URL.Path == "/health" {
@@ -50,33 +168,36 @@ func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 			return
 		}
 
-		// Get client IP
 		ip := c.ClientIP()
-
-		// Check rate limit
 		key := "rate_limit:" + ip
-		limit := 100 // requests per minute
 
 		if redisClient != nil {
 			count, err := redisClient.Incr(c.Request.Context(), key).Result()
-			if err != nil {
-				// If Redis fails, allow the request
+			if err == nil {
+				if count == 1 {
+					redisClient.Expire(c.Request.Context(), key, window)
+				}
+				if count > int64(limit) {
+					c.JSON(http.StatusTooManyRequests, gin.H{
+						"error":       "Rate limit exceeded",
+						"retry_after": int(window.Seconds()),
+					})
+					c.Abort()
+					return
+				}
 				c.Next()
 				return
 			}
+			// Redis is unreachable; fall through to the local limiter.
+		}
 
-			if count == 1 {
-				redisClient.Expire(c.Request.Context(), key, time.Minute)
-			}
-
-			if count > int64(limit) {
-				c.JSON(http.StatusTooManyRequests, gin.H{
-					"error":       "Rate limit exceeded",
-					"retry_after": 60,
-				})
-				c.Abort()
-				return
-			}
+		if !fallback.allow(key) {
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"error":       "Rate limit exceeded",
+				"retry_after": int(window.Seconds()),
+			})
+			c.Abort()
+			return
 		}
 
 		c.Next()
@@ -85,93 +206,29 @@ func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 
 func AuthRequired(authService *services.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Get token from Authorization header
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authorization header required",
-			})
-			c.Abort()
+		claims, ok := authenticate(c, authService)
+		if !ok {
 			return
 		}
-
-		// Extract token from "Bearer <token>"
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid authorization header format",
-			})
-			c.Abort()
-			return
-		}
-
-		tokenString := parts[1]
-
-		// Validate token
-		claims, err := authService.ValidateToken(tokenString)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid or expired token",
-			})
-			c.Abort()
-			return
-		}
-
-		// Set user ID in context
-		c.Set("user_id", claims["user_id"])
-		c.Set("email", claims["email"])
-		c.Set("role", claims["role"])
-
+		setAuthContext(c, claims)
 		c.Next()
 	}
 }
 
+// AdminRequired admits an operator holding either the `admin` or `superadmin`
+// role. A superadmin is the most privileged account and must not be locked out
+// of the endpoints an ordinary admin can reach.
 func AdminRequired(authService *services.AuthService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// First check auth
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authorization header required",
-			})
-			c.Abort()
+		claims, ok := authenticate(c, authService)
+		if !ok {
 			return
 		}
-
-		parts := strings.Split(authHeader, " ")
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid authorization header format",
-			})
-			c.Abort()
+		if !hasRole(claims, RoleAdmin, RoleSuperAdmin) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
 			return
 		}
-
-		tokenString := parts[1]
-		claims, err := authService.ValidateToken(tokenString)
-		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Invalid or expired token",
-			})
-			c.Abort()
-			return
-		}
-
-		// Check if user is admin
-		role, exists := claims["role"]
-		if !exists || role != "admin" {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "Admin access required",
-			})
-			c.Abort()
-			return
-		}
-
-		// Set user ID in context
-		c.Set("user_id", claims["user_id"])
-		c.Set("email", claims["email"])
-		c.Set("role", claims["role"])
-
+		setAuthContext(c, claims)
 		c.Next()
 	}
 }

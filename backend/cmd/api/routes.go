@@ -67,6 +67,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 	router.Use(middleware.RequestLogger())
 	router.Use(middleware.RedisRateLimiter(deps.redis))
 	router.Use(middleware.SecurityHeaders())
+	router.Use(middleware.BodySizeLimit(1 << 20)) // 1 MiB request bodies
 
 	// Health check
 	router.GET("/health", func(c *gin.Context) {

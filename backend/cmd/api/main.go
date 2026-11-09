@@ -134,6 +134,7 @@ func main() {
 	swapService := services.NewSwapService(db, redis)
 	authService := services.NewAuthService(db)
 	adminService := services.NewAdminService(db)
+	adminService.SetAuthService(authService)
 	listingService := services.NewListingService(db)
 	governanceService := services.NewGovernanceService(db)
 

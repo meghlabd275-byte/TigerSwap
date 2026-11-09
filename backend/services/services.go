@@ -797,6 +797,18 @@ func (s *AuthService) ValidateToken(tokenString string) (jwt.MapClaims, error) {
 		if jti, _ := claims["jti"].(string); jti != "" && s.revocations.isRevoked(jti) {
 			return nil, fmt.Errorf("token has been revoked")
 		}
+		// A deactivated account must lose every session it already holds, so the
+		// user-level cutoff is checked against the token's issue time.
+		userID, _ := claims["user_id"].(string)
+		if userID != "" {
+			var issuedAt time.Time
+			if iat, ok := claims["iat"].(float64); ok {
+				issuedAt = time.Unix(int64(iat), 0)
+			}
+			if s.revocations.isUserRevoked(userID, issuedAt) {
+				return nil, fmt.Errorf("token has been revoked")
+			}
+		}
 		return claims, nil
 	}
 
@@ -906,7 +918,19 @@ func (s *AuthService) Login(c *gin.Context) {
 		return
 	}
 
-	token, _ := s.generateToken(user.ID, user.Email, user.Role)
+	// A deactivated account (banned or self-closed) must not be able to obtain a
+	// fresh session. The same message as a bad password is used so the endpoint
+	// does not reveal whether the account exists.
+	if !user.IsActive {
+		c.JSON(401, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	token, err := s.generateToken(user.ID, user.Email, user.Role)
+	if err != nil {
+		c.JSON(500, gin.H{"error": "Failed to create session"})
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"user":  user,
@@ -1075,13 +1099,30 @@ func (s *AuthService) DisconnectWallet(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }
 
+// RevokeUserSessions invalidates every session a user currently holds. It is
+// called when an account is deactivated so an already-issued token cannot
+// outlive the ban.
+func (s *AuthService) RevokeUserSessions(userID string) error {
+	if userID == "" {
+		return fmt.Errorf("user id is required")
+	}
+	return s.revocations.revokeUser(userID)
+}
+
 // AdminService handles admin operations
 type AdminService struct {
-	db *gorm.DB
+	db   *gorm.DB
+	auth *AuthService
 }
 
 func NewAdminService(db *gorm.DB) *AdminService {
 	return &AdminService{db: db}
+}
+
+// SetAuthService attaches the auth service so an admin action that deactivates
+// an account can also revoke that account's live sessions.
+func (s *AdminService) SetAuthService(auth *AuthService) {
+	s.auth = auth
 }
 
 // GetDashboard reports real aggregate counts from the database.
@@ -1183,13 +1224,11 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 
 	updates := map[string]interface{}{}
 	if req.Role != "" {
-		switch req.Role {
-		case "user", "admin", "superadmin":
-			updates["role"] = req.Role
-		default:
+		if !models.ValidRole(req.Role) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 			return
 		}
+		updates["role"] = req.Role
 	}
 	if req.IsActive != nil {
 		updates["is_active"] = *req.IsActive
@@ -1217,6 +1256,13 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
+	// Deactivating an account must also end the sessions it already holds.
+	if req.IsActive != nil && !*req.IsActive && s.auth != nil {
+		if err := s.auth.RevokeUserSessions(id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke user sessions"})
+			return
+		}
+	}
 	s.logAdminAction(c, "update_user", "user", id, updates)
 	c.JSON(http.StatusOK, user)
 }
@@ -1233,6 +1279,14 @@ func (s *AdminService) DeleteUser(c *gin.Context) {
 	if result.RowsAffected == 0 {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
+	}
+
+	// Deactivation is only meaningful if the account's live sessions end too.
+	if s.auth != nil {
+		if err := s.auth.RevokeUserSessions(id); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke user sessions"})
+			return
+		}
 	}
 
 	s.logAdminAction(c, "deactivate_user", "user", id, nil)

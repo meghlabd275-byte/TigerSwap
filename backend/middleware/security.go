@@ -6,24 +6,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SuperAdminRequired returns middleware that requires super_admin role
+// SuperAdminRequired returns middleware that requires the super-admin role. It
+// runs after AuthRequired, which is what places `role` in the context.
 func SuperAdminRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, exists := c.Get("role")
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"error": "Unauthorized - no role found",
 			})
-			c.Abort()
 			return
 		}
 
 		roleStr, ok := role.(string)
-		if !ok || roleStr != "super_admin" {
-			c.JSON(http.StatusForbidden, gin.H{
+		if !ok || roleStr != RoleSuperAdmin {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"error": "Forbidden - super admin access required",
 			})
-			c.Abort()
 			return
 		}
 
