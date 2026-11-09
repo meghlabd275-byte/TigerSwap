@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 
 	"tigerswap/backend/config"
+	"tigerswap/backend/internal/netutil"
 	"tigerswap/backend/models"
 )
 
@@ -872,6 +873,14 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Recovery(), gin.Logger())
+
+	// The client IP is recorded in the admin audit log, so a forwarding header may
+	// only be honoured from a configured proxy; otherwise a caller could forge the
+	// source address in the trail.
+	if err := netutil.ConfigureTrustedProxies(r, os.Getenv("TRUSTED_PROXIES")); err != nil {
+		log.Printf("TRUSTED_PROXIES is invalid, refusing to trust any forwarding header: %v", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	r.POST("/api/v1/admin/login", handler.handleLogin)
 	r.GET("/health", func(c *gin.Context) {

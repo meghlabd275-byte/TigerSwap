@@ -14,6 +14,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+
+	"tigerswap/backend/internal/netutil"
 )
 
 // ============== CONSISTENT HASHING ==============
@@ -300,6 +302,14 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	// The limiter keys on the client IP, so a forwarding header may only be
+	// honoured from a configured proxy; otherwise a caller could rotate
+	// X-Forwarded-For and mint a fresh bucket per request.
+	if err := netutil.ConfigureTrustedProxies(r, os.Getenv("TRUSTED_PROXIES")); err != nil {
+		fmt.Printf("TRUSTED_PROXIES is invalid, refusing to trust any forwarding header: %v\n", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	r.GET("/api/v1/cache/:key", func(c *gin.Context) {
 		if !rateLimiter.Allow(c.ClientIP()) {

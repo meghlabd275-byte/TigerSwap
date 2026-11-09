@@ -24,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"tigerswap/backend/go/order_matching/orderbook"
+	"tigerswap/backend/internal/netutil"
 )
 
 // ============== CONFIGURATION ==============
@@ -649,6 +650,14 @@ func main() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+
+	// The limiter keys on the client IP, so a forwarding header may only be
+	// honoured from a configured proxy; otherwise a caller could rotate
+	// X-Forwarded-For and mint a fresh bucket per request.
+	if err := netutil.ConfigureTrustedProxies(r, os.Getenv("TRUSTED_PROXIES")); err != nil {
+		fmt.Printf("TRUSTED_PROXIES is invalid, refusing to trust any forwarding header: %v\n", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	rateLimiter := NewRateLimiter(cfg.RateLimit, time.Second)
 	defer rateLimiter.Stop()
