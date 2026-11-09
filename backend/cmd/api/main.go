@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"tigerswap/backend/config"
@@ -290,8 +293,23 @@ func main() {
 		port = "8080"
 	}
 
+	// Explicit server timeouts. A bare http.Server has no read deadline, so a
+	// client that opens a connection and dribbles bytes can hold a worker
+	// indefinitely. ReadHeaderTimeout bounds the header phase, ReadTimeout the
+	// whole request, IdleTimeout a kept-alive connection, and MaxHeaderBytes
+	// caps the header block before it is parsed.
+	server := &http.Server{
+		Addr:              ":" + port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+
 	log.Printf("TigerSwap API Server starting on port %s", port)
-	if err := router.Run(":" + port); err != nil {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
