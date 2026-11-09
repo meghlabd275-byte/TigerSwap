@@ -37,6 +37,10 @@ type Config struct {
 	// Request settings
 	RequestTimeout time.Duration
 
+	// TrustedProxies is the list of CIDRs or IPs allowed to set the client IP
+	// through a forwarding header. Empty means trust none.
+	TrustedProxies []string
+
 	// JWT settings
 	JWT JWTConfig
 }
@@ -100,6 +104,11 @@ func Load() (*Config, error) {
 		IdleTimeout:  getEnvAsDuration("API_IDLE_TIMEOUT", 60*time.Second),
 	}
 
+	// Trusted proxies: only a configured proxy may set the client IP. An
+	// unset or wildcard value leaves the set empty, which trusts no peer and
+	// stops a client rotating X-Forwarded-For to bypass the rate limiter.
+	cfg.TrustedProxies = parseTrustedProxies(getEnv("TRUSTED_PROXIES", ""))
+
 	// Rate limiting
 	cfg.RateLimit = RateLimitConfig{
 		RequestsPerSecond: getEnvAsInt("RATE_LIMIT_RPS", 1000),
@@ -119,7 +128,7 @@ func Load() (*Config, error) {
 
 	// CORS
 	cfg.CORS = CORSConfig{
-		AllowOrigins:     strings.Split(getEnv("CORS_ALLOW_ORIGINS", "*"), ","),
+		AllowOrigins:     sanitizeCORSOrigins(strings.Split(getEnv("CORS_ALLOW_ORIGINS", "*"), ","), getEnvAsBool("CORS_ALLOW_CREDENTIALS", true)),
 		AllowMethods:     strings.Split(getEnv("CORS_ALLOW_METHODS", "GET,POST,PUT,DELETE,OPTIONS"), ","),
 		AllowHeaders:     strings.Split(getEnv("CORS_ALLOW_HEADERS", "Origin,Content-Type,Accept,Authorization,X-Request-ID"), ","),
 		ExposeHeaders:    strings.Split(getEnv("CORS_EXPOSE_HEADERS", "X-Request-ID,X-RateLimit-Remaining,X-RateLimit-Reset"), ","),
@@ -200,4 +209,46 @@ func getEnvAsDuration(key string, defaultValue time.Duration) time.Duration {
 // GetAddress returns the server address
 func (c *Config) GetAddress() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
+}
+
+// parseTrustedProxies turns a comma-separated TRUSTED_PROXIES list into the set
+// of peers whose forwarding header is honoured. A wildcard is ignored: trusting
+// every peer is the default this exists to replace.
+func parseTrustedProxies(raw string) []string {
+	out := []string{}
+	for _, part := range strings.Split(raw, ",") {
+		entry := strings.TrimSpace(part)
+		if entry == "" || entry == "*" || entry == "0.0.0.0/0" || entry == "::/0" {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// sanitizeCORSOrigins makes the origin list safe to combine with credentials.
+// gin-contrib/cors answers a wildcard with `Access-Control-Allow-Origin: *`; a
+// browser rejects that together with `Access-Control-Allow-Credentials: true`,
+// and echoing credentials to any origin would let an arbitrary site drive the
+// authenticated API. So when credentials are enabled the wildcard is dropped and
+// an explicit list (localhost by default) is used instead.
+func sanitizeCORSOrigins(origins []string, allowCredentials bool) []string {
+	cleaned := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		origin = strings.TrimSpace(origin)
+		if origin == "" {
+			continue
+		}
+		if allowCredentials && origin == "*" {
+			continue
+		}
+		cleaned = append(cleaned, origin)
+	}
+	if len(cleaned) == 0 {
+		if allowCredentials {
+			return []string{"http://localhost:3000"}
+		}
+		return []string{"*"}
+	}
+	return cleaned
 }

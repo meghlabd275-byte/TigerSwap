@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,5 +82,62 @@ func TestBodySizeLimitAllowsSmallBody(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("a small body should be accepted, got %d", rec.Code)
+	}
+}
+
+// TestTrustedProxiesCloseTheForwardedForBypass pins the fix for a rate-limit
+// bypass. gin trusts every peer by default, so ClientIP() returns the caller's
+// own X-Forwarded-For and a client could rotate it to mint a fresh bucket per
+// request. Once no proxy is trusted, the header is ignored and the limit keys
+// on the real peer address.
+func TestTrustedProxiesCloseTheForwardedForBypass(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	newRouter := func() *gin.Engine {
+		router := gin.New()
+		if err := ConfigureTrustedProxies(router, ""); err != nil {
+			t.Fatalf("configure trusted proxies: %v", err)
+		}
+		router.Use(RedisRateLimiter(nil))
+		router.GET("/data", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+		return router
+	}
+
+	// A spoofed X-Forwarded-For must not change the rate-limit key.
+	router := newRouter()
+	spoofed := func(i int) int {
+		req := httptest.NewRequest(http.MethodGet, "/data", nil)
+		req.RemoteAddr = "203.0.113.9:12345"
+		req.Header.Set("X-Forwarded-For", "10.0.0."+strconv.Itoa(i))
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 100; i++ {
+		if code := spoofed(i); code != http.StatusOK {
+			t.Fatalf("request %d should be allowed, got %d", i+1, code)
+		}
+	}
+	if code := spoofed(200); code != http.StatusTooManyRequests {
+		t.Fatalf("rotating X-Forwarded-For must not bypass the limit; got %d", code)
+	}
+}
+
+// TestConfigureTrustedProxiesRejectsWildcard pins that an operator cannot
+// re-enable the bypass by trusting every address.
+func TestConfigureTrustedProxiesRejectsWildcard(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	for _, value := range []string{"*", "0.0.0.0/0", "::/0", "not-an-ip"} {
+		router := gin.New()
+		if err := ConfigureTrustedProxies(router, value); err == nil {
+			t.Fatalf("expected %q to be rejected", value)
+		}
+	}
+
+	router := gin.New()
+	if err := ConfigureTrustedProxies(router, "10.0.0.0/8, 192.168.1.1"); err != nil {
+		t.Fatalf("valid proxy list should be accepted: %v", err)
 	}
 }

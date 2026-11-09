@@ -1,6 +1,8 @@
 package main
 
 import (
+	"log"
+	"os"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -48,6 +50,16 @@ type apiDeps struct {
 // setupRouter registers every route on a fresh engine.
 func setupRouter(deps apiDeps) *gin.Engine {
 	router := gin.Default()
+
+	// Trust a forwarding header only from configured proxies. gin's default is
+	// to trust every peer, which would let a client set its own client IP and
+	// rotate the rate-limit key at will.
+	if err := middleware.ConfigureTrustedProxies(router, os.Getenv("TRUSTED_PROXIES")); err != nil {
+		log.Printf("TRUSTED_PROXIES is invalid, refusing to trust any forwarding header: %v", err)
+		if setErr := router.SetTrustedProxies(nil); setErr != nil {
+			log.Printf("failed to disable trusted proxies: %v", setErr)
+		}
+	}
 
 	// CORS configuration. A wildcard origin cannot be combined with
 	// credentials: browsers reject `Access-Control-Allow-Origin: *` when

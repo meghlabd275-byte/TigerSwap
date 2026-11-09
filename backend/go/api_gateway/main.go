@@ -70,6 +70,16 @@ func (s *Server) Initialize() error {
 func (s *Server) SetupRouter() *gin.Engine {
 	r := gin.New()
 
+	// Only a configured proxy may set the client IP through a forwarding header.
+	// gin trusts every peer by default, so without this a caller could rotate
+	// X-Forwarded-For and get a fresh rate-limit bucket per request.
+	if err := r.SetTrustedProxies(s.config.TrustedProxies); err != nil {
+		log.Printf("failed to set trusted proxies, trusting none: %v", err)
+		if fallbackErr := r.SetTrustedProxies(nil); fallbackErr != nil {
+			log.Printf("failed to disable trusted proxies: %v", fallbackErr)
+		}
+	}
+
 	// Global middleware
 	r.Use(gin.Recovery())
 	r.Use(middleware.Logger())
