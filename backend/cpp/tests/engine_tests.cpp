@@ -733,6 +733,40 @@ void test_sha256_known_vector() {
     CHECK_EQ(to_hex(digest.data(), digest.size()), expected);
 }
 
+// Ethereum uses Keccak-256, not the NIST SHA3-256 that OpenSSL exposes under a
+// similar name: the two differ in the sponge padding byte and so produce
+// different digests for every input. These vectors come from the Keccak team's
+// reference implementation (via go-ethereum's crypto.Keccak256), so they pin
+// the padding and the boundary where the rate block rolls over.
+void test_keccak256_known_vectors() {
+    const auto empty = keccak256(reinterpret_cast<const uint8_t*>(""), 0);
+    CHECK_EQ(to_hex(empty.data(), empty.size()),
+             "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+
+    const std::string abc = "abc";
+    const auto abc_digest =
+        keccak256(reinterpret_cast<const uint8_t*>(abc.data()), abc.size());
+    CHECK_EQ(to_hex(abc_digest.data(), abc_digest.size()),
+             "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
+
+    // The rate is 136 bytes; a multi-block input and the exact boundary both
+    // exercise the absorb loop and the final padded block.
+    const std::string block_135(135, 'a');
+    const auto d135 = keccak256(reinterpret_cast<const uint8_t*>(block_135.data()), block_135.size());
+    CHECK_EQ(to_hex(d135.data(), d135.size()),
+             "34367dc248bbd832f4e3e69dfaac2f92638bd0bbd18f2912ba4ef454919cf446");
+
+    const std::string block_136(136, 'a');
+    const auto d136 = keccak256(reinterpret_cast<const uint8_t*>(block_136.data()), block_136.size());
+    CHECK_EQ(to_hex(d136.data(), d136.size()),
+             "a6c4d403279fe3e0af03729caada8374b5ca54d8065329a3ebcaeb4b60aa386e");
+
+    const std::string block_137(137, 'a');
+    const auto d137 = keccak256(reinterpret_cast<const uint8_t*>(block_137.data()), block_137.size());
+    CHECK_EQ(to_hex(d137.data(), d137.size()),
+             "d869f639c7046b4929fc92a4d988a8b22c55fbadb802c0c66ebcd484f1915f39");
+}
+
 void test_hmac_verifies() {
     const std::string key = "secret-key";
     const std::string message = "tigerswap";
@@ -1079,6 +1113,7 @@ int main() {
     test_wal_reset();
 
     test_sha256_known_vector();
+    test_keccak256_known_vectors();
     test_hmac_verifies();
     test_aes_gcm_round_trip();
     test_aes_gcm_rejects_tampering();

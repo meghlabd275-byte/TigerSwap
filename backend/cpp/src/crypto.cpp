@@ -87,6 +87,66 @@ int base64_value(char character) {
     return -1;
 }
 
+// --- Keccak-256 (Ethereum) ---------------------------------------------------
+//
+// Ethereum uses the original Keccak submission, which pads with 0x01. NIST's
+// SHA-3 changed that padding byte to 0x06, so SHA3-256 and Keccak-256 are
+// different functions that produce different digests for every input. The
+// sponge is the same Keccak-f[1600] permutation, so it is implemented here
+// rather than pulled from OpenSSL, whose SHA3 provider would give the wrong
+// hash. This is the permutation from the Keccak reference (tiny_sha3).
+
+constexpr uint64_t kKeccakRoundConstants[24] = {
+    0x0000000000000001ULL, 0x0000000000008082ULL, 0x800000000000808aULL, 0x8000000080008000ULL,
+    0x000000000000808bULL, 0x0000000080000001ULL, 0x8000000080008081ULL, 0x8000000000008009ULL,
+    0x000000000000008aULL, 0x0000000000000088ULL, 0x0000000080008009ULL, 0x000000008000000aULL,
+    0x000000008000808bULL, 0x800000000000008bULL, 0x8000000000008089ULL, 0x8000000000008003ULL,
+    0x8000000000008002ULL, 0x8000000000000080ULL, 0x000000000000800aULL, 0x800000008000000aULL,
+    0x8000000080008081ULL, 0x8000000000008080ULL, 0x0000000080000001ULL, 0x8000000080008008ULL};
+
+constexpr int kKeccakRotation[24] = {1,  3,  6,  10, 15, 21, 28, 36, 45, 55, 2,  14,
+                                     27, 41, 56, 8,  25, 43, 62, 18, 39, 61, 20, 44};
+constexpr int kKeccakPermutation[24] = {10, 7,  11, 17, 18, 3, 5,  16, 8,  21, 24, 4,
+                                        15, 23, 19, 13, 12, 2, 20, 14, 22, 9,  6,  1};
+
+constexpr uint64_t rotl64(uint64_t value, int shift) {
+    return (value << shift) | (value >> (64 - shift));
+}
+
+void keccak_f1600(uint64_t state[25]) {
+    for (int round = 0; round < 24; ++round) {
+        uint64_t column[5];
+        for (int x = 0; x < 5; ++x) {
+            column[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+        }
+        for (int x = 0; x < 5; ++x) {
+            const uint64_t theta = column[(x + 4) % 5] ^ rotl64(column[(x + 1) % 5], 1);
+            for (int y = 0; y < 25; y += 5) {
+                state[y + x] ^= theta;
+            }
+        }
+
+        uint64_t carried = state[1];
+        for (int i = 0; i < 24; ++i) {
+            const int target = kKeccakPermutation[i];
+            const uint64_t saved = state[target];
+            state[target] = rotl64(carried, kKeccakRotation[i]);
+            carried = saved;
+        }
+
+        for (int y = 0; y < 25; y += 5) {
+            for (int x = 0; x < 5; ++x) {
+                column[x] = state[y + x];
+            }
+            for (int x = 0; x < 5; ++x) {
+                state[y + x] ^= (~column[(x + 1) % 5]) & column[(x + 2) % 5];
+            }
+        }
+
+        state[0] ^= kKeccakRoundConstants[round];
+    }
+}
+
 }  // namespace
 
 bool constant_time_equal(const uint8_t* a, const uint8_t* b, size_t length) {
@@ -134,25 +194,49 @@ std::array<uint8_t, kSha512Size> sha512(const uint8_t* data, size_t length) {
 }
 
 std::array<uint8_t, 32> keccak256(const uint8_t* data, size_t length) {
-    std::array<uint8_t, 32> digest{};
-    unsigned int digest_length = 0;
+    // Keccak-256 sponge: rate 1088 bits (136 bytes), capacity 512 bits,
+    // padding byte 0x01 with the final bit set (0x80).
+    constexpr size_t kRate = 136;
+    constexpr uint8_t kKeccakPad = 0x01;
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (ctx == nullptr) {
-        return digest;
-    }
+    uint64_t state[25] = {0};
 
-    // SHA3-256 is the NIST standard; EVP_MD_fetch resolves the provider impl.
-    EVP_MD* md = EVP_MD_fetch(nullptr, "SHA3-256", nullptr);
-    if (md != nullptr) {
-        if (EVP_DigestInit_ex(ctx, md, nullptr) == 1 &&
-            EVP_DigestUpdate(ctx, data, length) == 1) {
-            EVP_DigestFinal_ex(ctx, digest.data(), &digest_length);
+    size_t offset = 0;
+    while (length - offset >= kRate) {
+        for (size_t i = 0; i < kRate / 8; ++i) {
+            uint64_t word = 0;
+            for (int byte = 0; byte < 8; ++byte) {
+                word |= static_cast<uint64_t>(data[offset + i * 8 + byte]) << (8 * byte);
+            }
+            state[i] ^= word;
         }
-        EVP_MD_free(md);
+        keccak_f1600(state);
+        offset += kRate;
     }
 
-    EVP_MD_CTX_free(ctx);
+    uint8_t block[kRate] = {0};
+    const size_t tail = length - offset;
+    for (size_t i = 0; i < tail; ++i) {
+        block[i] = data[offset + i];
+    }
+    block[tail] ^= kKeccakPad;
+    block[kRate - 1] ^= 0x80;
+
+    for (size_t i = 0; i < kRate / 8; ++i) {
+        uint64_t word = 0;
+        for (int byte = 0; byte < 8; ++byte) {
+            word |= static_cast<uint64_t>(block[i * 8 + byte]) << (8 * byte);
+        }
+        state[i] ^= word;
+    }
+    keccak_f1600(state);
+
+    std::array<uint8_t, 32> digest{};
+    for (size_t i = 0; i < 4; ++i) {
+        for (int byte = 0; byte < 8; ++byte) {
+            digest[i * 8 + byte] = static_cast<uint8_t>((state[i] >> (8 * byte)) & 0xFF);
+        }
+    }
     return digest;
 }
 
