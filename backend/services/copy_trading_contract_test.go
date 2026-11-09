@@ -15,7 +15,7 @@ import (
 func TestCopyTraderResponseWireFormat(t *testing.T) {
 	engine := NewCopyTradingEngine(nil, nil)
 
-	status, body := callHandler(t, engine.RegisterTraderHandler, 1, http.MethodPost, "/copy-trading/traders",
+	status, body := callHandler(t, engine.RegisterTraderHandler, "1", http.MethodPost, "/copy-trading/traders",
 		`{"address":"0x1111111111111111111111111111111111111111","name":"Alpha Whale","avatar":"https://example.com/a.png"}`,
 		nil)
 	if status != http.StatusOK {
@@ -31,7 +31,7 @@ func TestCopyTraderResponseWireFormat(t *testing.T) {
 
 	// The leaderboard envelope must carry the trader under `traders` so the
 	// frontend's listingArray helper unwraps it.
-	status, body = callHandler(t, engine.GetTopTradersHandler, 1, http.MethodGet, "/copy-trading/traders", "", nil)
+	status, body = callHandler(t, engine.GetTopTradersHandler, "1", http.MethodGet, "/copy-trading/traders", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("list traders: status %d body %s", status, body)
 	}

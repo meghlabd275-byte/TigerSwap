@@ -52,7 +52,7 @@ func TestBotResponseWireFormat(t *testing.T) {
 	db := newBotsTestDB(t)
 	service := NewBotsService(db)
 
-	status, body := callHandler(t, service.CreateBot, 7, http.MethodPost, "/bots",
+	status, body := callHandler(t, service.CreateBot, "7", http.MethodPost, "/bots",
 		`{"name":"maker","strategy":"market_maker","symbol":"BTC/RUSD",`+
 			`"config":{"spread_bps":"25","target_depth":"10000","rebalance_threshold_bps":"50"},`+
 			`"max_order_size":"5","max_daily_loss":"100","max_open_orders":10}`,
@@ -82,7 +82,7 @@ func TestBotResponseWireFormat(t *testing.T) {
 		t.Fatalf("config keys = %v, want the three validated keys", config)
 	}
 
-	status, body = callHandler(t, service.BotsSummary, 7, http.MethodGet, "/bots/summary", "", nil)
+	status, body = callHandler(t, service.BotsSummary, "7", http.MethodGet, "/bots/summary", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("summary: status %d body %s", status, body)
 	}
@@ -90,13 +90,13 @@ func TestBotResponseWireFormat(t *testing.T) {
 	assertKeys(t, body, "by_strategy", "by_status", "total")
 
 	order := models.BotOrder{
-		BotID: 1, UserID: 7, Symbol: "BTC/RUSD", Side: "buy", OrderKind: "limit",
+		BotID: 1, UserID: "7", Symbol: "BTC/RUSD", Side: "buy", OrderKind: "limit",
 		Price: "60000", Quantity: "0.5", Status: "pending",
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
-	status, body = callHandler(t, service.ListBotOrders, 7, http.MethodGet, "/bots/1/orders", "", idParam("1"))
+	status, body = callHandler(t, service.ListBotOrders, "7", http.MethodGet, "/bots/1/orders", "", idParam("1"))
 	if status != http.StatusOK {
 		t.Fatalf("list bot orders: status %d body %s", status, body)
 	}
@@ -110,7 +110,7 @@ func TestBotResponseWireFormat(t *testing.T) {
 	if err := db.Create(&perf).Error; err != nil {
 		t.Fatalf("seed performance: %v", err)
 	}
-	status, body = callHandler(t, service.BotPerformanceSummary, 7, http.MethodGet, "/bots/1/performance", "", idParam("1"))
+	status, body = callHandler(t, service.BotPerformanceSummary, "7", http.MethodGet, "/bots/1/performance", "", idParam("1"))
 	if status != http.StatusOK {
 		t.Fatalf("bot performance: status %d body %s", status, body)
 	}
@@ -121,7 +121,7 @@ func TestOtcOrderWireFormat(t *testing.T) {
 	db := newBotsTestDB(t)
 	service := NewOtcService(db)
 
-	status, body := callHandler(t, service.CreateOrder, 7, http.MethodPost, "/otc/orders",
+	status, body := callHandler(t, service.CreateOrder, "7", http.MethodPost, "/otc/orders",
 		`{"symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000",`+
 			`"min_fill":"0.5","expires_in_seconds":86400}`,
 		nil)
@@ -142,7 +142,7 @@ func TestTwammOrderWireFormat(t *testing.T) {
 	db := newBotsTestDB(t)
 	service := NewTwammService(db)
 
-	status, body := callHandler(t, service.CreateOrder, 7, http.MethodPost, "/twamm/orders",
+	status, body := callHandler(t, service.CreateOrder, "7", http.MethodPost, "/twamm/orders",
 		`{"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","limit_price":"0",`+
 			`"duration_hours":24,"start_delay_seconds":0}`,
 		nil)
@@ -162,7 +162,7 @@ func TestBotTablesRoundTrip(t *testing.T) {
 	db := newBotsTestDB(t)
 
 	bot := models.BotInstance{
-		UserID:        7,
+		UserID:        "7",
 		Name:          "grid",
 		Strategy:      models.StrategyGrid,
 		Symbol:        "ETH/RUSD",
@@ -241,51 +241,51 @@ func TestOptionResponseWireFormat(t *testing.T) {
 // fixtures for the NFT panel are copied from this test's log output, so a field
 // rename fails here first.
 func TestNFTResponseWireFormat(t *testing.T) {
-        env := newNFTTestEnv(t)
-        collectionID := nftCollectionID(t, env)
-        tokenID := nftMint(t, env, collectionID, "seller-1")
+	env := newNFTTestEnv(t)
+	collectionID := nftCollectionID(t, env)
+	tokenID := nftMint(t, env, collectionID, "seller-1")
 
-        _, collectionsBody := callUserHandler(t, env.engine.GetActiveCollections, "", http.MethodGet,
-                "/nft/collections", "", nil)
-        t.Logf("SERVER_NFT_COLLECTIONS = `%s`", collectionsBody)
-        assertKeys(t, collectionsBody, "collections", "success")
+	_, collectionsBody := callUserHandler(t, env.engine.GetActiveCollections, "", http.MethodGet,
+		"/nft/collections", "", nil)
+	t.Logf("SERVER_NFT_COLLECTIONS = `%s`", collectionsBody)
+	assertKeys(t, collectionsBody, "collections", "success")
 
-        _, configBody := callUserHandler(t, env.engine.GetMarketplaceConfig, "", http.MethodGet,
-                "/nft/config", "", nil)
-        t.Logf("SERVER_NFT_CONFIG = `%s`", configBody)
-        assertKeys(t, configBody, "escrow_account", "fee_account", "fee_bps", "max_fee_bps", "success")
+	_, configBody := callUserHandler(t, env.engine.GetMarketplaceConfig, "", http.MethodGet,
+		"/nft/config", "", nil)
+	t.Logf("SERVER_NFT_CONFIG = `%s`", configBody)
+	assertKeys(t, configBody, "escrow_account", "fee_account", "fee_bps", "max_fee_bps", "success")
 
-        _, mineBody := callUserHandler(t, env.engine.GetMyNFTs, "seller-1", http.MethodGet,
-                "/nft/tokens/mine", "", nil)
-        t.Logf("SERVER_NFT_TOKENS_MINE = `%s`", mineBody)
-        assertKeys(t, mineBody, "success", "tokens")
+	_, mineBody := callUserHandler(t, env.engine.GetMyNFTs, "seller-1", http.MethodGet,
+		"/nft/tokens/mine", "", nil)
+	t.Logf("SERVER_NFT_TOKENS_MINE = `%s`", mineBody)
+	assertKeys(t, mineBody, "success", "tokens")
 
-        fund(t, env, "buyer-1", 1_000_000)
-        listingID := listNFT(t, env, collectionID, tokenID, "seller-1", "100000")
+	fund(t, env, "buyer-1", 1_000_000)
+	listingID := listNFT(t, env, collectionID, tokenID, "seller-1", "100000")
 
-        _, listingsBody := callUserHandler(t, env.engine.GetActiveListings, "", http.MethodGet,
-                "/nft/listings", "", nil)
-        t.Logf("SERVER_NFT_LISTINGS = `%s`", listingsBody)
-        assertKeys(t, listingsBody, "listings", "success")
+	_, listingsBody := callUserHandler(t, env.engine.GetActiveListings, "", http.MethodGet,
+		"/nft/listings", "", nil)
+	t.Logf("SERVER_NFT_LISTINGS = `%s`", listingsBody)
+	assertKeys(t, listingsBody, "listings", "success")
 
-        _, buyBody := callUserHandler(t, env.engine.BuyNFT, "buyer-1", http.MethodPost,
-                "/nft/listings/"+listingID+"/buy", "", gin.Params{{Key: "id", Value: listingID}})
-        t.Logf("SERVER_NFT_BUY = `%s`", buyBody)
-        assertKeys(t, buyBody, "listing", "success")
+	_, buyBody := callUserHandler(t, env.engine.BuyNFT, "buyer-1", http.MethodPost,
+		"/nft/listings/"+listingID+"/buy", "", gin.Params{{Key: "id", Value: listingID}})
+	t.Logf("SERVER_NFT_BUY = `%s`", buyBody)
+	assertKeys(t, buyBody, "listing", "success")
 
-        // Offers: mint a fresh token so it is not escrowed by the listing above.
-        offerTokenID := nftMint(t, env, collectionID, "seller-2")
-        fund(t, env, "buyer-2", 1_000_000)
-        offerBody := fmt.Sprintf(`{"collection_id":%q,"token_id":%d,"payment_token_address":%q,`+
-                `"payment_token_symbol":"RUSD","amount":"50000","deadline":%q}`,
-                collectionID, offerTokenID, nftPaymentAddress, time.Now().Add(24*time.Hour).Format(time.RFC3339))
-        _, makeOfferBody := callUserHandler(t, env.engine.MakeOffer, "buyer-2", http.MethodPost,
-                "/nft/offers", offerBody, nil)
-        t.Logf("SERVER_NFT_OFFER = `%s`", makeOfferBody)
-        assertKeys(t, makeOfferBody, "offer", "success")
+	// Offers: mint a fresh token so it is not escrowed by the listing above.
+	offerTokenID := nftMint(t, env, collectionID, "seller-2")
+	fund(t, env, "buyer-2", 1_000_000)
+	offerBody := fmt.Sprintf(`{"collection_id":%q,"token_id":%d,"payment_token_address":%q,`+
+		`"payment_token_symbol":"RUSD","amount":"50000","deadline":%q}`,
+		collectionID, offerTokenID, nftPaymentAddress, time.Now().Add(24*time.Hour).Format(time.RFC3339))
+	_, makeOfferBody := callUserHandler(t, env.engine.MakeOffer, "buyer-2", http.MethodPost,
+		"/nft/offers", offerBody, nil)
+	t.Logf("SERVER_NFT_OFFER = `%s`", makeOfferBody)
+	assertKeys(t, makeOfferBody, "offer", "success")
 
-        offerURL := "/nft/offers?collection_id=" + collectionID + fmt.Sprintf("&token_id=%d", offerTokenID)
-        _, offersBody := callUserHandler(t, env.engine.GetOffers, "", http.MethodGet, offerURL, "", nil)
-        t.Logf("SERVER_NFT_OFFERS = `%s`", offersBody)
-        assertKeys(t, offersBody, "offers", "success")
+	offerURL := "/nft/offers?collection_id=" + collectionID + fmt.Sprintf("&token_id=%d", offerTokenID)
+	_, offersBody := callUserHandler(t, env.engine.GetOffers, "", http.MethodGet, offerURL, "", nil)
+	t.Logf("SERVER_NFT_OFFERS = `%s`", offersBody)
+	assertKeys(t, offersBody, "offers", "success")
 }

@@ -499,7 +499,7 @@ func TestAnalyticsResponseWireFormat(t *testing.T) {
 	}
 
 	// Overview.
-	status, body := callHandler(t, svc.GetOverviewHandler, 1, http.MethodGet, "/analytics/overview", "", nil)
+	status, body := callHandler(t, svc.GetOverviewHandler, "1", http.MethodGet, "/analytics/overview", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("overview status = %d: %s", status, body)
 	}
@@ -512,7 +512,7 @@ func TestAnalyticsResponseWireFormat(t *testing.T) {
 	t.Logf("OVERVIEW: %s", body)
 
 	// Volume series.
-	status, body = callHandler(t, svc.GetVolumeHandler, 1, http.MethodGet,
+	status, body = callHandler(t, svc.GetVolumeHandler, "1", http.MethodGet,
 		"/analytics/volume?pair=TGR%2FRUSD&interval=60&window=3600", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("volume status = %d: %s", status, body)
@@ -521,7 +521,7 @@ func TestAnalyticsResponseWireFormat(t *testing.T) {
 	t.Logf("VOLUME: %s", body)
 
 	// Pairs.
-	status, body = callHandler(t, svc.GetPairsHandler, 1, http.MethodGet,
+	status, body = callHandler(t, svc.GetPairsHandler, "1", http.MethodGet,
 		"/analytics/pairs?window=3600&limit=10", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("pairs status = %d: %s", status, body)
@@ -530,7 +530,7 @@ func TestAnalyticsResponseWireFormat(t *testing.T) {
 	t.Logf("PAIRS: %s", body)
 
 	// Traders.
-	status, body = callHandler(t, svc.GetTopTradersHandler, 1, http.MethodGet,
+	status, body = callHandler(t, svc.GetTopTradersHandler, "1", http.MethodGet,
 		"/analytics/traders?limit=10", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("traders status = %d: %s", status, body)
@@ -539,7 +539,7 @@ func TestAnalyticsResponseWireFormat(t *testing.T) {
 	t.Logf("TRADERS: %s", body)
 
 	// Rollup.
-	status, body = callHandler(t, svc.RollupHandler, 1, http.MethodPost,
+	status, body = callHandler(t, svc.RollupHandler, "1", http.MethodPost,
 		"/admin/analytics/rollup?window=3600", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("rollup status = %d: %s", status, body)
@@ -569,7 +569,7 @@ func TestAnalyticsHandlersRejectMalformedQueries(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			status, body := callHandler(t, tc.handler, 1, http.MethodGet, tc.target, "", nil)
+			status, body := callHandler(t, tc.handler, "1", http.MethodGet, tc.target, "", nil)
 			if status != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d: %s", status, body)
 			}

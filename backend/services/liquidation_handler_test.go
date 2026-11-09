@@ -94,7 +94,7 @@ func TestLiquidatePositionDoesNotDeadlock(t *testing.T) {
 func TestLiquidatePositionHandlerSettlesFlaggedPosition(t *testing.T) {
 	engine := newLiquidatablePerpEngine()
 
-	status, body := callHandler(t, engine.LiquidatePositionHandler, 1, http.MethodPost,
+	status, body := callHandler(t, engine.LiquidatePositionHandler, "1", http.MethodPost,
 		"/perps/positions/p1/liquidate", "", gin.Params{{Key: "id", Value: "p1"}})
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status, body)
@@ -120,7 +120,7 @@ func TestLiquidatePositionHandlerRefusesHealthyPosition(t *testing.T) {
 		Size: "10000", EntryPrice: 100, LiquidationPrice: 50, Status: "open",
 	}
 
-	status, _ := callHandler(t, engine.LiquidatePositionHandler, 1, http.MethodPost,
+	status, _ := callHandler(t, engine.LiquidatePositionHandler, "1", http.MethodPost,
 		"/perps/positions/p1/liquidate", "", gin.Params{{Key: "id", Value: "p1"}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("a healthy position must not be liquidated, got %d", status)
@@ -135,7 +135,7 @@ func TestLiquidatePositionHandlerRefusesHealthyPosition(t *testing.T) {
 func TestListLiquidatablePositionsHandlerReportsFlaggedOnly(t *testing.T) {
 	engine := newLiquidatablePerpEngine()
 
-	status, body := callHandler(t, engine.ListLiquidatablePositionsHandler, 1, http.MethodGet,
+	status, body := callHandler(t, engine.ListLiquidatablePositionsHandler, "1", http.MethodGet,
 		"/perps/liquidatable", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status, body)
@@ -159,7 +159,7 @@ func TestListLiquidatablePositionsHandlerReportsFlaggedOnly(t *testing.T) {
 func TestLiquidateAccountHandlerRejectsMalformedID(t *testing.T) {
 	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
 
-	status, _ := callHandler(t, env.engine.LiquidateAccountHandler, 1, http.MethodPost,
+	status, _ := callHandler(t, env.engine.LiquidateAccountHandler, "1", http.MethodPost,
 		"/margin/accounts/not-a-uuid/liquidate", "", gin.Params{{Key: "id", Value: "not-a-uuid"}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("a malformed account id must be rejected, got %d", status)
@@ -181,7 +181,7 @@ func TestLiquidateAccountHandlerRefusesHealthyAccount(t *testing.T) {
 		t.Fatalf("deposit: %v", err)
 	}
 
-	status, _ := callHandler(t, env.engine.LiquidateAccountHandler, 1, http.MethodPost,
+	status, _ := callHandler(t, env.engine.LiquidateAccountHandler, "1", http.MethodPost,
 		"/margin/accounts/x/liquidate", "", gin.Params{{Key: "id", Value: account.ID.String()}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("a solvent account must not be liquidated, got %d", status)
@@ -209,7 +209,7 @@ func TestLiquidateAccountHandlerSettlesUnderCollateralizedAccount(t *testing.T) 
 
 	prices["BTC"] = 30000
 
-	status, body := callHandler(t, env.engine.LiquidateAccountHandler, 1, http.MethodPost,
+	status, body := callHandler(t, env.engine.LiquidateAccountHandler, "1", http.MethodPost,
 		"/margin/accounts/x/liquidate", "", gin.Params{{Key: "id", Value: account.ID.String()}})
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status, body)
@@ -226,14 +226,14 @@ func TestExpireStaleOrdersHandlerReportsCount(t *testing.T) {
 	service := NewOtcService(db)
 
 	stale := models.OtcOrder{
-		MakerID: 1, Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
+		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
 		MinFill: "1", Status: "open", ExpiresAt: time.Now().UTC().Add(-time.Minute),
 	}
 	if err := db.Create(&stale).Error; err != nil {
 		t.Fatalf("seed stale: %v", err)
 	}
 
-	status, body := callHandler(t, service.ExpireStaleOrdersHandler, 1, http.MethodPost,
+	status, body := callHandler(t, service.ExpireStaleOrdersHandler, "1", http.MethodPost,
 		"/otc/expire", "", nil)
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status, body)

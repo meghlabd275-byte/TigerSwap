@@ -53,7 +53,7 @@ func newBotsTestDB(t *testing.T) *gorm.DB {
 func callHandler(
 	t *testing.T,
 	handler gin.HandlerFunc,
-	userID uint,
+	userID string,
 	method, target, body string,
 	params gin.Params,
 ) (int, string) {
@@ -90,7 +90,7 @@ func TestCreateBotRejectsUnvalidatedConfig(t *testing.T) {
 		"max_daily_loss":"0",
 		"max_open_orders":5
 	}`
-	status, response := callHandler(t, service.CreateBot, 1, http.MethodPost, "/bots", body, nil)
+	status, response := callHandler(t, service.CreateBot, "1", http.MethodPost, "/bots", body, nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("a config with an unknown key should be rejected, got %d: %s", status, response)
 	}
@@ -109,7 +109,7 @@ func TestCreateBotRejectsMalformedSymbol(t *testing.T) {
 		"max_daily_loss":"0",
 		"max_open_orders":5
 	}`
-	status, _ := callHandler(t, service.CreateBot, 1, http.MethodPost, "/bots", body, nil)
+	status, _ := callHandler(t, service.CreateBot, "1", http.MethodPost, "/bots", body, nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("an injection-shaped symbol should be rejected, got %d", status)
 	}
@@ -128,7 +128,7 @@ func TestCreateBotStoresAValidConfiguration(t *testing.T) {
 		"max_daily_loss":"500",
 		"max_open_orders":5
 	}`
-	status, response := callHandler(t, service.CreateBot, 7, http.MethodPost, "/bots", body, nil)
+	status, response := callHandler(t, service.CreateBot, "7", http.MethodPost, "/bots", body, nil)
 	if status != http.StatusCreated {
 		t.Fatalf("a valid bot should be created, got %d: %s", status, response)
 	}
@@ -140,11 +140,64 @@ func TestCreateBotStoresAValidConfiguration(t *testing.T) {
 	}
 
 	var stored models.BotInstance
-	if err := db.Where("user_id = ?", 7).First(&stored).Error; err != nil {
+	if err := db.Where("user_id = ?", "7").First(&stored).Error; err != nil {
 		t.Fatalf("bot should be persisted: %v", err)
 	}
-	if stored.UserID != 7 {
-		t.Fatalf("bot should belong to user 7, got %d", stored.UserID)
+	if stored.UserID != "7" {
+		t.Fatalf("bot should belong to user 7, got %q", stored.UserID)
+	}
+}
+
+// TestBotEndpointsUseTheSessionUUID proves the bot endpoints resolve the caller
+// from the string UUID the auth middleware sets. The platform user id is a UUID,
+// not a number, so a handler that coerced it to an integer would reject every
+// authenticated request with 401.
+func TestBotEndpointsUseTheSessionUUID(t *testing.T) {
+	db := newBotsTestDB(t)
+	service := NewBotsService(db)
+
+	const owner = "8f14e45f-ceea-467a-9c0f-1b2c3d4e5f60"
+	const other = "0a1b2c3d-4e5f-6071-8293-a4b5c6d7e8f9"
+
+	body := `{
+		"name":"mm-uuid",
+		"strategy":"market_maker",
+		"symbol":"BTC/RUSD",
+		"config":{"spread_bps":10,"target_depth":"1.5"},
+		"max_order_size":"1",
+		"max_daily_loss":"500",
+		"max_open_orders":5
+	}`
+
+	status, response := callHandler(t, service.CreateBot, owner, http.MethodPost, "/bots", body, nil)
+	if status != http.StatusCreated {
+		t.Fatalf("a UUID session should create a bot, got %d: %s", status, response)
+	}
+
+	status, response = callHandler(t, service.ListBots, owner, http.MethodGet, "/bots", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the owner should list their bots, got %d: %s", status, response)
+	}
+	if !strings.Contains(response, `"mm-uuid"`) {
+		t.Fatalf("the owner's bot should appear in their list: %s", response)
+	}
+
+	// A different account must not see the bot, and the response must be an empty
+	// list rather than the owner's row.
+	status, response = callHandler(t, service.ListBots, other, http.MethodGet, "/bots", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("a non-owner should still get an empty list, got %d: %s", status, response)
+	}
+	if strings.Contains(response, `"mm-uuid"`) {
+		t.Fatalf("a non-owner must not see another account's bot: %s", response)
+	}
+
+	var stored models.BotInstance
+	if err := db.Where("user_id = ?", owner).First(&stored).Error; err != nil {
+		t.Fatalf("bot should be persisted under the UUID: %v", err)
+	}
+	if stored.UserID != owner {
+		t.Fatalf("bot should belong to %q, got %q", owner, stored.UserID)
 	}
 }
 
@@ -167,7 +220,7 @@ func TestGetBotDoesNotLeakAnotherUsersBot(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -176,12 +229,12 @@ func TestGetBotDoesNotLeakAnotherUsersBot(t *testing.T) {
 	}
 
 	// A different user asking for the same id must get a 404, not the bot.
-	status, _ := callHandler(t, service.GetBot, 2, http.MethodGet, "/bots/1", "", idParam("1"))
+	status, _ := callHandler(t, service.GetBot, "2", http.MethodGet, "/bots/1", "", idParam("1"))
 	if status != http.StatusNotFound {
 		t.Fatalf("another user's bot must not be readable, got %d", status)
 	}
 
-	status, _ = callHandler(t, service.GetBot, 1, http.MethodGet, "/bots/1", "", idParam("1"))
+	status, _ = callHandler(t, service.GetBot, "1", http.MethodGet, "/bots/1", "", idParam("1"))
 	if status != http.StatusOK {
 		t.Fatalf("the owner should read their own bot, got %d", status)
 	}
@@ -192,7 +245,7 @@ func TestUpdateBotStatusRejectsAnUnknownStatus(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -200,7 +253,7 @@ func TestUpdateBotStatusRejectsAnUnknownStatus(t *testing.T) {
 		t.Fatalf("seed bot: %v", err)
 	}
 
-	status, _ := callHandler(t, service.UpdateBotStatus, 1, http.MethodPut, "/bots/1/status",
+	status, _ := callHandler(t, service.UpdateBotStatus, "1", http.MethodPut, "/bots/1/status",
 		`{"status":"exploded"}`, idParam("1"))
 	if status != http.StatusBadRequest {
 		t.Fatalf("an unknown status must be rejected, got %d", status)
@@ -212,7 +265,7 @@ func TestDeleteBotRefusesAnActiveBot(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -220,7 +273,7 @@ func TestDeleteBotRefusesAnActiveBot(t *testing.T) {
 		t.Fatalf("seed bot: %v", err)
 	}
 
-	status, _ := callHandler(t, service.DeleteBot, 1, http.MethodDelete, "/bots/1", "", idParam("1"))
+	status, _ := callHandler(t, service.DeleteBot, "1", http.MethodDelete, "/bots/1", "", idParam("1"))
 	if status != http.StatusConflict {
 		t.Fatalf("an active bot must be paused before deletion, got %d", status)
 	}
@@ -231,7 +284,7 @@ func TestDeleteBotRemovesPendingOrders(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusPaused, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -239,13 +292,13 @@ func TestDeleteBotRemovesPendingOrders(t *testing.T) {
 		t.Fatalf("seed bot: %v", err)
 	}
 	if err := db.Create(&models.BotOrder{
-		BotID: bot.ID, UserID: 1, Symbol: "BTC/RUSD", Side: "buy", OrderKind: "limit",
+		BotID: bot.ID, UserID: "1", Symbol: "BTC/RUSD", Side: "buy", OrderKind: "limit",
 		Price: "60000", Quantity: "0.5", Source: "market_maker", Status: "pending",
 	}).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 
-	status, _ := callHandler(t, service.DeleteBot, 1, http.MethodDelete, "/bots/1", "", idParam("1"))
+	status, _ := callHandler(t, service.DeleteBot, "1", http.MethodDelete, "/bots/1", "", idParam("1"))
 	if status != http.StatusOK {
 		t.Fatalf("a paused bot should delete, got %d", status)
 	}
@@ -264,7 +317,7 @@ func TestListBotOrdersRejectsAnInvalidLimit(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -272,7 +325,7 @@ func TestListBotOrdersRejectsAnInvalidLimit(t *testing.T) {
 		t.Fatalf("seed bot: %v", err)
 	}
 
-	status, _ := callHandler(t, service.ListBotOrders, 1, http.MethodGet, "/bots/1/orders?limit=99999", "", idParam("1"))
+	status, _ := callHandler(t, service.ListBotOrders, "1", http.MethodGet, "/bots/1/orders?limit=99999", "", idParam("1"))
 	if status != http.StatusBadRequest {
 		t.Fatalf("an out-of-range limit must be rejected, got %d", status)
 	}
@@ -282,7 +335,7 @@ func TestListBotOrdersRejectsANonNumericId(t *testing.T) {
 	db := newBotsTestDB(t)
 	service := NewBotsService(db)
 
-	status, _ := callHandler(t, service.ListBotOrders, 1, http.MethodGet, "/bots/abc/orders", "", idParam("abc"))
+	status, _ := callHandler(t, service.ListBotOrders, "1", http.MethodGet, "/bots/abc/orders", "", idParam("abc"))
 	if status != http.StatusBadRequest {
 		t.Fatalf("a non-numeric id must be rejected, got %d", status)
 	}
@@ -297,14 +350,14 @@ func TestCreateOtcOrderRequiresAValidExpiry(t *testing.T) {
 	// Zero and an over-long expiry are both refused.
 	for _, seconds := range []int{0, -1, 31 * 24 * 3600} {
 		body := strings.Replace(base, "%d", strconv.Itoa(seconds), 1)
-		status, _ := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/otc/orders", body, nil)
+		status, _ := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/otc/orders", body, nil)
 		if status != http.StatusBadRequest {
 			t.Fatalf("expiry %d should be rejected, got %d", seconds, status)
 		}
 	}
 
 	body := strings.Replace(base, "%d", "3600", 1)
-	status, response := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/otc/orders", body, nil)
+	status, response := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/otc/orders", body, nil)
 	if status != http.StatusCreated {
 		t.Fatalf("a valid otc order should be created, got %d: %s", status, response)
 	}
@@ -315,7 +368,7 @@ func TestCreateOtcOrderRejectsMinFillAboveQuantity(t *testing.T) {
 	service := NewOtcService(db)
 
 	body := `{"symbol":"BTC/RUSD","side":"sell","quantity":"1","price":"60000","min_fill":"2","expires_in_seconds":3600}`
-	status, _ := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/otc/orders", body, nil)
+	status, _ := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/otc/orders", body, nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("min_fill above quantity must be rejected, got %d", status)
 	}
@@ -326,14 +379,14 @@ func TestTakeOtcOrderRefusesASelfTake(t *testing.T) {
 	service := NewOtcService(db)
 
 	order := models.OtcOrder{
-		MakerID: 1, Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
+		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
 		MinFill: "1", Status: "open", ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 
-	status, response := callHandler(t, service.TakeOrder, 1, http.MethodPost,
+	status, response := callHandler(t, service.TakeOrder, "1", http.MethodPost,
 		"/otc/orders/1/take", `{"quantity":"1"}`, idParam(strconv.FormatUint(uint64(order.ID), 10)))
 	if status != http.StatusBadRequest {
 		t.Fatalf("taking your own otc order must be refused, got %d: %s", status, response)
@@ -345,14 +398,14 @@ func TestTakeOtcOrderRefusesBelowMinFill(t *testing.T) {
 	service := NewOtcService(db)
 
 	order := models.OtcOrder{
-		MakerID: 1, Symbol: "BTC/RUSD", Side: "sell", Quantity: "10", Price: "60000",
+		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "10", Price: "60000",
 		MinFill: "5", Status: "open", ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 
-	status, _ := callHandler(t, service.TakeOrder, 2, http.MethodPost,
+	status, _ := callHandler(t, service.TakeOrder, "2", http.MethodPost,
 		"/otc/orders/1/take", `{"quantity":"1"}`, idParam(strconv.FormatUint(uint64(order.ID), 10)))
 	if status != http.StatusBadRequest {
 		t.Fatalf("a fill below min_fill must be refused, got %d", status)
@@ -365,13 +418,13 @@ func TestCreateTwammOrderRequiresAMinimumDuration(t *testing.T) {
 
 	// One hour is below the five-minute minimum? No: 0 hours is.
 	body := `{"symbol":"BTC/RUSD","side":"sell","total_quantity":"10","limit_price":"0","duration_hours":0}`
-	status, _ := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/twamm/orders", body, nil)
+	status, _ := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
 	if status != http.StatusBadRequest {
 		t.Fatalf("a zero-hour twamm order must be rejected, got %d", status)
 	}
 
 	body = `{"symbol":"BTC/RUSD","side":"sell","total_quantity":"10","limit_price":"0","duration_hours":1}`
-	status, response := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/twamm/orders", body, nil)
+	status, response := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
 	if status != http.StatusCreated {
 		t.Fatalf("a one-hour twamm order should be created, got %d: %s", status, response)
 	}
@@ -382,13 +435,13 @@ func TestCreateTwammOrderDefaultsAnEmptyLimitPriceToZero(t *testing.T) {
 	service := NewTwammService(db)
 
 	body := `{"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","duration_hours":1}`
-	status, response := callHandler(t, service.CreateOrder, 1, http.MethodPost, "/twamm/orders", body, nil)
+	status, response := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
 	if status != http.StatusCreated {
 		t.Fatalf("a twamm order without a limit price should be created, got %d: %s", status, response)
 	}
 
 	var stored models.TwammOrder
-	if err := db.Where("user_id = ?", 1).First(&stored).Error; err != nil {
+	if err := db.Where("user_id = ?", "1").First(&stored).Error; err != nil {
 		t.Fatalf("load twamm order: %v", err)
 	}
 	if stored.LimitPrice != "0" {
@@ -401,7 +454,7 @@ func TestCancelTwammOrderRefusesAnotherUsersOrder(t *testing.T) {
 	service := NewTwammService(db)
 
 	order := models.TwammOrder{
-		UserID: 1, Symbol: "BTC/RUSD", Side: "sell", TotalQuantity: "10",
+		UserID: "1", Symbol: "BTC/RUSD", Side: "sell", TotalQuantity: "10",
 		FilledQuantity: "0", LimitPrice: "0",
 		StartTime: time.Now().UTC(), EndTime: time.Now().UTC().Add(time.Hour),
 		Status: "active",
@@ -410,7 +463,7 @@ func TestCancelTwammOrderRefusesAnotherUsersOrder(t *testing.T) {
 		t.Fatalf("seed twamm: %v", err)
 	}
 
-	status, _ := callHandler(t, service.CancelOrder, 2, http.MethodPost,
+	status, _ := callHandler(t, service.CancelOrder, "2", http.MethodPost,
 		"/twamm/orders/1/cancel", "", idParam(strconv.FormatUint(uint64(order.ID), 10)))
 	if status != http.StatusNotFound {
 		t.Fatalf("another user's twamm order must not be cancellable, got %d", status)
@@ -518,12 +571,12 @@ func TestValidateStrategyConfigRejectsUnknownStrategy(t *testing.T) {
 
 func TestParseDecimalStringAcceptsPlainDecimals(t *testing.T) {
 	cases := map[string]string{
-		"0":      "0",
-		"1":      "1000000000000000000",
-		"1.5":    "1500000000000000000",
+		"0":                    "0",
+		"1":                    "1000000000000000000",
+		"1.5":                  "1500000000000000000",
 		"0.000000000000000001": "1",
-		".5":     "500000000000000000",
-		"100":    "100000000000000000000",
+		".5":                   "500000000000000000",
+		"100":                  "100000000000000000000",
 	}
 	for input, want := range cases {
 		got, err := parseDecimalString(input)
@@ -588,11 +641,11 @@ func TestOtcExpireStaleOrdersMarksOnlyExpiredOnes(t *testing.T) {
 	service := NewOtcService(db)
 
 	expired := models.OtcOrder{
-		MakerID: 1, Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
+		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
 		MinFill: "1", Status: "open", ExpiresAt: time.Now().UTC().Add(-time.Minute),
 	}
 	live := models.OtcOrder{
-		MakerID: 1, Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
+		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
 		MinFill: "1", Status: "open", ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := db.Create(&expired).Error; err != nil {
@@ -627,7 +680,7 @@ func TestTwammSliceIsLinearInElapsedTime(t *testing.T) {
 
 	start := time.Now().UTC()
 	order := models.TwammOrder{
-		UserID:         1,
+		UserID:         "1",
 		Symbol:         "BTC/RUSD",
 		Side:           "sell",
 		TotalQuantity:  "100",
@@ -672,7 +725,7 @@ func TestTwammSliceAccountsForAlreadyFilledQuantity(t *testing.T) {
 
 	start := time.Now().UTC()
 	order := models.TwammOrder{
-		UserID:         1,
+		UserID:         "1",
 		Symbol:         "BTC/RUSD",
 		Side:           "sell",
 		TotalQuantity:  "100",
@@ -699,10 +752,10 @@ func TestTwammSliceNeverGoesNegative(t *testing.T) {
 
 	start := time.Now().UTC()
 	order := models.TwammOrder{
-		UserID:         1,
-		Symbol:         "BTC/RUSD",
-		Side:           "sell",
-		TotalQuantity:  "100",
+		UserID:        "1",
+		Symbol:        "BTC/RUSD",
+		Side:          "sell",
+		TotalQuantity: "100",
 		// More filled than the schedule has released, which can happen if a
 		// slice filled at the start of a period.
 		FilledQuantity: "60",
@@ -728,7 +781,7 @@ func TestRecordBotOrderEnforcesMaxOrderSize(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID:        1,
+		UserID:        "1",
 		Name:          "mm",
 		Strategy:      models.StrategyMarketMaker,
 		Symbol:        "BTC/RUSD",
@@ -755,7 +808,7 @@ func TestRecordBotOrderEnforcesMaxOpenOrders(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "grid", Strategy: models.StrategyGrid, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "grid", Strategy: models.StrategyGrid, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 1,
 	}
@@ -776,7 +829,7 @@ func TestRecordBotOrderRejectsInactiveBot(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusPaused, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}
@@ -794,7 +847,7 @@ func TestRecordBotOrderRejectsBadSideAndKind(t *testing.T) {
 	service := NewBotsService(db)
 
 	bot := models.BotInstance{
-		UserID: 1, Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
+		UserID: "1", Name: "mm", Strategy: models.StrategyMarketMaker, Symbol: "BTC/RUSD",
 		Status: models.BotStatusActive, Config: "{}",
 		MaxOrderSize: "1", MaxDailyLoss: "0", MaxOpenOrders: 5,
 	}

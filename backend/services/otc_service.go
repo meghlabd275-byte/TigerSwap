@@ -230,7 +230,7 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 		takerID := userID
 		order.TakerID = &takerID
 		order.Status = "matched"
-		order.Counterparty = strconv.FormatUint(uint64(order.MakerID), 10)
+		order.Counterparty = order.MakerID
 
 		// Record the executed quantity so a partial fill is visible, and close
 		// the order: a partially filled block is not re-offered at a price the

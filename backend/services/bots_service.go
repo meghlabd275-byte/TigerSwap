@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"tigerswap/backend/models"
@@ -671,34 +672,27 @@ func botResponse(bot models.BotInstance) gin.H {
 	}
 }
 
-// currentUserID reads the authenticated user id set by the auth middleware.
-func currentUserID(c *gin.Context) (uint, bool) {
+// currentUserID reads the authenticated user id set by the auth middleware. The
+// platform identifies an account by its UUID, which the JWT carries as a string,
+// so the id is returned as a string to match the models that store it.
+func currentUserID(c *gin.Context) (string, bool) {
 	raw, exists := c.Get("user_id")
 	if !exists {
-		return 0, false
+		return "", false
 	}
 	switch value := raw.(type) {
-	case uint:
+	case string:
+		if value == "" {
+			return "", false
+		}
 		return value, true
-	case int:
-		if value < 0 {
-			return 0, false
+	case uuid.UUID:
+		if value == uuid.Nil {
+			return "", false
 		}
-		return uint(value), true
-	case int64:
-		if value < 0 {
-			return 0, false
-		}
-		return uint(value), true
-	case uint64:
-		return uint(value), true
-	case float64:
-		if value < 0 {
-			return 0, false
-		}
-		return uint(value), true
+		return value.String(), true
 	default:
-		return 0, false
+		return "", false
 	}
 }
 

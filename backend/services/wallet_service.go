@@ -99,24 +99,27 @@ func (s *WalletService) GetBalances(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "balances": balances})
 }
 
-// MasterWallet represents the admin master wallet
+// MasterWallet represents the admin master wallet. The seed phrase and backup
+// code are secret material and are never serialized: the struct is tagged so a
+// handler cannot leak them by returning it directly.
 type MasterWallet struct {
 	ID              uuid.UUID `json:"id"`
 	UserID          string    `json:"user_id"`
-	SeedPhrase      string    `json:"seed_phrase"`
+	SeedPhrase      string    `json:"-"`
 	MasterAddress   string    `json:"master_address"`
-	BackupCode      string    `json:"backup_code"`
+	BackupCode      string    `json:"-"`
 	SupportedChains []int64   `json:"supported_chains"`
 	AutoSignEnabled bool      `json:"auto_sign_enabled"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
 
-// UserWallet represents a user wallet
+// UserWallet represents a user wallet. The seed phrase is secret material and
+// is never serialized.
 type UserWallet struct {
 	ID              uuid.UUID         `json:"id"`
 	UserID          uuid.UUID         `json:"user_id"`
-	SeedPhrase      string            `json:"seed_phrase"`
+	SeedPhrase      string            `json:"-"`
 	WalletAddresses map[string]string `json:"wallet_addresses"` // chainType_chainId -> address
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
@@ -205,7 +208,21 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 	s.masterKeys[masterWallet.MasterAddress] = key
 	s.mu.Unlock()
 
-	c.JSON(200, gin.H{"success": true, "wallet": masterWallet})
+	// The seed phrase is deliberately not echoed: the caller supplied it and it
+	// is stored encrypted. The backup code is shown exactly once here, because it
+	// is persisted only as a bcrypt hash and can never be retrieved again.
+	c.JSON(200, gin.H{
+		"success": true,
+		"wallet": gin.H{
+			"id":                masterWallet.ID,
+			"address":           masterWallet.MasterAddress,
+			"supported_chains":  masterWallet.SupportedChains,
+			"auto_sign_enabled": masterWallet.AutoSignEnabled,
+			"created_at":        masterWallet.CreatedAt,
+		},
+		"backup_code":        masterWallet.BackupCode,
+		"backup_code_notice": "Store this backup code now; it is shown only once.",
+	})
 }
 
 // GetMasterWallet returns the authenticated caller's master wallet info.
