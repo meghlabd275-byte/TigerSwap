@@ -158,6 +158,33 @@ pub struct PriceLevel {
     pub orders: u32,
 }
 
+/// Computes `a * b * c / divisor` with a 128-bit intermediate product.
+///
+/// Price, quantity and the fee rate are all caller-influenced. A 64-bit product
+/// of `price * quantity` can exceed `u64::MAX` on a large fill, and computing the
+/// fee from a saturated product overcharges rather than charging the real fee.
+/// The wide intermediate cannot wrap; the result is saturated at `u64::MAX`
+/// rather than truncated, since a fee that cannot be represented is an error the
+/// caller should see, not a silently smaller number.
+fn mul_mul_div_u64(a: u64, b: u64, c: u64, divisor: u64) -> u64 {
+    if divisor == 0 {
+        return u64::MAX;
+    }
+    let product = (a as u128) * (b as u128);
+    let scaled = match product.checked_mul(c as u128) {
+        Some(scaled) => scaled,
+        // a * b is already near the 128-bit ceiling and the fee rate pushes it
+        // over; there is no representable exact fee, so saturate.
+        None => return u64::MAX,
+    };
+    let result = scaled / (divisor as u128);
+    if result > u64::MAX as u128 {
+        u64::MAX
+    } else {
+        result as u64
+    }
+}
+
 /// Reason an order could not be placed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectReason {
@@ -589,8 +616,7 @@ impl FastOrderBook {
             filled += fill;
 
             let trade_id = self.next_trade_id.fetch_add(1, Ordering::AcqRel);
-            let notional = price.saturating_mul(fill);
-            let fee = notional.saturating_mul(self.taker_fee_bps) / 10_000;
+            let fee = mul_mul_div_u64(price, fill, self.taker_fee_bps, 10_000);
 
             trades.push(FastTrade {
                 trade_id,
@@ -703,6 +729,25 @@ mod tests {
 
         assert_eq!(book.last_price(), 100);
         assert_eq!(book.total_volume(), 4);
+    }
+
+    // The fee is price * quantity * bps / 10_000. On a large fill the 64-bit
+    // product wraps (or, with saturating_mul, saturates), so a fee that is not
+    // the real one is charged. The 128-bit intermediate must produce the exact
+    // fee.
+    #[test]
+    fn large_fill_charges_the_exact_fee() {
+        let book = FastOrderBook::new(1, 1, 0, 100); // 100 bps == 1%
+        book.submit_order(limit(1, 1_000_000_000_000, 1_000_000, Side::Sell));
+
+        match book.submit_order(limit(2, 1_000_000_000_000, 1_000_000, Side::Buy)) {
+            SubmitOutcome::Accepted { trades, .. } => {
+                assert_eq!(trades.len(), 1);
+                // 10^12 * 10^6 * 100 / 10^4 == 10^16, which fits in u64.
+                assert_eq!(trades[0].fee, 10_000_000_000_000_000);
+            }
+            other => panic!("unexpected outcome {other:?}"),
+        }
     }
 
     #[test]
