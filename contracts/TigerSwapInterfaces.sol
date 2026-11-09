@@ -34,6 +34,8 @@ interface ITigerSwapFactory {
 interface ITigerSwapConcentratedPool {
     function token0() external view returns (address);
     function token1() external view returns (address);
+    function liquidity() external view returns (uint128);
+    function sqrtPriceX96() external view returns (uint160);
     function swap(address recipient, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96)
         external
         returns (int256 amount0, int256 amount1);
@@ -42,6 +44,9 @@ interface ITigerSwapConcentratedPool {
 /// @notice StableSwap pool (family 2). Two coins, indices 0 and 1.
 interface ITigerSwapStablePool {
     function coins(uint256 index) external view returns (address);
+    function balances(uint256 index) external view returns (uint256);
+    function A() external view returns (uint256);
+    function getDy(int128 i, int128 j, uint256 dx) external view returns (uint256);
     function exchange(int128 i, int128 j, uint256 dx, uint256 minDy) external returns (uint256 dy);
     function addLiquidity(uint256[2] calldata amounts, uint256 minMint) external returns (uint256 mint);
     function removeLiquidity(uint256 amount, uint256[2] calldata minAmounts)
@@ -53,6 +58,8 @@ interface ITigerSwapStablePool {
 interface ITigerSwapWeightedPool {
     function tokens(uint256 index) external view returns (address);
     function tokenCount() external view returns (uint256);
+    function getBalances() external view returns (uint256[] memory);
+    function getWeights() external view returns (uint256[] memory);
     function swap(uint256 tokenIn, uint256 tokenOut, uint256 amountIn, uint256 minAmountOut)
         external
         returns (uint256 amountOut);

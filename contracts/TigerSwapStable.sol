@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./TigerSwapInterfaces.sol";
+
 /**
  * @title TigerSwapStable
  * @notice StableSwap AMM for pegged assets (RUSD/USDT/USDC/RYUSD).
@@ -620,7 +622,3 @@ contract TigerSwapStable {
     }
 }
 
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
-}
