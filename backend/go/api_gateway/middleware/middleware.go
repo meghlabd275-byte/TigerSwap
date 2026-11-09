@@ -197,7 +197,24 @@ func Auth(cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 
-		c.Set("user_id", claims.Subject)
+		// The identity lives in the `user_id` claim: that is what the auth
+		// service mints and what the REST backend reads. `sub` is only a
+		// fallback for a token issued by another component. Without the
+		// user_id claim the account-scoped handlers see an empty id and reject
+		// every request, so both claims are read here.
+		userID := claims.UserID
+		if userID == "" {
+			userID = claims.Subject
+		}
+		if userID == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":      "Invalid or expired token",
+				"request_id": GetRequestID(c),
+			})
+			return
+		}
+
+		c.Set("user_id", userID)
 		c.Set("role", claims.Role)
 		c.Next()
 	}
@@ -206,7 +223,8 @@ func Auth(cfg *config.Config) gin.HandlerFunc {
 // jwtClaims is the subset of JWT claims the gateway trusts.
 type jwtClaims struct {
 	jwt.RegisteredClaims
-	Role string `json:"role"`
+	UserID string `json:"user_id"`
+	Role   string `json:"role"`
 }
 
 // parseJWT verifies the signature and expiry of an HS256 token.
