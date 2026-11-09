@@ -32,6 +32,23 @@ impl std::fmt::Display for SignatureError {
 
 impl std::error::Error for SignatureError {}
 
+/// Rejects a signature whose `s` is in the upper half of the curve order.
+///
+/// A high-`s` signature is malleable: for a given message and signer there are
+/// two valid encodings, so a transaction hash is not a unique identifier and a
+/// replay guard keyed on the hash can be bypassed. Ethereum requires the low-`s`
+/// form (EIP-2), and `recover_address` accepts either encoding, so this check is
+/// what keeps a recovered address from depending on which form arrived. It
+/// mirrors the range check the Solidity verifier performs.
+fn reject_high_s(sig: &Signature) -> Result<(), SignatureError> {
+    if sig.normalize_s().is_some() {
+        return Err(SignatureError::InvalidSignature(
+            "signature s is not in the lower half of the curve order".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Verify an ECDSA signature over a raw 32-byte digest. The digest is treated
 /// as a prehash, so it is not hashed again.
 pub fn verify_signature(
@@ -60,6 +77,7 @@ pub fn verify_signature(
 
     let sig = Signature::from_slice(compact)
         .map_err(|e| SignatureError::InvalidSignature(e.to_string()))?;
+    reject_high_s(&sig)?;
 
     let pk = VerifyingKey::from_sec1_bytes(public_key)
         .map_err(|e| SignatureError::InvalidPublicKey(e.to_string()))?;
@@ -119,6 +137,7 @@ fn split_signature(signature: &[u8]) -> Result<(Signature, RecoveryId), Signatur
 
     let sig = Signature::from_slice(&signature[..64])
         .map_err(|e| SignatureError::InvalidSignature(e.to_string()))?;
+    reject_high_s(&sig)?;
 
     // Ethereum encodes the recovery parity in the final byte as 27/28 (legacy)
     // or 0/1 (raw). Accept both.
@@ -251,6 +270,42 @@ mod tests {
         let vk_bytes = sk.verifying_key().to_encoded_point(false);
         assert!(verify_signature(vk_bytes.as_bytes(), &digest, &raw).unwrap());
         assert!(verify_signature(vk_bytes.as_bytes(), &digest, &raw[..64]).unwrap());
+    }
+
+    /// A high-`s` signature is a second valid encoding of the same signature.
+    /// Accepting it would make the recovered address (and any hash-keyed replay
+    /// guard) depend on which encoding an attacker chose, so it is rejected.
+    #[test]
+    fn test_high_s_signature_is_rejected() {
+        // n - 1, the largest scalar below the secp256k1 order: definitely high.
+        const N_MINUS_1: [u8; 32] = [
+            0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xfe, 0xba, 0xae, 0xdc, 0xe6, 0xaf, 0x48, 0xa0, 0x3b, 0xbf, 0xd2, 0x5e, 0x8c,
+            0xd0, 0x36, 0x41, 0x40,
+        ];
+        let mut r = [0u8; 32];
+        r[31] = 1;
+        let mut s_low = [0u8; 32];
+        s_low[31] = 1;
+
+        let high = Signature::from_scalars(r, N_MINUS_1).expect("structurally valid scalars");
+        assert!(matches!(
+            reject_high_s(&high),
+            Err(SignatureError::InvalidSignature(_))
+        ));
+
+        let low = Signature::from_scalars(r, s_low).expect("valid scalars");
+        assert!(reject_high_s(&low).is_ok());
+
+        // The check must also fire on the recover path, before recovery.
+        let mut raw = Vec::with_capacity(65);
+        raw.extend_from_slice(&high.to_bytes());
+        raw.push(27);
+        let digest = personal_message_hash(b"tigerswap");
+        assert!(matches!(
+            recover_address(&digest, &raw),
+            Err(SignatureError::InvalidSignature(_))
+        ));
     }
 
     #[test]

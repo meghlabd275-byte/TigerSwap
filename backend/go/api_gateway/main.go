@@ -85,6 +85,10 @@ func (s *Server) SetupRouter() *gin.Engine {
 	r.Use(middleware.Logger())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Timeout(s.config.RequestTimeout))
+	// Browser-facing hardening headers and a request-body cap, applied to
+	// every route so no handler can be reached without them.
+	r.Use(middleware.Secure())
+	r.Use(middleware.BodyLimiter(1 << 20))
 
 	// CORS configuration
 	r.Use(cors.New(cors.Config{
@@ -253,11 +257,19 @@ func (s *Server) Start() error {
 		}
 	}()
 
-	// Wait for server to be ready
+	// Wait for server to be ready. The probe must speak the same scheme the
+	// listener does, or a TLS-enabled server is reported as never ready.
+	scheme := "http"
+	probeClient := &http.Client{Timeout: 2 * time.Second}
+	if s.config.TLS.Enabled {
+		scheme = "https"
+		// The certificate is the one this process just loaded; verifying it
+		// against the system roots would only test the local trust store.
+		probeClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+	}
 	for i := 0; i < 10; i++ {
 		time.Sleep(100 * time.Millisecond)
-		client := &http.Client{Timeout: 2 * time.Second}
-		resp, err := client.Get(fmt.Sprintf("http://%s/health", addr))
+		resp, err := probeClient.Get(fmt.Sprintf("%s://%s/health", scheme, addr))
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
