@@ -113,15 +113,15 @@ const SERVER_BOT_STRATEGIES = `[{"config_keys":{"max_spread_bps":"int","min_book
 
 const SERVER_BOTS_SUMMARY = `{"by_status":{"active":1},"by_strategy":{"market_maker":1},"total":1}`;
 
-const SERVER_BOT_ORDERS = `[{"id":1,"bot_id":1,"user_id":7,"symbol":"BTC/RUSD","side":"buy","order_kind":"limit","price":"60000","quantity":"0.5","reduce_only":false,"source":"","status":"pending","created_at":"2026-10-31T16:17:16.218019274Z","updated_at":"2026-10-31T16:17:16.218019274Z"}]`;
+const SERVER_BOT_ORDERS = `[{"id":1,"bot_id":1,"user_id":"7","symbol":"BTC/RUSD","side":"buy","order_kind":"limit","price":"60000","quantity":"0.5","reduce_only":false,"source":"","status":"pending","created_at":"2026-10-31T16:17:16.218019274Z","updated_at":"2026-10-31T16:17:16.218019274Z"}]`;
 
 const SERVER_BOT_PERFORMANCE = `[{"id":1,"bot_id":1,"day":"2026-10-31T00:00:00Z","orders_placed":3,"orders_filled":2,"volume":"3000","realised_pnl":"12.5","fees_paid":"0.6","max_drawdown":"4"}]`;
 
-const SERVER_OTC_ORDER = `{"id":1,"maker_id":7,"symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000","status":"open","min_fill":"0.5","expires_at":"2026-11-01T16:17:02.425322999Z","created_at":"2026-10-31T16:17:02.425348979Z","updated_at":"2026-10-31T16:17:02.425348979Z"}`;
+const SERVER_OTC_ORDER = `{"id":1,"maker_id":"7","symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000","status":"open","min_fill":"0.5","expires_at":"2026-11-01T16:17:02.425322999Z","created_at":"2026-10-31T16:17:02.425348979Z","updated_at":"2026-10-31T16:17:02.425348979Z"}`;
 
 const SERVER_OTC_ORDERS = `[${SERVER_OTC_ORDER}]`;
 
-const SERVER_TWAMM_ORDER = `{"id":1,"user_id":7,"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","filled_quantity":"0","limit_price":"0","start_time":"2026-10-31T16:17:02.428673919Z","end_time":"2026-11-01T16:17:02.428673919Z","status":"active","created_at":"2026-10-31T16:17:02.428691819Z","updated_at":"2026-10-31T16:17:02.428691819Z"}`;
+const SERVER_TWAMM_ORDER = `{"id":1,"user_id":"7","symbol":"BTC/RUSD","side":"buy","total_quantity":"10","filled_quantity":"0","limit_price":"0","start_time":"2026-10-31T16:17:02.428673919Z","end_time":"2026-11-01T16:17:02.428673919Z","status":"active","created_at":"2026-10-31T16:17:02.428691819Z","updated_at":"2026-10-31T16:17:02.428691819Z"}`;
 
 const SERVER_TWAMM_ORDERS = `[${SERVER_TWAMM_ORDER}]`;
 
