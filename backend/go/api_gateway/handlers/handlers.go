@@ -366,7 +366,7 @@ func (h *PriceHandler) GetPrices(c *gin.Context) {
 	if symbols != "" {
 		endpoint += "?symbols=" + url.QueryEscape(symbols)
 	}
-	resp, err := http.Get(endpoint)
+	resp, err := upstreamGet(c, endpoint)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
 		return
@@ -415,7 +415,7 @@ func (h *PriceHandler) GetPrice(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/oracle/price/%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol))
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
 		return
@@ -450,7 +450,7 @@ func (h *PriceHandler) GetPriceHistory(c *gin.Context) {
 	days := c.DefaultQuery("days", "7")
 
 	url := fmt.Sprintf("%s/api/v1/oracle/price/%s/history?days=%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol), url.QueryEscape(days))
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
 		return
@@ -500,7 +500,7 @@ func (h *TokenHandler) GetTokens(c *gin.Context) {
 	if chainID != "" {
 		url = fmt.Sprintf("%s?chainId=%s", url, chainID)
 	}
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -524,7 +524,7 @@ func (h *TokenHandler) GetToken(c *gin.Context) {
 	address := c.Param("address")
 
 	url := fmt.Sprintf("%s/api/v1/tokens/%s", h.config.Upstream.Blockchain, address)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -557,7 +557,7 @@ func (h *TokenHandler) SearchTokens(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/tokens/search?q=%s", h.config.Upstream.Blockchain, query)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -605,7 +605,7 @@ type Pool struct {
 // GetPools returns all pools
 func (h *PoolHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/pools", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -630,7 +630,7 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 	tokenB := c.Param("tokenB")
 
 	url := fmt.Sprintf("%s/api/v1/pools/%s/%s", h.config.Upstream.Blockchain, tokenA, tokenB)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -655,7 +655,7 @@ func (h *PoolHandler) GetPoolVolume(c *gin.Context) {
 	tokenB := c.Param("tokenB")
 
 	url := fmt.Sprintf("%s/api/v1/pools/%s/%s/volume", h.config.Upstream.Blockchain, tokenA, tokenB)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -750,7 +750,7 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/wallet/%s/balance?chainId=%s", h.config.Upstream.Wallet, address, chainID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
 		return
@@ -778,7 +778,7 @@ func (h *WalletHandler) GetTransactions(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/wallet/%s/transactions", h.config.Upstream.Wallet, address)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
 		return
@@ -890,7 +890,7 @@ type Chain struct {
 // GetChains returns all supported chains
 func (h *ChainHandler) GetChains(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/chains", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -918,7 +918,7 @@ func (h *ChainHandler) GetChain(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/chains/%d", h.config.Upstream.Blockchain, chainID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -946,7 +946,7 @@ func (h *ChainHandler) GetGasFees(c *gin.Context) {
 	}
 
 	url := fmt.Sprintf("%s/api/v1/chains/%d/fees", h.config.Upstream.Blockchain, chainID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
 		return
@@ -1022,7 +1022,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	orderID := c.Param("orderId")
 
 	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, orderID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
 		return
@@ -1082,7 +1082,7 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
 		return
@@ -1106,7 +1106,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	userID := c.Param("userId")
 
 	url := fmt.Sprintf("%s/api/v1/orders/user/%s", h.config.Upstream.Blockchain, userID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
 		return
@@ -1154,7 +1154,7 @@ type Position struct {
 func (h *PerpetualHandler) GetPositions(c *gin.Context) {
 	userID := c.Query("userId")
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions?userId=%s", h.config.Upstream.Blockchain, userID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
 		return
@@ -1242,7 +1242,7 @@ func (h *PerpetualHandler) ClosePosition(c *gin.Context) {
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
 		return
@@ -1284,7 +1284,7 @@ type StakingPool struct {
 // GetPools returns staking pools
 func (h *StakingHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/staking/pools", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
 		return
@@ -1377,7 +1377,7 @@ func (h *StakingHandler) GetRewards(c *gin.Context) {
 	userID := c.Query("userId")
 
 	url := fmt.Sprintf("%s/api/v1/staking/rewards?userId=%s", h.config.Upstream.Blockchain, userID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
 		return
@@ -1447,7 +1447,7 @@ func (h *BridgeHandler) GetTransferStatus(c *gin.Context) {
 	txHash := c.Param("txHash")
 
 	url := fmt.Sprintf("%s/api/v1/bridge/transfer/%s", h.config.Upstream.Blockchain, txHash)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
 		return
@@ -1469,7 +1469,7 @@ func (h *BridgeHandler) GetTransferStatus(c *gin.Context) {
 // GetSupportedChains returns supported bridge chains
 func (h *BridgeHandler) GetSupportedChains(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/bridge/chains", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
 		return
@@ -1501,7 +1501,7 @@ func NewFarmingHandler(cfg *config.Config) *FarmingHandler {
 // GetPools returns farming pools
 func (h *FarmingHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/farming/pools", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
 		return
@@ -1595,7 +1595,7 @@ func (h *FarmingHandler) GetRewards(c *gin.Context) {
 	userID := c.Query("userId")
 
 	url := fmt.Sprintf("%s/api/v1/farming/rewards?userId=%s", h.config.Upstream.Blockchain, userID)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
 		return
@@ -1627,7 +1627,7 @@ func NewLaunchpadHandler(cfg *config.Config) *LaunchpadHandler {
 // GetProjects returns launchpad projects
 func (h *LaunchpadHandler) GetProjects(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
 		return
@@ -1654,7 +1654,7 @@ func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 	id := c.Param("id")
 
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects/%s", h.config.Upstream.Blockchain, id)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
 		return
@@ -1747,7 +1747,7 @@ func NewAdminHandler(cfg *config.Config) *AdminHandler {
 // GetStats returns platform statistics
 func (h *AdminHandler) GetStats(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/stats", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1769,7 +1769,7 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 // GetUsers returns all users
 func (h *AdminHandler) GetUsers(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/users", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1793,7 +1793,7 @@ func (h *AdminHandler) GetUser(c *gin.Context) {
 	id := c.Param("id")
 
 	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, id)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1853,7 +1853,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1875,7 +1875,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 // GetFeeSettings returns fee settings
 func (h *AdminHandler) GetFeeSettings(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/fees", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1925,7 +1925,7 @@ func (h *AdminHandler) UpdateFeeSettings(c *gin.Context) {
 // GetWhitelist returns whitelist
 func (h *AdminHandler) GetWhitelist(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/whitelist", h.config.Upstream.Blockchain)
-	resp, err := http.Get(url)
+	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -1986,7 +1986,7 @@ func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamClient.Do(req)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
 		return
@@ -2006,6 +2006,30 @@ func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 }
 
 // ============ Helper Functions ============
+
+// upstreamClient is shared by every outbound call so connections are pooled
+// instead of re-dialled per request. The timeout bounds a slow upstream, and
+// each request also carries the inbound request's context so a client that
+// disconnects cancels the upstream call.
+var upstreamClient = &http.Client{
+	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        256,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     90 * time.Second,
+	},
+}
+
+// upstreamGet performs a GET against an upstream service using the shared
+// client and the caller's request context.
+func upstreamGet(c *gin.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
+	return upstreamClient.Do(req)
+}
 
 // callUpstreamService POSTs a JSON body to an upstream service.
 func callUpstreamService(c *gin.Context, url string, body interface{}) (*http.Response, error) {
@@ -2034,8 +2058,7 @@ func callUpstreamJSON(c *gin.Context, method, url string, body interface{}) (*ht
 		req.Header.Set("Authorization", auth)
 	}
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	return client.Do(req)
+	return upstreamClient.Do(req)
 }
 
 // generateWallet creates a BIP39 mnemonic and derives the BIP44 Ethereum account.

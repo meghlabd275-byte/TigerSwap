@@ -256,7 +256,8 @@ func (s *Server) Start() error {
 	// Wait for server to be ready
 	for i := 0; i < 10; i++ {
 		time.Sleep(100 * time.Millisecond)
-		resp, err := http.Get(fmt.Sprintf("http://%s/health", addr))
+		client := &http.Client{Timeout: 2 * time.Second}
+		resp, err := client.Get(fmt.Sprintf("http://%s/health", addr))
 		if err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {

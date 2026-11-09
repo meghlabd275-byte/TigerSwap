@@ -75,23 +75,27 @@ func GetRequestID(c *gin.Context) string {
 	return ""
 }
 
-// Timeout returns a gin middleware for request timeout
+// Timeout bounds how long a request may take.
+//
+// The deadline is attached to the request context so every downstream call the
+// handler makes (all of them derive from `c.Request.Context()`) is cancelled
+// when it elapses. The handler runs on this goroutine, so its response is never
+// written concurrently with the timeout response; the 408 is only emitted when
+// the deadline expired and the handler produced no response of its own.
 func Timeout(timeout time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 		defer cancel()
 
 		c.Request = c.Request.WithContext(ctx)
+		c.Next()
 
-		<-ctx.Done()
-		if ctx.Err() == context.DeadlineExceeded {
+		if ctx.Err() == context.DeadlineExceeded && !c.Writer.Written() {
 			c.AbortWithStatusJSON(http.StatusRequestTimeout, gin.H{
 				"error":      "Request timeout",
 				"request_id": GetRequestID(c),
 			})
-			return
 		}
-		c.Next()
 	}
 }
 

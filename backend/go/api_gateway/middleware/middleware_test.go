@@ -316,4 +316,47 @@ func TestAdminRequiredRejectsNonAdmins(t *testing.T) {
 			}
 		})
 	}
+
+}
+
+// A request that finishes inside the deadline must get the handler's own
+// response. The middleware used to block on the context and reply 408 to every
+// request, however fast the handler was.
+func TestTimeoutLetsFastHandlerRespond(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(Timeout(2 * time.Second))
+	r.GET("/test", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	start := time.Now()
+	req, _ := http.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, w.Code)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("fast handler was blocked for %v", elapsed)
+	}
+}
+
+// A handler that overruns the deadline still yields 408 when it writes nothing.
+func TestTimeoutReportsSlowHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(Timeout(50 * time.Millisecond))
+	r.GET("/test", func(c *gin.Context) {
+		<-c.Request.Context().Done()
+	})
+
+	req, _ := http.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestTimeout {
+		t.Fatalf("expected status %d, got %d", http.StatusRequestTimeout, w.Code)
+	}
 }
