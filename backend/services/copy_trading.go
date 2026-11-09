@@ -17,11 +17,12 @@ import (
 
 // Sentinels for the copy-trading engine's caller-caused failures.
 var (
-	errTraderNotFound       = errors.New("trader not found")
-	errAlreadyFollowing     = errors.New("already following a trader")
-	errNotFollowing         = errors.New("not following any trader")
-	errCopyPositionNotFound = errors.New("copy position not found")
-	errCopyPositionClosed   = errors.New("copy position already closed")
+	errTraderNotFound        = errors.New("trader not found")
+	errAlreadyFollowing      = errors.New("already following a trader")
+	errNotFollowing          = errors.New("not following any trader")
+	errCopyPositionNotFound  = errors.New("copy position not found")
+	errCopyPositionClosed    = errors.New("copy position already closed")
+	errCopyPositionForbidden = errors.New("copy position belongs to another account")
 )
 
 // CopyTradingEngine handles real copy trading
@@ -319,14 +320,20 @@ func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
 	return nil
 }
 
-// CloseCopyPosition closes a copy position
-func (e *CopyTradingEngine) CloseCopyPosition(positionID string) (*CopyPosition, error) {
+// CloseCopyPosition closes a copy position owned by caller. Ownership is
+// checked under the engine lock before any mutation, so one account can never
+// close another account's position and a check cannot race a close.
+func (e *CopyTradingEngine) CloseCopyPosition(positionID, caller string) (*CopyPosition, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	position, exists := e.copyPositions[positionID]
 	if !exists {
 		return nil, errCopyPositionNotFound
+	}
+
+	if caller == "" || !strings.EqualFold(position.FollowerAddress, caller) {
+		return nil, errCopyPositionForbidden
 	}
 
 	if position.Status != "open" {
@@ -514,13 +521,9 @@ func (e *CopyTradingEngine) ClosePositionHandler(c *gin.Context) {
 	positionID := c.Param("id")
 	follower := c.GetString("user_id")
 
-	position, err := e.CloseCopyPosition(positionID)
+	position, err := e.CloseCopyPosition(positionID, follower)
 	if err != nil {
 		respondServiceError(c, err)
-		return
-	}
-	if follower == "" || !strings.EqualFold(position.FollowerAddress, follower) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "position belongs to another account"})
 		return
 	}
 

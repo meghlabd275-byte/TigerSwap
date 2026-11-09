@@ -58,6 +58,7 @@ var serviceErrors = []serviceError{
 	{errNotFollowing, http.StatusBadRequest, "not following any trader"},
 	{errCopyPositionNotFound, http.StatusNotFound, "copy position not found"},
 	{errCopyPositionClosed, http.StatusConflict, "copy position already closed"},
+	{errCopyPositionForbidden, http.StatusForbidden, "copy position belongs to another account"},
 
 	// Dynamic chain/token registry.
 	{errChainNotFound, http.StatusNotFound, "chain not found"},

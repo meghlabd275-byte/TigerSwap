@@ -125,18 +125,6 @@ type UserWallet struct {
 	UpdatedAt       time.Time         `json:"updated_at"`
 }
 
-// TransactionRequest represents a transaction request
-type TransactionRequest struct {
-	FromChain int64   `json:"from_chain" binding:"required"`
-	ToChain   int64   `json:"to_chain" binding:"required"`
-	FromToken string  `json:"from_token" binding:"required"`
-	ToToken   string  `json:"to_token" binding:"required"`
-	Amount    string  `json:"amount" binding:"required"`
-	Slippage  float64 `json:"slippage"`
-	UserID    string  `json:"user_id"`
-	AutoSign  bool    `json:"auto_sign"`
-}
-
 // SwapRequest represents a swap request. It carries a client-signed payload;
 // a raw private key is never accepted over HTTP.
 type SwapRequest struct {
