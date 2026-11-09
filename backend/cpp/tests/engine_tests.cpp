@@ -439,6 +439,54 @@ void test_engine_rejects_oversized_order() {
     CHECK(ok.report.accepted);
 }
 
+// price * quantity is caller-supplied on both sides. When the true product
+// exceeds 64 bits a plain multiplication wraps to a small value that slips under
+// the notional cap, so the order is accepted with a notional it never had. The
+// risk gate must compare in 128 bits and reject it.
+void test_engine_rejects_notional_overflow() {
+    MatchingEngine engine;
+    PairConfig config = pair(1, "BTC-RUSD");
+    config.risk.max_order_quantity = 1'000'000'000'000ULL;
+    config.risk.max_order_notional = 10'000'000'000'000ULL;
+    engine.add_pair(config);
+
+    // 2^63 * 2 == 2^64, which wraps to zero in 64 bits: the old check passed it.
+    const uint64_t huge_price = 1ULL << 63;
+    const auto wrapped = engine.submit(1, make_limit(1, 100, huge_price, 2, Side::Buy), TimeInForce::Gtc);
+    CHECK(!wrapped.report.accepted);
+    CHECK(wrapped.report.reason == RejectReason::InvalidOrder);
+
+    // A product that overflows without landing near zero is rejected too.
+    const auto overflowed =
+        engine.submit(1, make_limit(2, 100, 10'000'000'000ULL, 10'000'000'000ULL, Side::Buy), TimeInForce::Gtc);
+    CHECK(!overflowed.report.accepted);
+    CHECK(overflowed.report.reason == RejectReason::InvalidOrder);
+
+    // A notional that fits in 64 bits but exceeds the cap is still rejected.
+    const auto over_cap = engine.submit(1, make_limit(3, 100, 10'000'000, 10'000'000, Side::Buy), TimeInForce::Gtc);
+    CHECK(!over_cap.report.accepted);
+    CHECK(over_cap.report.reason == RejectReason::InvalidOrder);
+
+    // A notional within the cap is accepted.
+    const auto ok = engine.submit(1, make_limit(4, 100, 50'000, 100, Side::Buy), TimeInForce::Gtc);
+    CHECK(ok.report.accepted);
+}
+
+// The taker fee is price * quantity * bps / 10'000. On a large notional the
+// 64-bit product of price * quantity * bps wraps, so a fee is charged that is
+// smaller than the real one. The fee must be computed with a 128-bit
+// intermediate.
+void test_taker_fee_no_overflow() {
+    OrderBook book(1, 1, 0, 100);  // 100 bps == 1% taker fee
+    book.submit(make_limit(1, 100, 1'000'000'000'000ULL, 1'000'000ULL, Side::Sell));
+
+    const auto result = book.submit(make_limit(2, 200, 1'000'000'000'000ULL, 1'000'000ULL, Side::Buy));
+    CHECK_EQ(result.trades.size(), 1u);
+    // 10^12 * 10^6 * 100 / 10^4 == 10^16. The wrapped 64-bit path would report
+    // 776'627'963'145'224 instead.
+    CHECK_EQ(result.trades[0].taker_fee, 10'000'000'000'000'000ULL);
+}
+
 void test_engine_enforces_max_open_orders() {
     MatchingEngine engine;
     PairConfig config = pair(1, "BTC-RUSD");
@@ -1016,6 +1064,8 @@ int main() {
 
     test_engine_pair_lifecycle();
     test_engine_rejects_oversized_order();
+    test_engine_rejects_notional_overflow();
+    test_taker_fee_no_overflow();
     test_engine_enforces_max_open_orders();
     test_engine_stats();
     test_engine_cancel();

@@ -482,7 +482,7 @@ public:
     /// Restores market data from a replayed trade without matching.
     void apply_recovered_trade(uint64_t price, uint64_t quantity) {
         last_price_ = price;
-        total_volume_ += quantity;
+        total_volume_ = saturating_add(total_volume_, quantity);
         ++total_trades_;
     }
 
@@ -521,7 +521,7 @@ private:
         uint64_t total = 0;
         for (const LevelQueue::Node* node = level.queue.front(); node != nullptr; node = node->next) {
             if (node->trader != trader) {
-                total += node->quantity;
+                total = saturating_add(total, node->quantity);
             }
         }
         return total;
@@ -542,7 +542,7 @@ private:
                 if (!is_market && it->first > order.price) {
                     break;
                 }
-                available += tradable_quantity(it->second, order.trader);
+                available = saturating_add(available, tradable_quantity(it->second, order.trader));
                 if (available >= order.quantity) {
                     return available;
                 }
@@ -552,7 +552,7 @@ private:
                 if (!is_market && it->first < order.price) {
                     break;
                 }
-                available += tradable_quantity(it->second, order.trader);
+                available = saturating_add(available, tradable_quantity(it->second, order.trader));
                 if (available >= order.quantity) {
                     return available;
                 }
@@ -571,7 +571,7 @@ private:
 
         if (!trades.empty()) {
             last_price_ = trades.back().price;
-            total_volume_ += trades.back().quantity;
+            total_volume_ = saturating_add(total_volume_, trades.back().quantity);
         }
     }
 
@@ -626,7 +626,7 @@ private:
             trade.pair = pair_id_;
             trade.price = price;
             trade.quantity = fill;
-            trade.taker_fee = (price * fill * taker_fee_bps_) / 10'000;
+            trade.taker_fee = mul_mul_div(price, fill, taker_fee_bps_, 10'000);
             trade.timestamp = wall_ns();
             trades.push_back(trade);
 

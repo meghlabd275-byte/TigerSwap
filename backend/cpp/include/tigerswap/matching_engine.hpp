@@ -156,7 +156,7 @@ public:
             trades_.fetch_add(result.trades.size(), std::memory_order_relaxed);
             uint64_t volume = 0;
             for (const auto& trade : result.trades) {
-                volume += trade.quantity;
+                volume = saturating_add(volume, trade.quantity);
             }
             volume_.fetch_add(volume, std::memory_order_relaxed);
         } else {
@@ -280,8 +280,12 @@ private:
         }
 
         if (order.type == OrderType::Limit) {
-            const uint64_t notional = order.price * order.quantity;
-            if (notional > limits.max_order_notional) {
+            // price * quantity is caller-supplied on both sides and can exceed
+            // 64 bits, in which case a plain product wraps to a small value that
+            // slips under the cap. Compare in 128 bits so an oversized order is
+            // rejected rather than accepted with a wrapped notional.
+            const wide_uint notional = mul_wide(order.price, order.quantity);
+            if (notional > static_cast<wide_uint>(limits.max_order_notional)) {
                 return {false, RejectReason::InvalidOrder};
             }
         }
