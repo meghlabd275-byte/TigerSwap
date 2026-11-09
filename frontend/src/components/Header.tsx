@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { Wallet, Menu, X, ChevronDown, Rocket, Zap, Shield, Globe } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains } from '@/hooks/useApi';
 import Link from 'next/link';
@@ -189,7 +190,7 @@ function MobileNavLink({ href, children }: { href: string; children: React.React
   );
 }
 
-function DropdownItem({ icon: Icon, title, desc }: { icon: any; title: string; desc: string }) {
+function DropdownItem({ icon: Icon, title, desc }: { icon: LucideIcon; title: string; desc: string }) {
   return (
     <button className="w-full flex items-center space-x-3 px-4 py-2 text-left hover:bg-white/5 transition-colors">
       <div className="w-8 h-8 rounded-lg bg-tiger-orange/20 flex items-center justify-center">
