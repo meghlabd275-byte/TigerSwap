@@ -97,7 +97,7 @@ func tokenKeyOrNative(raw string) (string, error) {
 		return "native", nil
 	}
 	if !common.IsHexAddress(trimmed) {
-		return "", fmt.Errorf("token address %q is not a valid address", raw)
+		return "", publicErr(fmt.Errorf("token address %q is not a valid address", raw))
 	}
 	return strings.ToLower(common.HexToAddress(trimmed).Hex()), nil
 }
@@ -107,7 +107,7 @@ func tokenKeyOrNative(raw string) (string, error) {
 func parseListingTime(raw string) (time.Time, error) {
 	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
 	if err != nil {
-		return time.Time{}, errors.New("must be an RFC3339 timestamp")
+		return time.Time{}, publicErr(errors.New("must be an RFC3339 timestamp"))
 	}
 	return parsed, nil
 }
@@ -186,7 +186,7 @@ func (s *FarmService) CreateFarm(c *gin.Context) {
 	}
 	stakingKey, err := tokenKeyOrNative(req.StakingTokenAddress)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	startTime, err := parseListingTime(req.StartTime)
@@ -236,7 +236,7 @@ func (s *FarmService) CreateFarm(c *gin.Context) {
 	for _, stream := range req.Rewards {
 		rewardKey, err := tokenKeyOrNative(stream.TokenAddress)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		if seen[rewardKey] {
@@ -615,7 +615,7 @@ func (s *FarmService) FundFarmReward(c *gin.Context) {
 	}
 	tokenKey, err := tokenKeyOrNative(req.TokenAddress)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	amount, err := parseTokenAmount(req.Amount)
@@ -1116,7 +1116,7 @@ func (s *FarmService) Claim(c *gin.Context) {
 	if raw := strings.TrimSpace(req.TokenAddress); raw != "" {
 		tokenFilter, err = tokenKeyOrNative(raw)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 	}

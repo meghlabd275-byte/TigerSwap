@@ -449,7 +449,7 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 
 	position, err := s.perpetuals.OpenPosition(c.Request.Context(), userID, 1, req.Pair, req.Side, req.Size, req.Collateral, req.Leverage)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

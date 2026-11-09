@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"strings"
 	"time"
@@ -100,7 +101,10 @@ func broadcastSignedTransaction(ctx context.Context, client *ethclient.Client, s
 		return "", fmt.Errorf("signed_tx is not a valid transaction: %w", err)
 	}
 	if err := client.SendTransaction(ctx, &tx); err != nil {
-		return "", fmt.Errorf("send transaction: %w", err)
+		// The node's rejection text can quote the endpoint URL, which may carry an
+		// API key. Log it and return a fixed message instead.
+		log.Printf("broadcast: node rejected transaction %s: %v", tx.Hash().Hex(), err)
+		return "", errors.New("transaction was rejected by the node")
 	}
 	return tx.Hash().Hex(), nil
 }

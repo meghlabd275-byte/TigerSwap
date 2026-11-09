@@ -57,7 +57,7 @@ func (s *OtcService) CreateOrder(c *gin.Context) {
 
 	symbol := strings.TrimSpace(req.Symbol)
 	if err := validateMarketSymbol(symbol); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.Side != "buy" && req.Side != "sell" {
@@ -67,11 +67,11 @@ func (s *OtcService) CreateOrder(c *gin.Context) {
 
 	quantity, err := validatePositiveDecimal("quantity", req.Quantity)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if _, err := validatePositiveDecimal("price", req.Price); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -83,7 +83,7 @@ func (s *OtcService) CreateOrder(c *gin.Context) {
 	}
 	minFillValue, err := validatePositiveDecimal("min_fill", minFill)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if minFillValue.Cmp(quantity) > 0 {
@@ -187,7 +187,7 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 
 	fill, err := validatePositiveDecimal("quantity", req.Quantity)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -207,7 +207,7 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 			return errOrderNotOpen
 		}
 		if order.MakerID == userID {
-			return errors.New("you cannot take your own otc order")
+			return errSelfTake
 		}
 		if !order.ExpiresAt.After(time.Now().UTC()) {
 			return errOrderExpired
@@ -225,7 +225,7 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 			return errBelowMinFill
 		}
 		if fill.Cmp(quantity) > 0 {
-			return errors.New("quantity exceeds the order size")
+			return errFillExceedsOrder
 		}
 
 		takerID := userID
@@ -257,7 +257,7 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 	case errors.Is(err, errBelowMinFill):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "quantity is below the order's min_fill"})
 	default:
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 	}
 }
 
@@ -321,10 +321,12 @@ func (s *OtcService) ExpireStaleOrdersHandler(c *gin.Context) {
 }
 
 var (
-	errOrderNotFound = errors.New("otc order not found")
-	errOrderNotOpen  = errors.New("otc order is not open")
-	errOrderExpired  = errors.New("otc order has expired")
-	errBelowMinFill  = errors.New("below minimum fill")
+	errOrderNotFound    = errors.New("otc order not found")
+	errOrderNotOpen     = errors.New("otc order is not open")
+	errOrderExpired     = errors.New("otc order has expired")
+	errBelowMinFill     = errors.New("below minimum fill")
+	errSelfTake         = errors.New("you cannot take your own otc order")
+	errFillExceedsOrder = errors.New("quantity exceeds the order size")
 )
 
 // TwammService implements time-weighted average market maker orders. An order
@@ -370,7 +372,7 @@ func (s *TwammService) CreateOrder(c *gin.Context) {
 
 	symbol := strings.TrimSpace(req.Symbol)
 	if err := validateMarketSymbol(symbol); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.Side != "buy" && req.Side != "sell" {
@@ -378,7 +380,7 @@ func (s *TwammService) CreateOrder(c *gin.Context) {
 		return
 	}
 	if _, err := validatePositiveDecimal("total_quantity", req.TotalQuantity); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -386,7 +388,7 @@ func (s *TwammService) CreateOrder(c *gin.Context) {
 	// decimal is allowed.
 	if strings.TrimSpace(req.LimitPrice) != "" && req.LimitPrice != "0" {
 		if _, err := validatePositiveDecimal("limit_price", req.LimitPrice); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 	} else {

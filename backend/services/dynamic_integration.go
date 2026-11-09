@@ -1,12 +1,20 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+)
+
+// Sentinels for dynamic integration lookups.
+var (
+	errChainNotFound      = errors.New("chain not found")
+	errTokenNotFound      = errors.New("token not found")
+	errTokenAlreadyExists = errors.New("token already exists")
 )
 
 // DynamicIntegrationService provides runtime management for chains, tokens, bridges, farms
@@ -303,12 +311,12 @@ func (s *DynamicIntegrationService) AddToken(key, address, chainKey, name, symbo
 
 	// Verify chain exists
 	if _, exists := s.chains[chainKey]; !exists {
-		return nil, fmt.Errorf("chain not found: %s", chainKey)
+		return nil, fmt.Errorf("%w: %s", errChainNotFound, chainKey)
 	}
 
 	// Check if exists
 	if _, exists := s.tokens[key]; exists {
-		return nil, fmt.Errorf("token already exists: %s", key)
+		return nil, fmt.Errorf("%w: %s", errTokenAlreadyExists, key)
 	}
 
 	token := &DynamicToken{
@@ -338,10 +346,10 @@ func (s *DynamicIntegrationService) AddBridge(key, name, srcChain, dstChain, rou
 
 	// Verify chains exist
 	if _, exists := s.chains[srcChain]; !exists {
-		return nil, fmt.Errorf("source chain not found: %s", srcChain)
+		return nil, fmt.Errorf("%w: source %s", errChainNotFound, srcChain)
 	}
 	if _, exists := s.chains[dstChain]; !exists {
-		return nil, fmt.Errorf("destination chain not found: %s", dstChain)
+		return nil, fmt.Errorf("%w: destination %s", errChainNotFound, dstChain)
 	}
 
 	bridge := &DynamicBridge{
@@ -430,7 +438,7 @@ func (s *DynamicIntegrationService) ActivateChain(key string, active bool) error
 
 	chain, exists := s.chains[key]
 	if !exists {
-		return fmt.Errorf("chain not found: %s", key)
+		return fmt.Errorf("%w: %s", errChainNotFound, key)
 	}
 
 	chain.IsActive = active
@@ -446,7 +454,7 @@ func (s *DynamicIntegrationService) ActivateToken(key string, active bool) error
 
 	token, exists := s.tokens[key]
 	if !exists {
-		return fmt.Errorf("token not found: %s", key)
+		return fmt.Errorf("%w: %s", errTokenNotFound, key)
 	}
 
 	token.IsActive = active
@@ -464,7 +472,7 @@ func (s *DynamicIntegrationService) GetChain(key string) (*DynamicChain, error) 
 		return chain, nil
 	}
 
-	return nil, fmt.Errorf("chain not found: %s", key)
+	return nil, fmt.Errorf("%w: %s", errChainNotFound, key)
 }
 
 // GetToken returns a token by key
@@ -476,7 +484,7 @@ func (s *DynamicIntegrationService) GetToken(key string) (*DynamicToken, error) 
 		return token, nil
 	}
 
-	return nil, fmt.Errorf("token not found: %s", key)
+	return nil, fmt.Errorf("%w: %s", errTokenNotFound, key)
 }
 
 // GetAllChains returns all chains with optional filter
@@ -624,7 +632,7 @@ func (s *DynamicIntegrationService) DeleteChain(key string) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.chains[key]; !exists {
-		return fmt.Errorf("chain not found: %s", key)
+		return fmt.Errorf("%w: %s", errChainNotFound, key)
 	}
 
 	delete(s.chains, key)
@@ -639,7 +647,7 @@ func (s *DynamicIntegrationService) DeleteToken(key string) error {
 	defer s.mu.Unlock()
 
 	if _, exists := s.tokens[key]; !exists {
-		return fmt.Errorf("token not found: %s", key)
+		return fmt.Errorf("%w: %s", errTokenNotFound, key)
 	}
 
 	delete(s.tokens, key)
@@ -881,7 +889,7 @@ func (s *DynamicIntegrationService) ActivateChainHandler(c *gin.Context) {
 
 	key := c.Param("key")
 	if err := s.ActivateChain(key, req.Active); err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -900,7 +908,7 @@ func (s *DynamicIntegrationService) ActivateTokenHandler(c *gin.Context) {
 
 	key := c.Param("key")
 	if err := s.ActivateToken(key, req.Active); err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -911,7 +919,7 @@ func (s *DynamicIntegrationService) ActivateTokenHandler(c *gin.Context) {
 func (s *DynamicIntegrationService) DeleteChainHandler(c *gin.Context) {
 	key := c.Param("key")
 	if err := s.DeleteChain(key); err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -922,7 +930,7 @@ func (s *DynamicIntegrationService) DeleteChainHandler(c *gin.Context) {
 func (s *DynamicIntegrationService) DeleteTokenHandler(c *gin.Context) {
 	key := c.Param("key")
 	if err := s.DeleteToken(key); err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 

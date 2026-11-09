@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -92,18 +93,26 @@ func NewPriceAggregator(redisClient *redis.Client) *PriceAggregator {
 
 // GetRealPrice reads a symbol's price from TigerSwap's own on-chain oracle.
 //
+// Sentinels for caller-caused price failures. Everything else from the oracle
+// path is an internal fault and must not have its text returned to a client.
+var (
+	errPriceSymbolRequired = errors.New("symbol is required")
+	errPriceNoChain        = errors.New("no TigerSwap chain configured")
+	errPriceUnknownToken   = errors.New("unknown token for this chain")
+)
+
 // There is deliberately no external price API here: the price either comes from
 // the oracle TigerSwap itself runs, or the call fails. A caller that cannot get
 // a price must not trade, so returning an error is the safe outcome.
 func (p *PriceAggregator) GetRealPrice(ctx context.Context, symbol string) (*PriceData, error) {
 	sym := strings.ToUpper(strings.TrimSpace(symbol))
 	if sym == "" {
-		return nil, fmt.Errorf("symbol is required")
+		return nil, errPriceSymbolRequired
 	}
 
 	chainID, ok := p.defaultChainID()
 	if !ok {
-		return nil, fmt.Errorf("no TigerSwap chain configured; set TIGERSWAP_CHAINS")
+		return nil, errPriceNoChain
 	}
 
 	price, err := p.PriceOnChain(ctx, chainID, sym)
@@ -125,7 +134,7 @@ func (p *PriceAggregator) PriceOnChain(ctx context.Context, chainID int64, symbo
 	sym := strings.ToUpper(strings.TrimSpace(symbol))
 	addr, ok := config.TokenAddress(chainID, sym)
 	if !ok {
-		return nil, fmt.Errorf("unknown token %s on chain %d", sym, chainID)
+		return nil, fmt.Errorf("%w: %s on chain %d", errPriceUnknownToken, sym, chainID)
 	}
 
 	client, err := p.tigerClient(chainID)
@@ -503,7 +512,7 @@ func (p *PriceAggregator) GetPriceHandler(c *gin.Context) {
 
 	price, err := p.GetRealPrice(c.Request.Context(), symbol)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 

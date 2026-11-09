@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"os"
@@ -165,7 +166,11 @@ func (b *BlockchainClient) GetClient(chainID int64) (*ethclient.Client, error) {
 
 	dialed, err := ethclient.Dial(rpcURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to RPC: %v", err)
+		// The dialer's error quotes the endpoint, and an operator's RPC URL can
+		// carry an API key in its path or query. Log the detail and keep it out of
+		// the returned error so it cannot reach a client.
+		log.Printf("blockchain: dial chain %d failed: %v", chainID, err)
+		return nil, fmt.Errorf("RPC endpoint for chain %d is unreachable", chainID)
 	}
 
 	b.clients[chainID] = dialed
@@ -626,13 +631,13 @@ func (b *BlockchainClient) SendTransactionHandler(c *gin.Context) {
 
 	client, err := b.GetClient(req.ChainID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
 	txHash, err := broadcastSignedTransaction(c.Request.Context(), client, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

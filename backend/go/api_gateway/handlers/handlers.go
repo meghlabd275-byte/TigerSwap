@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
 	"net/url"
@@ -137,7 +138,7 @@ type QuoteResponse struct {
 func (h *SwapHandler) GetQuote(c *gin.Context) {
 	var req QuoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -167,7 +168,7 @@ func (h *SwapHandler) GetQuote(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/quote", h.config.Upstream.DEXAggregator)
 	resp, err := callUpstreamService(c, url, payload)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "TigerAggregator", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -211,7 +212,7 @@ func (h *SwapHandler) ExecuteSwap(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -226,7 +227,7 @@ func (h *SwapHandler) ExecuteSwap(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -270,7 +271,7 @@ func (h *SwapHandler) GetRoutes(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/quote/multihop", h.config.Upstream.DEXAggregator)
 	resp, err := callUpstreamService(c, url, payload)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "TigerAggregator", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -304,14 +305,14 @@ func (h *SwapHandler) MultiHopSwap(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/quote/multihop", h.config.Upstream.DEXAggregator)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "TigerAggregator upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "TigerAggregator", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -323,7 +324,7 @@ func (h *SwapHandler) MultiHopSwap(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -368,7 +369,7 @@ func (h *PriceHandler) GetPrices(c *gin.Context) {
 	}
 	resp, err := upstreamGet(c, endpoint)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "price oracle", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -417,7 +418,7 @@ func (h *PriceHandler) GetPrice(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/oracle/price/%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "price oracle", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -452,7 +453,7 @@ func (h *PriceHandler) GetPriceHistory(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/oracle/price/%s/history?days=%s", h.config.Upstream.PriceOracle, url.PathEscape(symbol), url.QueryEscape(days))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price oracle upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "price oracle", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -464,7 +465,7 @@ func (h *PriceHandler) GetPriceHistory(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -502,7 +503,7 @@ func (h *TokenHandler) GetTokens(c *gin.Context) {
 	}
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -513,7 +514,7 @@ func (h *TokenHandler) GetTokens(c *gin.Context) {
 
 	var tokens []Token
 	if err := json.NewDecoder(resp.Body).Decode(&tokens); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, tokens)
@@ -526,7 +527,7 @@ func (h *TokenHandler) GetToken(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/tokens/%s", h.config.Upstream.Blockchain, url.PathEscape(address))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -541,7 +542,7 @@ func (h *TokenHandler) GetToken(c *gin.Context) {
 
 	var token Token
 	if err := json.NewDecoder(resp.Body).Decode(&token); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, token)
@@ -559,7 +560,7 @@ func (h *TokenHandler) SearchTokens(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/tokens/search?q=%s", h.config.Upstream.Blockchain, url.QueryEscape(query))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -570,7 +571,7 @@ func (h *TokenHandler) SearchTokens(c *gin.Context) {
 
 	var results []Token
 	if err := json.NewDecoder(resp.Body).Decode(&results); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	if results == nil {
@@ -607,7 +608,7 @@ func (h *PoolHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/pools", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -618,7 +619,7 @@ func (h *PoolHandler) GetPools(c *gin.Context) {
 
 	var pools []Pool
 	if err := json.NewDecoder(resp.Body).Decode(&pools); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, pools)
@@ -632,7 +633,7 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/pools/%s/%s", h.config.Upstream.Blockchain, url.PathEscape(tokenA), url.PathEscape(tokenB))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -643,7 +644,7 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 
 	var pool Pool
 	if err := json.NewDecoder(resp.Body).Decode(&pool); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, pool)
@@ -657,7 +658,7 @@ func (h *PoolHandler) GetPoolVolume(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/pools/%s/%s/volume", h.config.Upstream.Blockchain, url.PathEscape(tokenA), url.PathEscape(tokenB))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -668,7 +669,7 @@ func (h *PoolHandler) GetPoolVolume(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -691,13 +692,13 @@ func (h *WalletHandler) CreateWallet(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	mnemonic, privateKey, address, err := generateWallet()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -717,7 +718,7 @@ func (h *WalletHandler) ImportWallet(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -728,7 +729,7 @@ func (h *WalletHandler) ImportWallet(c *gin.Context) {
 
 	address, err := deriveAddressFromMnemonic(req.Mnemonic)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
@@ -752,7 +753,7 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/wallet/%s/balance?chainId=%s", h.config.Upstream.Wallet, url.PathEscape(address), url.QueryEscape(chainID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "wallet service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -763,7 +764,7 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 
 	var balance map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&balance); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, balance)
@@ -780,7 +781,7 @@ func (h *WalletHandler) GetTransactions(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/wallet/%s/transactions", h.config.Upstream.Wallet, url.PathEscape(address))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "wallet service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -791,7 +792,7 @@ func (h *WalletHandler) GetTransactions(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -808,14 +809,14 @@ func (h *WalletHandler) Transfer(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/wallet/transfer", h.config.Upstream.Wallet)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "wallet service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -826,7 +827,7 @@ func (h *WalletHandler) Transfer(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -843,14 +844,14 @@ func (h *WalletHandler) Approve(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/wallet/approve", h.config.Upstream.Wallet)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "wallet service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -861,7 +862,7 @@ func (h *WalletHandler) Approve(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -892,7 +893,7 @@ func (h *ChainHandler) GetChains(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/chains", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -903,7 +904,7 @@ func (h *ChainHandler) GetChains(c *gin.Context) {
 
 	var chains []Chain
 	if err := json.NewDecoder(resp.Body).Decode(&chains); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, chains)
@@ -920,7 +921,7 @@ func (h *ChainHandler) GetChain(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/chains/%d", h.config.Upstream.Blockchain, chainID)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -931,7 +932,7 @@ func (h *ChainHandler) GetChain(c *gin.Context) {
 
 	var chain Chain
 	if err := json.NewDecoder(resp.Body).Decode(&chain); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, chain)
@@ -948,7 +949,7 @@ func (h *ChainHandler) GetGasFees(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/chains/%d/fees", h.config.Upstream.Blockchain, chainID)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "blockchain service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -959,7 +960,7 @@ func (h *ChainHandler) GetGasFees(c *gin.Context) {
 
 	var fees map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&fees); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, fees)
@@ -993,14 +994,14 @@ type Order struct {
 func (h *OrderHandler) CreateOrder(c *gin.Context) {
 	var order Order
 	if err := c.ShouldBindJSON(&order); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/orders", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, order)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "order service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1011,7 +1012,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 
 	var created Order
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, created)
@@ -1024,7 +1025,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "order service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1035,7 +1036,7 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 
 	var order Order
 	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, order)
@@ -1047,14 +1048,14 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "order service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1065,7 +1066,7 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 
 	var order Order
 	if err := json.NewDecoder(resp.Body).Decode(&order); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, order)
@@ -1078,13 +1079,13 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
 	resp, err := upstreamClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "order service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1095,7 +1096,7 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1108,7 +1109,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/orders/user/%s", h.config.Upstream.Blockchain, url.PathEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "order service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1119,7 +1120,7 @@ func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1156,7 +1157,7 @@ func (h *PerpetualHandler) GetPositions(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "perpetuals service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1167,7 +1168,7 @@ func (h *PerpetualHandler) GetPositions(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1177,14 +1178,14 @@ func (h *PerpetualHandler) GetPositions(c *gin.Context) {
 func (h *PerpetualHandler) OpenPosition(c *gin.Context) {
 	var pos Position
 	if err := c.ShouldBindJSON(&pos); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, pos)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "perpetuals service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1195,7 +1196,7 @@ func (h *PerpetualHandler) OpenPosition(c *gin.Context) {
 
 	var created Position
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, created)
@@ -1207,14 +1208,14 @@ func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
 
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, url.PathEscape(positionID))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "perpetuals service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1225,7 +1226,7 @@ func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
 
 	var pos Position
 	if err := json.NewDecoder(resp.Body).Decode(&pos); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, pos)
@@ -1238,13 +1239,13 @@ func (h *PerpetualHandler) ClosePosition(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, url.PathEscape(positionID))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
 	resp, err := upstreamClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "perpetuals service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1255,7 +1256,7 @@ func (h *PerpetualHandler) ClosePosition(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1286,7 +1287,7 @@ func (h *StakingHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/staking/pools", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "staking service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1297,7 +1298,7 @@ func (h *StakingHandler) GetPools(c *gin.Context) {
 
 	var pools []StakingPool
 	if err := json.NewDecoder(resp.Body).Decode(&pools); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	if pools == nil {
@@ -1315,14 +1316,14 @@ func (h *StakingHandler) Stake(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/staking/stake", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "staking service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1333,7 +1334,7 @@ func (h *StakingHandler) Stake(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1348,14 +1349,14 @@ func (h *StakingHandler) Unstake(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/staking/unstake", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "staking service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1366,7 +1367,7 @@ func (h *StakingHandler) Unstake(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1379,7 +1380,7 @@ func (h *StakingHandler) GetRewards(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/staking/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "staking service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1390,7 +1391,7 @@ func (h *StakingHandler) GetRewards(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1418,14 +1419,14 @@ func (h *BridgeHandler) Transfer(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/bridge/transfer", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "bridge service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1436,7 +1437,7 @@ func (h *BridgeHandler) Transfer(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1449,7 +1450,7 @@ func (h *BridgeHandler) GetTransferStatus(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/bridge/transfer/%s", h.config.Upstream.Blockchain, url.PathEscape(txHash))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "bridge service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1460,7 +1461,7 @@ func (h *BridgeHandler) GetTransferStatus(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1471,7 +1472,7 @@ func (h *BridgeHandler) GetSupportedChains(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/bridge/chains", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "bridge service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1482,7 +1483,7 @@ func (h *BridgeHandler) GetSupportedChains(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1503,7 +1504,7 @@ func (h *FarmingHandler) GetPools(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/farming/pools", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "farming service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1514,7 +1515,7 @@ func (h *FarmingHandler) GetPools(c *gin.Context) {
 
 	var pools []map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&pools); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	if pools == nil {
@@ -1533,14 +1534,14 @@ func (h *FarmingHandler) Deposit(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/farming/deposit", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "farming service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1551,7 +1552,7 @@ func (h *FarmingHandler) Deposit(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1566,14 +1567,14 @@ func (h *FarmingHandler) Withdraw(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/farming/withdraw", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "farming service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1584,7 +1585,7 @@ func (h *FarmingHandler) Withdraw(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1597,7 +1598,7 @@ func (h *FarmingHandler) GetRewards(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/farming/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "farming service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1608,7 +1609,7 @@ func (h *FarmingHandler) GetRewards(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1629,7 +1630,7 @@ func (h *LaunchpadHandler) GetProjects(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "launchpad service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1640,7 +1641,7 @@ func (h *LaunchpadHandler) GetProjects(c *gin.Context) {
 
 	var projects []map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	if projects == nil {
@@ -1656,7 +1657,7 @@ func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "launchpad service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1667,7 +1668,7 @@ func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 
 	var project map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&project); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, project)
@@ -1677,14 +1678,14 @@ func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 func (h *LaunchpadHandler) CreateProject(c *gin.Context) {
 	var project map[string]interface{}
 	if err := c.ShouldBindJSON(&project); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, project)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "launchpad service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1695,7 +1696,7 @@ func (h *LaunchpadHandler) CreateProject(c *gin.Context) {
 
 	var created map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, created)
@@ -1710,14 +1711,14 @@ func (h *LaunchpadHandler) Contribute(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/launchpad/contribute", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "launchpad service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1728,7 +1729,7 @@ func (h *LaunchpadHandler) Contribute(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1749,7 +1750,7 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/stats", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1760,7 +1761,7 @@ func (h *AdminHandler) GetStats(c *gin.Context) {
 
 	var stats map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, stats)
@@ -1771,7 +1772,7 @@ func (h *AdminHandler) GetUsers(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/users", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1782,7 +1783,7 @@ func (h *AdminHandler) GetUsers(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1795,7 +1796,7 @@ func (h *AdminHandler) GetUser(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1806,7 +1807,7 @@ func (h *AdminHandler) GetUser(c *gin.Context) {
 
 	var user map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, user)
@@ -1818,14 +1819,14 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1836,7 +1837,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 
 	var user map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, user)
@@ -1849,13 +1850,13 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
 	resp, err := upstreamClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1866,7 +1867,7 @@ func (h *AdminHandler) DeleteUser(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1877,7 +1878,7 @@ func (h *AdminHandler) GetFeeSettings(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/fees", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1888,7 +1889,7 @@ func (h *AdminHandler) GetFeeSettings(c *gin.Context) {
 
 	var fees map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&fees); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, fees)
@@ -1898,14 +1899,14 @@ func (h *AdminHandler) GetFeeSettings(c *gin.Context) {
 func (h *AdminHandler) UpdateFeeSettings(c *gin.Context) {
 	var fees map[string]interface{}
 	if err := c.ShouldBindJSON(&fees); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/admin/fees", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, fees)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1916,7 +1917,7 @@ func (h *AdminHandler) UpdateFeeSettings(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1927,7 +1928,7 @@ func (h *AdminHandler) GetWhitelist(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/whitelist", h.config.Upstream.Blockchain)
 	resp, err := upstreamGet(c, url)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1938,7 +1939,7 @@ func (h *AdminHandler) GetWhitelist(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -1951,14 +1952,14 @@ func (h *AdminHandler) AddToWhitelist(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequest(c, err)
 		return
 	}
 
 	url := fmt.Sprintf("%s/api/v1/admin/whitelist", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1969,7 +1970,7 @@ func (h *AdminHandler) AddToWhitelist(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, result)
@@ -1982,13 +1983,13 @@ func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 	url := fmt.Sprintf("%s/api/v1/admin/whitelist/%s", h.config.Upstream.Blockchain, url.PathEscape(address))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 	req.Header.Set("X-Request-ID", middleware.GetRequestID(c))
 	resp, err := upstreamClient.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
+		respondUpstreamUnavailable(c, "admin service", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -1999,7 +2000,7 @@ func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		respondUpstreamResponseError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -2022,6 +2023,38 @@ var upstreamClient = &http.Client{
 
 // upstreamGet performs a GET against an upstream service using the shared
 // client and the caller's request context.
+// respondInternalError logs an unexpected local failure and returns a fixed
+// body. The raw error can name a file, a URL or a credential-bearing endpoint,
+// so it is recorded for the operator and kept off the wire.
+func respondInternalError(c *gin.Context, err error) {
+	log.Printf("internal error on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "internal server error"})
+}
+
+// respondBadRequest answers a caller-correctable failure. The detail is logged
+// and a fixed message returned so a decoder that quotes internal state cannot
+// leak it; the status is what the client needs to react to.
+func respondBadRequest(c *gin.Context, err error) {
+	log.Printf("bad request on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusBadRequest, gin.H{"error": "request could not be processed"})
+}
+
+// respondUpstreamUnavailable answers a transport failure against an upstream
+// service. The dialer's error quotes the endpoint, which can carry a key in its
+// path, so only the service name and a fixed message are returned.
+func respondUpstreamUnavailable(c *gin.Context, service string, err error) {
+	log.Printf("%s upstream unreachable on %s %s: %v", service, c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusBadGateway, gin.H{"error": service + " upstream unavailable"})
+}
+
+// respondUpstreamResponseError answers a failure to decode an upstream body.
+// The decode error can quote a fragment of the response, so it is logged and
+// replaced with a fixed message.
+func respondUpstreamResponseError(c *gin.Context, err error) {
+	log.Printf("upstream response error on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusBadGateway, gin.H{"error": "upstream service returned an unreadable response"})
+}
+
 func upstreamGet(c *gin.Context, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, url, nil)
 	if err != nil {

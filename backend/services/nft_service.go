@@ -549,7 +549,7 @@ func (s *NFTMarketplaceService) ListNFT(c *gin.Context) {
 	}
 	deadline, err := parseListingTime(req.Deadline)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !deadline.After(time.Now()) {
@@ -558,7 +558,7 @@ func (s *NFTMarketplaceService) ListNFT(c *gin.Context) {
 	}
 	payKey, paySymbol, payDecimals, err := nftPaymentToken(req.PaymentTokenAddress, req.PaymentTokenSymbol)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.PaymentTokenDecimals != nil {
@@ -846,7 +846,7 @@ func (s *NFTMarketplaceService) UpdateListingPrice(c *gin.Context) {
 	if req.Deadline != nil {
 		deadline, err := parseListingTime(*req.Deadline)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		if !deadline.After(time.Now()) {
@@ -911,7 +911,7 @@ func (s *NFTMarketplaceService) MakeOffer(c *gin.Context) {
 	}
 	deadline, err := parseListingTime(req.Deadline)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !deadline.After(time.Now()) {
@@ -920,7 +920,7 @@ func (s *NFTMarketplaceService) MakeOffer(c *gin.Context) {
 	}
 	payKey, paySymbol, payDecimals, err := nftPaymentToken(req.PaymentTokenAddress, req.PaymentTokenSymbol)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.PaymentTokenDecimals != nil {
@@ -1334,7 +1334,7 @@ func (s *NFTMarketplaceService) UpdateMarketplaceConfig(c *gin.Context) {
 	}
 	if req.FeeBps != nil {
 		if err := s.SetFeeBps(*req.FeeBps); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 	}

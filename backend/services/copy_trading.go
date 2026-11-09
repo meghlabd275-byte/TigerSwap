@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,6 +13,15 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+)
+
+// Sentinels for the copy-trading engine's caller-caused failures.
+var (
+	errTraderNotFound       = errors.New("trader not found")
+	errAlreadyFollowing     = errors.New("already following a trader")
+	errNotFollowing         = errors.New("not following any trader")
+	errCopyPositionNotFound = errors.New("copy position not found")
+	errCopyPositionClosed   = errors.New("copy position already closed")
 )
 
 // CopyTradingEngine handles real copy trading
@@ -178,12 +188,12 @@ func (e *CopyTradingEngine) StartFollowing(followerAddress, traderAddress string
 	// Verify trader exists
 	_, exists := e.traders[traderAddress]
 	if !exists {
-		return fmt.Errorf("trader not found")
+		return errTraderNotFound
 	}
 
 	// Check if already following
 	if _, alreadyFollowing := e.following[followerAddress]; alreadyFollowing {
-		return fmt.Errorf("already following a trader")
+		return errAlreadyFollowing
 	}
 
 	// Add follow relationship
@@ -207,7 +217,7 @@ func (e *CopyTradingEngine) StopFollowing(followerAddress string) error {
 
 	traderAddress, exists := e.following[followerAddress]
 	if !exists {
-		return fmt.Errorf("not following any trader")
+		return errNotFollowing
 	}
 
 	// Remove from followers list
@@ -316,11 +326,11 @@ func (e *CopyTradingEngine) CloseCopyPosition(positionID string) (*CopyPosition,
 
 	position, exists := e.copyPositions[positionID]
 	if !exists {
-		return nil, fmt.Errorf("position not found")
+		return nil, errCopyPositionNotFound
 	}
 
 	if position.Status != "open" {
-		return nil, fmt.Errorf("position already closed")
+		return nil, errCopyPositionClosed
 	}
 
 	now := time.Now()
@@ -400,7 +410,7 @@ func (e *CopyTradingEngine) GetTraderHandler(c *gin.Context) {
 
 	trader, err := e.GetTrader(address)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -461,7 +471,7 @@ func (e *CopyTradingEngine) StartFollowingHandler(c *gin.Context) {
 	}
 
 	if err := e.StartFollowing(follower, config.TraderAddress, config); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -477,7 +487,7 @@ func (e *CopyTradingEngine) StopFollowingHandler(c *gin.Context) {
 	}
 
 	if err := e.StopFollowing(follower); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -506,7 +516,7 @@ func (e *CopyTradingEngine) ClosePositionHandler(c *gin.Context) {
 
 	position, err := e.CloseCopyPosition(positionID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	if follower == "" || !strings.EqualFold(position.FollowerAddress, follower) {

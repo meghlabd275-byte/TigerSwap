@@ -723,7 +723,7 @@ func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
 
 	txHash, err := s.DistributeFees(c.Request.Context(), req.ChainID, req.Token, req.Amount)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

@@ -240,23 +240,23 @@ func parseDecimalString(value string) (*big.Int, error) {
 func validatePositiveDecimal(field, value string) (*big.Int, error) {
 	scaled, err := parseDecimalString(value)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", field, err)
+		return nil, publicErr(fmt.Errorf("%s: %w", field, err))
 	}
 	if scaled.Sign() <= 0 {
-		return nil, fmt.Errorf("%s must be positive", field)
+		return nil, publicErr(fmt.Errorf("%s must be positive", field))
 	}
 	return scaled, nil
 }
 
 // createBotRequest is the body of a bot creation call.
 type createBotRequest struct {
-	Name          string                 `json:"name"`
-	Strategy      models.BotStrategy     `json:"strategy"`
-	Symbol        string                 `json:"symbol"`
-	Config        json.RawMessage        `json:"config"`
-	MaxOrderSize  string                 `json:"max_order_size"`
-	MaxDailyLoss  string                 `json:"max_daily_loss"`
-	MaxOpenOrders int                    `json:"max_open_orders"`
+	Name          string             `json:"name"`
+	Strategy      models.BotStrategy `json:"strategy"`
+	Symbol        string             `json:"symbol"`
+	Config        json.RawMessage    `json:"config"`
+	MaxOrderSize  string             `json:"max_order_size"`
+	MaxDailyLoss  string             `json:"max_daily_loss"`
+	MaxOpenOrders int                `json:"max_open_orders"`
 }
 
 // CreateBot validates and stores a bot configuration.
@@ -286,18 +286,18 @@ func (s *BotsService) CreateBot(c *gin.Context) {
 
 	symbol := strings.TrimSpace(req.Symbol)
 	if err := validateMarketSymbol(symbol); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
 	config, err := validateStrategyConfig(req.Strategy, req.Config)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
 	if _, err := validatePositiveDecimal("max_order_size", req.MaxOrderSize); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	// A daily loss limit of zero means "no limit", so zero is allowed here.
@@ -701,17 +701,17 @@ func currentUserID(c *gin.Context) (string, bool) {
 // markup into a response.
 func validateMarketSymbol(symbol string) error {
 	if symbol == "" || len(symbol) > 41 {
-		return errors.New("symbol must be between 1 and 41 characters")
+		return publicErr(errors.New("symbol must be between 1 and 41 characters"))
 	}
 	base, quote, hasPair := strings.Cut(symbol, "/")
 	if hasPair {
 		if !isTokenSymbol(base) || !isTokenSymbol(quote) {
-			return errors.New("symbol must be a token or a BASE/QUOTE pair")
+			return publicErr(errors.New("symbol must be a token or a BASE/QUOTE pair"))
 		}
 		return nil
 	}
 	if !isTokenSymbol(base) {
-		return errors.New("symbol must be a token or a BASE/QUOTE pair")
+		return publicErr(errors.New("symbol must be a token or a BASE/QUOTE pair"))
 	}
 	return nil
 }
@@ -781,8 +781,8 @@ func (s *BotsService) AvailableStrategies(c *gin.Context) {
 			keys[key] = kind
 		}
 		response = append(response, gin.H{
-			"strategy":     strategy,
-			"config_keys":  keys,
+			"strategy":    strategy,
+			"config_keys": keys,
 		})
 	}
 	c.JSON(http.StatusOK, response)

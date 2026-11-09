@@ -87,16 +87,16 @@ func parseSymbol(symbol string) (string, string, error) {
 	symbol = strings.TrimSpace(strings.ToUpper(symbol))
 	parts := strings.Split(symbol, "/")
 	if len(parts) != 2 {
-		return "", "", fmt.Errorf("symbol must have the form BASE/QUOTE")
+		return "", "", publicErr(fmt.Errorf("symbol must have the form BASE/QUOTE"))
 	}
 	base, quote := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
 	for _, part := range []string{base, quote} {
 		if part == "" {
-			return "", "", fmt.Errorf("symbol must have the form BASE/QUOTE")
+			return "", "", publicErr(fmt.Errorf("symbol must have the form BASE/QUOTE"))
 		}
 		for _, r := range part {
 			if !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') {
-				return "", "", fmt.Errorf("symbol parts may only contain letters and digits")
+				return "", "", publicErr(fmt.Errorf("symbol parts may only contain letters and digits"))
 			}
 		}
 	}
@@ -153,7 +153,7 @@ func splitAssets(raw string) ([]string, error) {
 	for _, part := range parts {
 		asset := strings.ToUpper(strings.TrimSpace(part))
 		if asset == "" {
-			return nil, fmt.Errorf("asset list contains an empty entry")
+			return nil, publicErr(fmt.Errorf("asset list contains an empty entry"))
 		}
 		out = append(out, asset)
 	}
@@ -195,7 +195,7 @@ func (s *ListingService) CreateFuturesMarket(c *gin.Context) {
 
 	base, quote, err := parseSymbol(req.Symbol)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	settlement := strings.ToUpper(strings.TrimSpace(req.Settlement))
@@ -540,7 +540,7 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 	}
 
 	if _, _, err := parseSymbol(req.Symbol); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	marketType := strings.ToLower(strings.TrimSpace(req.MarketType))
@@ -557,7 +557,7 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 	}
 	collateral, err := splitAssets(req.CollateralAssets)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if len(collateral) == 0 {
@@ -670,7 +670,7 @@ func (s *ListingService) UpdatePerpsMarket(c *gin.Context) {
 	if req.CollateralAssets != nil {
 		assets, err := splitAssets(*req.CollateralAssets)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		if len(assets) == 0 {
@@ -846,7 +846,7 @@ func (s *ListingService) CreateMarginMarket(c *gin.Context) {
 
 	base, quote, err := parseSymbol(req.Pair)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	marginMode := strings.ToLower(strings.TrimSpace(req.MarginMode))
@@ -863,7 +863,7 @@ func (s *ListingService) CreateMarginMarket(c *gin.Context) {
 	}
 	collateral, err := splitAssets(req.CollateralAssets)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if len(collateral) == 0 {
@@ -878,7 +878,7 @@ func (s *ListingService) CreateMarginMarket(c *gin.Context) {
 	}
 	borrowable, err := splitAssets(req.BorrowableAssets)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if len(borrowable) == 0 {
@@ -1021,7 +1021,7 @@ func (s *ListingService) UpdateMarginMarket(c *gin.Context) {
 	if req.CollateralAssets != nil {
 		assets, err := splitAssets(*req.CollateralAssets)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		if len(assets) == 0 {
@@ -1039,7 +1039,7 @@ func (s *ListingService) UpdateMarginMarket(c *gin.Context) {
 	if req.BorrowableAssets != nil {
 		assets, err := splitAssets(*req.BorrowableAssets)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		if len(assets) == 0 {

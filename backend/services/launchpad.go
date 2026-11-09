@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -15,6 +16,9 @@ import (
 
 	"tigerswap/backend/models"
 )
+
+// Sentinel for a missing launchpad project.
+var errLaunchpadProjectNotFound = errors.New("launchpad project not found")
 
 // LaunchpadService handles IEO/IDO/Launchpad functionality
 type LaunchpadService struct {
@@ -180,7 +184,7 @@ func (s *LaunchpadService) UpdateProjectStatus(projectID, status string) error {
 
 	project, exists := s.projects[projectID]
 	if !exists {
-		return fmt.Errorf("project not found")
+		return errLaunchpadProjectNotFound
 	}
 
 	project.Status = status
@@ -194,7 +198,7 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 
 	project, exists := s.projects[projectID]
 	if !exists {
-		return nil, fmt.Errorf("project not found")
+		return nil, errLaunchpadProjectNotFound
 	}
 
 	// Check if project is active
@@ -279,7 +283,7 @@ func (s *LaunchpadService) ClaimTokens(userAddress, projectID string) (string, e
 
 	project, exists := s.projects[projectID]
 	if !exists {
-		return "", fmt.Errorf("project not found")
+		return "", errLaunchpadProjectNotFound
 	}
 
 	// Find allocation
@@ -335,7 +339,7 @@ func (s *LaunchpadService) GetProject(projectID string) (*LaunchpadProject, erro
 
 	project, exists := s.projects[projectID]
 	if !exists {
-		return nil, fmt.Errorf("project not found")
+		return nil, errLaunchpadProjectNotFound
 	}
 
 	return project, nil
@@ -589,7 +593,7 @@ func (s *LaunchpadService) UpdateProjectStatusHandler(c *gin.Context) {
 	}
 
 	if err := s.UpdateProjectStatus(projectID, req.Status); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -620,7 +624,7 @@ func (s *LaunchpadService) GetProjectHandler(c *gin.Context) {
 
 	project, err := s.GetProject(projectID)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 

@@ -255,7 +255,7 @@ func (s *SwapService) BuildTransaction(c *gin.Context) {
 		c.Request.Context(), chainID, req.TokenIn, req.TokenOut, req.AmountIn, req.Recipient, req.SlippageBps,
 	)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -488,7 +488,7 @@ func (s *SwapService) ExecuteSwap(c *gin.Context) {
 
 	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -555,7 +555,7 @@ func (s *SwapService) ApproveToken(c *gin.Context) {
 
 	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -689,7 +689,7 @@ func (s *SwapService) AddLiquidity(c *gin.Context) {
 
 	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -723,7 +723,7 @@ func (s *SwapService) RemoveLiquidity(c *gin.Context) {
 
 	txHash, err := globalSwapExecutor.BroadcastTransaction(c.Request.Context(), chainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -824,7 +824,7 @@ func (s *AuthService) ValidateToken(tokenString string) (jwt.MapClaims, error) {
 func validateUsername(raw string) (string, error) {
 	username := strings.TrimSpace(raw)
 	if len(username) < 3 || len(username) > 32 {
-		return "", fmt.Errorf("Username must be between 3 and 32 characters")
+		return "", publicErr(fmt.Errorf("Username must be between 3 and 32 characters"))
 	}
 	for _, character := range username {
 		isAllowed := (character >= 'a' && character <= 'z') ||
@@ -832,7 +832,7 @@ func validateUsername(raw string) (string, error) {
 			(character >= '0' && character <= '9') ||
 			character == '_' || character == '-' || character == '.'
 		if !isAllowed {
-			return "", fmt.Errorf("Username may only contain letters, digits, underscore, hyphen and dot")
+			return "", publicErr(fmt.Errorf("Username may only contain letters, digits, underscore, hyphen and dot"))
 		}
 	}
 	return username, nil
@@ -851,7 +851,7 @@ func (s *AuthService) Register(c *gin.Context) {
 
 	username, err := validateUsername(req.Username)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	req.Username = username
@@ -1049,7 +1049,7 @@ func (s *AuthService) UpdateProfile(c *gin.Context) {
 	if strings.TrimSpace(req.Username) != "" {
 		username, err := validateUsername(req.Username)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			respondBadRequestError(c, err)
 			return
 		}
 		updates["username"] = username

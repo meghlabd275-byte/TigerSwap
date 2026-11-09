@@ -80,7 +80,7 @@ func (s *AirdropService) CreateCampaign(c *gin.Context) {
 	}
 	tokenKey, err := tokenKeyOrNative(req.TokenAddress)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	symbol := strings.ToUpper(strings.TrimSpace(req.TokenSymbol))

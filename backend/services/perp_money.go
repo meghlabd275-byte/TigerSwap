@@ -26,18 +26,18 @@ const maxPerpAmountMagnitude = 1e24
 func perpAmountValue(amount string) (*big.Rat, error) {
 	value, err := parseDecimal(amount)
 	if err != nil {
-		return nil, fmt.Errorf("invalid amount %q: %w", amount, err)
+		return nil, publicErr(fmt.Errorf("invalid amount %q: %w", amount, err))
 	}
 	if value.Sign() <= 0 {
-		return nil, fmt.Errorf("amount %q must be positive", amount)
+		return nil, publicErr(fmt.Errorf("amount %q must be positive", amount))
 	}
 	trimmed := strings.TrimSpace(amount)
 	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 && len(trimmed)-dot-1 > 8 {
-		return nil, fmt.Errorf("amount %q has more than 8 decimal places", amount)
+		return nil, publicErr(fmt.Errorf("amount %q has more than 8 decimal places", amount))
 	}
 	limit := new(big.Rat).SetFloat64(maxPerpAmountMagnitude)
 	if value.Cmp(limit) > 0 {
-		return nil, fmt.Errorf("amount %q exceeds the maximum of %g", amount, maxPerpAmountMagnitude)
+		return nil, publicErr(fmt.Errorf("amount %q exceeds the maximum of %g", amount, maxPerpAmountMagnitude))
 	}
 	return value, nil
 }

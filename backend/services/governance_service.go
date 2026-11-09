@@ -39,14 +39,14 @@ const (
 func parseAmount(raw string) (*big.Int, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, errors.New("amount is required")
+		return nil, publicErr(errors.New("amount is required"))
 	}
 	amount, ok := new(big.Int).SetString(trimmed, 10)
 	if !ok {
-		return nil, errors.New("amount must be a base-10 integer")
+		return nil, publicErr(errors.New("amount must be a base-10 integer"))
 	}
 	if amount.Sign() <= 0 {
-		return nil, errors.New("amount must be positive")
+		return nil, publicErr(errors.New("amount must be positive"))
 	}
 	return amount, nil
 }
@@ -94,7 +94,7 @@ func (s *GovernanceService) CreateLock(c *gin.Context) {
 
 	amount, err := parseAmount(req.Amount)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.DurationSecond < minLockSeconds {
@@ -303,7 +303,7 @@ func (s *GovernanceService) Vote(c *gin.Context) {
 	}
 	weight, err := parseAmountOrZero(req.Weight)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -402,14 +402,14 @@ func (s *GovernanceService) Vote(c *gin.Context) {
 func parseAmountOrZero(raw string) (*big.Int, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, errors.New("weight is required")
+		return nil, publicErr(errors.New("weight is required"))
 	}
 	weight, ok := new(big.Int).SetString(trimmed, 10)
 	if !ok {
-		return nil, errors.New("weight must be a base-10 integer")
+		return nil, publicErr(errors.New("weight must be a base-10 integer"))
 	}
 	if weight.Sign() < 0 {
-		return nil, errors.New("weight must not be negative")
+		return nil, publicErr(errors.New("weight must not be negative"))
 	}
 	return weight, nil
 }
@@ -438,7 +438,7 @@ func (s *GovernanceService) AddBribe(c *gin.Context) {
 	}
 	amount, err := parseAmount(req.Amount)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	token := strings.ToUpper(strings.TrimSpace(req.Token))
@@ -592,7 +592,7 @@ func (s *GovernanceService) GetBoost(c *gin.Context) {
 	stakedRaw := c.Query("staked_amount")
 	staked, err := parseAmount(stakedRaw)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -647,7 +647,7 @@ func (s *GovernanceService) SetGaugeWeight(c *gin.Context) {
 	}
 	weight, err := parseAmountOrZero(req.Weight)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

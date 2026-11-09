@@ -82,11 +82,11 @@ var (
 func parseOptionAmount(raw string) (*big.Int, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
-		return nil, errors.New("amount is required")
+		return nil, publicErr(errors.New("amount is required"))
 	}
 	amount, ok := new(big.Int).SetString(trimmed, 10)
 	if !ok {
-		return nil, errors.New("amount must be a base-10 integer")
+		return nil, publicErr(errors.New("amount must be a base-10 integer"))
 	}
 	if amount.Sign() < 0 {
 		return nil, errors.New("amount must not be negative")
@@ -324,7 +324,7 @@ func (s *OptionService) CreateSeries(c *gin.Context) {
 	}
 	collateralAddress, err := tokenKeyOrNative(req.CollateralTokenAddress)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	collateralDecimals := 18
@@ -816,7 +816,7 @@ func (s *OptionService) RemoveCollateral(c *gin.Context) {
 		case errors.Is(err, errOptionCollateralLocked),
 			errors.Is(err, errOptionExceedsPrincipal),
 			errors.Is(err, errOptionNoLiquidity):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			respondServiceError(c, err)
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove collateral"})
 		}
@@ -907,7 +907,7 @@ func (s *OptionService) Buy(c *gin.Context) {
 
 	premium, err := optionPremium(series, size, now)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if premium.Sign() <= 0 {
@@ -920,7 +920,7 @@ func (s *OptionService) Buy(c *gin.Context) {
 	}
 	lock, err := optionRequiredCollateral(series, size)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1215,7 +1215,7 @@ func (s *OptionService) WithdrawLiquidity(c *gin.Context) {
 		case errors.Is(err, errOptionCollateralReserved),
 			errors.Is(err, errOptionExceedsPrincipal),
 			errors.Is(err, errOptionNoLiquidity):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			respondServiceError(c, err)
 		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to withdraw liquidity"})
 		}

@@ -78,6 +78,9 @@ var (
 	ErrMarginAccountNotFound        = errors.New("margin account not found")
 	ErrMarginAssetNotAllowed        = errors.New("asset is not allowed by the listing")
 	ErrMarginInsufficientCollateral = errors.New("insufficient collateral for this borrow")
+	ErrMarginNotLiquidatable        = errors.New("margin account is not liquidatable")
+	ErrMarginInvalidMode            = errors.New("margin mode must be cross or isolated")
+	ErrMarginNoDebt                 = errors.New("no debt in this asset")
 )
 
 // marginConfig loads and validates the listing for a pair. Only active listings
@@ -357,7 +360,7 @@ func (e *MarginEngine) OpenAccount(_ context.Context, userID string, req OpenAcc
 		mode = "cross"
 	}
 	if mode != "cross" && mode != "isolated" {
-		return nil, errors.New("margin mode must be cross or isolated")
+		return nil, ErrMarginInvalidMode
 	}
 
 	account := &models.MarginAccount{
@@ -538,7 +541,7 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 	var borrow models.MarginBorrow
 	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&borrow).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return errors.New("no debt in this asset")
+		return ErrMarginNoDebt
 	}
 	if err != nil {
 		return err
@@ -646,7 +649,7 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 		return nil, err
 	}
 	if health.DebtUSD <= 0 || health.HealthFactor >= 1 {
-		return nil, errors.New("account is not liquidatable")
+		return nil, fmt.Errorf("%w: %s", ErrMarginNotLiquidatable, accountID)
 	}
 
 	// The close factor caps how much of the debt one liquidation may repay,
@@ -882,7 +885,7 @@ func (e *MarginEngine) OpenMarginAccountHandler(c *gin.Context) {
 	}
 	account, err := e.OpenAccount(c.Request.Context(), userID, req)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, account)
@@ -936,7 +939,7 @@ func (e *MarginEngine) DepositMarginCollateralHandler(c *gin.Context) {
 		return
 	}
 	if err := e.DepositCollateral(c.Request.Context(), userID, accountID, req.Asset, req.Amount); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -963,11 +966,7 @@ func (e *MarginEngine) BorrowMarginHandler(c *gin.Context) {
 		return
 	}
 	if err := e.Borrow(c.Request.Context(), userID, accountID, req.Asset, req.Amount); err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, ErrMarginInsufficientCollateral) {
-			status = http.StatusUnprocessableEntity
-		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -994,7 +993,7 @@ func (e *MarginEngine) RepayMarginHandler(c *gin.Context) {
 		return
 	}
 	if err := e.Repay(c.Request.Context(), userID, accountID, req.Asset, req.Amount); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true})
@@ -1013,7 +1012,7 @@ func (e *MarginEngine) LiquidateAccountHandler(c *gin.Context) {
 
 	result, err := e.Liquidate(c.Request.Context(), accountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "liquidation": result})

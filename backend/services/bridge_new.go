@@ -523,7 +523,7 @@ func (s *BridgeService) GetQuoteHandler(c *gin.Context) {
 
 	quote, err := s.GetQuote(c.Request.Context(), req.SrcChain, req.DstChain, req.Token, req.Amount)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -568,7 +568,7 @@ func (s *BridgeService) InitiateTransferHandler(c *gin.Context) {
 	}
 	sender, err := s.userWalletAddress(userID)
 	if err != nil {
-		c.JSON(403, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
@@ -591,13 +591,13 @@ func (s *BridgeService) GetTransferHandler(c *gin.Context) {
 	}
 	caller, err := s.userWalletAddress(userID)
 	if err != nil {
-		c.JSON(403, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 
 	transfer, err := s.GetTransfer(transferID)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 	if !strings.EqualFold(transfer.Sender, caller) && !strings.EqualFold(transfer.Recipient, caller) {
@@ -616,7 +616,7 @@ func (s *BridgeService) GetUserTransfersHandler(c *gin.Context) {
 	}
 	caller, err := s.userWalletAddress(userID)
 	if err != nil {
-		c.JSON(403, gin.H{"error": err.Error()})
+		respondServiceError(c, err)
 		return
 	}
 

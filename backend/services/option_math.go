@@ -427,7 +427,7 @@ func optGreeks(spot, strike *big.Int, timeToExpiry int64, riskFreeRate, volatili
 func parseWad(value string) (*big.Int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return nil, fmt.Errorf("empty amount")
+		return nil, publicErr(fmt.Errorf("empty amount"))
 	}
 	negative := false
 	if strings.HasPrefix(trimmed, "-") {
@@ -437,7 +437,7 @@ func parseWad(value string) (*big.Int, error) {
 		trimmed = trimmed[1:]
 	}
 	if trimmed == "" {
-		return nil, fmt.Errorf("amount %q has no digits", value)
+		return nil, publicErr(fmt.Errorf("amount %q has no digits", value))
 	}
 
 	parts := strings.SplitN(trimmed, ".", 2)
@@ -447,15 +447,15 @@ func parseWad(value string) (*big.Int, error) {
 		fraction = parts[1]
 	}
 	if whole == "" && fraction == "" {
-		return nil, fmt.Errorf("amount %q has no digits", value)
+		return nil, publicErr(fmt.Errorf("amount %q has no digits", value))
 	}
 	if len(fraction) > 18 {
-		return nil, fmt.Errorf("amount %q has more than 18 decimal places", value)
+		return nil, publicErr(fmt.Errorf("amount %q has more than 18 decimal places", value))
 	}
 	for _, part := range []string{whole, fraction} {
 		for _, r := range part {
 			if r < '0' || r > '9' {
-				return nil, fmt.Errorf("amount %q is not a number", value)
+				return nil, publicErr(fmt.Errorf("amount %q is not a number", value))
 			}
 		}
 	}
@@ -467,7 +467,7 @@ func parseWad(value string) (*big.Int, error) {
 	combined := whole + scaled
 	result, ok := new(big.Int).SetString(combined, 10)
 	if !ok {
-		return nil, fmt.Errorf("amount %q is not a number", value)
+		return nil, publicErr(fmt.Errorf("amount %q is not a number", value))
 	}
 	if negative {
 		result.Neg(result)

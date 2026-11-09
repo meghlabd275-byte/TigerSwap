@@ -601,7 +601,7 @@ func (s *LiquidityPoolService) AddLiquidityHandler(c *gin.Context) {
 
 	txHash, err := s.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

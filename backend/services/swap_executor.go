@@ -453,7 +453,7 @@ func (s *SwapExecutor) GetSwapQuoteHandler(c *gin.Context) {
 
 	quote, err := s.GetSwapQuote(c.Request.Context(), req.ChainID, req.FromToken, req.ToToken, req.Amount)
 	if err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -478,7 +478,7 @@ func (s *SwapExecutor) ExecuteSwapHandler(c *gin.Context) {
 
 	txHash, err := s.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
