@@ -31,6 +31,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
 
+	"tigerswap/backend/internal/httperr"
+
 	"tigerswap/backend/go/amm"
 )
 
@@ -698,13 +700,13 @@ func NewHandler(agg *Aggregator) *Handler {
 func (h *Handler) GetQuote(c *gin.Context) {
 	var req QuoteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
 	quote, err := h.aggregator.GetQuote(c.Request.Context(), req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		httperr.BadGateway(c, "quote unavailable", err)
 		return
 	}
 	c.JSON(http.StatusOK, quote)
@@ -719,7 +721,7 @@ func (h *Handler) GetMultiHopQuote(c *gin.Context) {
 		Slippage float64  `json:"slippage"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 	amountIn, ok := new(big.Int).SetString(req.AmountIn, 10)
@@ -730,7 +732,7 @@ func (h *Handler) GetMultiHopQuote(c *gin.Context) {
 
 	quote, err := h.aggregator.GetMultiHopQuote(c.Request.Context(), req.ChainID, req.Path, amountIn, req.Slippage)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		httperr.BadGateway(c, "quote unavailable", err)
 		return
 	}
 	c.JSON(http.StatusOK, quote)

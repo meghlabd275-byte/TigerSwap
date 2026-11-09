@@ -25,7 +25,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+
 	"github.com/redis/go-redis/v9"
+	"tigerswap/backend/internal/httperr"
 
 	"tigerswap/backend/config"
 	"tigerswap/backend/go/tigerswap"
@@ -294,13 +296,13 @@ func chainIDFromQuery(c *gin.Context) (int64, error) {
 func (h *Handler) GetPrice(c *gin.Context) {
 	chainID, err := chainIDFromQuery(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
 	feed, err := h.service.GetPrice(c.Request.Context(), c.Param("token"), chainID)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price unavailable", "details": err.Error()})
+		httperr.BadGateway(c, "price unavailable", err)
 		return
 	}
 	c.JSON(http.StatusOK, feed)
@@ -309,7 +311,7 @@ func (h *Handler) GetPrice(c *gin.Context) {
 func (h *Handler) GetAllPrices(c *gin.Context) {
 	chainID, err := chainIDFromQuery(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
@@ -345,7 +347,7 @@ func (h *Handler) GetAllPrices(c *gin.Context) {
 func (h *Handler) GetPriceHistory(c *gin.Context) {
 	chainID, err := chainIDFromQuery(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
@@ -362,7 +364,7 @@ func (h *Handler) GetPriceHistory(c *gin.Context) {
 	token := c.Param("token")
 	history, err := h.service.GetHistory(c.Request.Context(), token, chainID, days)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price history unavailable", "details": err.Error()})
+		httperr.BadGateway(c, "price history unavailable", err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"token": strings.ToUpper(token), "chain_id": chainID, "history": history})

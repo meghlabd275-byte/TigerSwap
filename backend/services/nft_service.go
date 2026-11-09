@@ -182,7 +182,7 @@ type createNFTCollectionRequest struct {
 func (s *NFTMarketplaceService) CreateCollection(c *gin.Context) {
 	var req createNFTCollectionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -283,7 +283,7 @@ func (s *NFTMarketplaceService) UpdateCollection(c *gin.Context) {
 	}
 	var req updateNFTCollectionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	collection, err := s.nftLoadCollection(id)
@@ -399,7 +399,7 @@ func (s *NFTMarketplaceService) Mint(c *gin.Context) {
 	}
 	var req mintNFTRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	collection, err := s.nftLoadCollection(id)
@@ -526,7 +526,7 @@ type createNFTListingRequest struct {
 func (s *NFTMarketplaceService) ListNFT(c *gin.Context) {
 	var req createNFTListingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -810,7 +810,7 @@ func (s *NFTMarketplaceService) UpdateListingPrice(c *gin.Context) {
 	}
 	var req updateNFTListingRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -884,7 +884,7 @@ type createNFTOfferRequest struct {
 func (s *NFTMarketplaceService) MakeOffer(c *gin.Context) {
 	var req createNFTOfferRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -1325,7 +1325,7 @@ type updateNFTConfigRequest struct {
 func (s *NFTMarketplaceService) UpdateMarketplaceConfig(c *gin.Context) {
 	var req updateNFTConfigRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if req.FeeBps == nil && req.FeeAccount == nil {

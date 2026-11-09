@@ -18,11 +18,13 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"tigerswap/backend/internal/httperr"
 
 	"tigerswap/backend/config"
 	"tigerswap/backend/internal/netutil"
@@ -747,7 +749,7 @@ func (h *Handler) handleLogin(c *gin.Context) {
 
 	admin, err := h.adminService.Authenticate(c.Request.Context(), req.Email, req.Password, c.ClientIP())
 	if err != nil {
-		c.JSON(401, gin.H{"error": err.Error()})
+		httperr.Unauthorized(c, "invalid email or password", err)
 		return
 	}
 
@@ -763,7 +765,7 @@ func (h *Handler) handleLogin(c *gin.Context) {
 func (h *Handler) handleStats(c *gin.Context) {
 	stats, err := h.adminService.GetPlatformStats()
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		httperr.Internal(c, err)
 		return
 	}
 	c.JSON(200, stats)
@@ -788,7 +790,7 @@ func (h *Handler) handleListWhiteLabels(c *gin.Context) {
 
 	items, total, err := h.adminService.ListWhiteLabels(status, page, pageSize)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		httperr.Internal(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"items": items, "total": total, "page": page, "page_size": pageSize})
@@ -797,12 +799,12 @@ func (h *Handler) handleListWhiteLabels(c *gin.Context) {
 func (h *Handler) handleCreateWhiteLabel(c *gin.Context) {
 	var wl WhiteLabel
 	if err := c.ShouldBindJSON(&wl); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 	adminID, _ := c.Get("admin_id")
 	if err := h.adminService.CreateWhiteLabel(c.Request.Context(), &wl, adminID.(uuid.UUID)); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		httperr.Internal(c, err)
 		return
 	}
 	c.JSON(201, wl)
@@ -816,7 +818,7 @@ func (h *Handler) handleUpdateWhiteLabel(c *gin.Context) {
 	}
 	var updates map[string]interface{}
 	if err := c.ShouldBindJSON(&updates); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 	// Only brandable, non-identifying columns may be updated through the API.
@@ -833,7 +835,7 @@ func (h *Handler) handleUpdateWhiteLabel(c *gin.Context) {
 	}
 	adminID, _ := c.Get("admin_id")
 	if err := h.adminService.UpdateWhiteLabel(c.Request.Context(), id, updates, adminID.(uuid.UUID)); err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		httperr.Internal(c, err)
 		return
 	}
 	c.JSON(200, gin.H{"status": "updated"})

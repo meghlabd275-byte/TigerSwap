@@ -388,7 +388,7 @@ func (e *CopyTradingEngine) RegisterTraderHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !common.IsHexAddress(req.Address) {
@@ -442,7 +442,7 @@ func (e *CopyTradingEngine) StartFollowingHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

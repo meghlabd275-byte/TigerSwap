@@ -168,7 +168,7 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -265,7 +265,7 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -349,7 +349,7 @@ func (s *WalletService) loadMasterKey(stored *models.MasterWallet) (*ecdsa.Priva
 func (s *WalletService) ExecuteSwap(c *gin.Context) {
 	var req SwapRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if s.swapExecutor == nil {
@@ -381,7 +381,7 @@ func (s *WalletService) GetSwapQuote(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if s.swapExecutor == nil {
@@ -435,7 +435,7 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if s.perpetuals == nil {
@@ -573,7 +573,7 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -641,7 +641,7 @@ func (s *WalletService) Deposit(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -700,7 +700,7 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -798,7 +798,7 @@ func parseUserUUID(userID string) uuid.UUID {
 func (s *WalletService) AddToken(c *gin.Context) {
 	var req models.Token
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -829,7 +829,7 @@ func (s *WalletService) UpdateToken(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": "Invalid request", "details": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

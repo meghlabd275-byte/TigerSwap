@@ -521,7 +521,7 @@ func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -584,7 +584,7 @@ func (s *LaunchpadService) UpdateProjectStatusHandler(c *gin.Context) {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !validLaunchpadStatuses[req.Status] {
@@ -637,7 +637,7 @@ func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

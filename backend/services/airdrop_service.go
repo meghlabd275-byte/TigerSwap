@@ -60,7 +60,7 @@ func (s *AirdropService) CreateCampaign(c *gin.Context) {
 		EndTime       string `json:"end_time" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -149,7 +149,7 @@ func (s *AirdropService) UpdateCampaign(c *gin.Context) {
 		Status    *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	campaign, err := s.loadCampaign(id)
@@ -235,7 +235,7 @@ func (s *AirdropService) SetAllocations(c *gin.Context) {
 		} `json:"allocations" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if len(req.Allocations) == 0 {
@@ -327,7 +327,7 @@ func (s *AirdropService) FundCampaign(c *gin.Context) {
 		Amount string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)

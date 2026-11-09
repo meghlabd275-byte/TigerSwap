@@ -189,7 +189,7 @@ func (s *ListingService) CreateFuturesMarket(c *gin.Context) {
 		IsTradFi              bool    `json:"is_tradfi"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -328,7 +328,7 @@ func (s *ListingService) UpdateFuturesMarket(c *gin.Context) {
 		ListingType           *string  `json:"listing_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -535,7 +535,7 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 		LiquidationFeeRate    float64 `json:"liquidation_fee_rate"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -649,7 +649,7 @@ func (s *ListingService) UpdatePerpsMarket(c *gin.Context) {
 		Status                *string  `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -840,7 +840,7 @@ func (s *ListingService) CreateMarginMarket(c *gin.Context) {
 		RiskTier             string  `json:"risk_tier"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -993,7 +993,7 @@ func (s *ListingService) UpdateMarginMarket(c *gin.Context) {
 		Status               *string  `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

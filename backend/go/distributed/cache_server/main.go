@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"tigerswap/backend/internal/httperr"
 )
 
 type LRUCache struct {
@@ -89,7 +91,7 @@ func main() {
 			Value interface{} `json:"value" binding:"required"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			httperr.BadRequest(c, err)
 			return
 		}
 		lruCache.Set(key, req.Value)

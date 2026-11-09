@@ -24,6 +24,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"tigerswap/backend/go/order_matching/orderbook"
+	"tigerswap/backend/internal/httperr"
 	"tigerswap/backend/internal/netutil"
 )
 
@@ -125,11 +126,7 @@ func submitOrderHandler(c *gin.Context) {
 		Quantity: req.Quantity,
 	})
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, orderbook.ErrUnknownPair) {
-			status = http.StatusNotFound
-		}
-		c.JSON(status, gin.H{"error": err.Error(), "order_id": placed.OrderID})
+		httperr.Message(c, orderStatus(err), orderMessage(err), err)
 		return
 	}
 
@@ -158,14 +155,7 @@ func cancelOrderHandler(c *gin.Context) {
 
 	cancelled, err := engine.Cancel(orderID, req.Trader)
 	if err != nil {
-		status := http.StatusBadRequest
-		switch {
-		case errors.Is(err, orderbook.ErrUnknownOrder):
-			status = http.StatusNotFound
-		case errors.Is(err, orderbook.ErrNotOwner):
-			status = http.StatusForbidden
-		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		httperr.Message(c, orderStatus(err), orderMessage(err), err)
 		return
 	}
 
@@ -181,7 +171,7 @@ func getOrderHandler(c *gin.Context) {
 
 	order, err := engine.GetOrder(orderID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		httperr.NotFound(c, "order not found", err)
 		return
 	}
 	c.JSON(http.StatusOK, order)
@@ -207,7 +197,7 @@ func getMarketDataHandler(c *gin.Context) {
 	}
 	book, err := engine.Book(pair)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		httperr.NotFound(c, "pair is not listed", err)
 		return
 	}
 	bids, asks := book.Depth(20)
@@ -234,7 +224,7 @@ func getDepthHandler(c *gin.Context) {
 
 	book, err := engine.Book(pair)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		httperr.NotFound(c, "pair is not listed", err)
 		return
 	}
 	bids, asks := book.Depth(limit)
@@ -253,7 +243,7 @@ func getTradesHandler(c *gin.Context) {
 
 	book, err := engine.Book(pair)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		httperr.NotFound(c, "pair is not listed", err)
 		return
 	}
 	trades := book.Trades(limit)
@@ -312,7 +302,7 @@ func registerPairHandler(c *gin.Context) {
 		MinQuantity: spec.MinQuantity,
 		MaxQuantity: spec.MaxQuantity,
 	}); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "pair": spec.Pair})
@@ -364,7 +354,7 @@ func wsHandler(upgrader websocket.Upgrader) gin.HandlerFunc {
 		}
 		book, err := engine.Book(pair)
 		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			httperr.NotFound(c, "pair is not listed", err)
 			return
 		}
 
@@ -728,4 +718,39 @@ func redisAddr(raw string) string {
 		return strings.TrimPrefix(raw, "redis://")
 	}
 	return raw
+}
+
+// orderStatus maps an order-book rejection to the HTTP status the API reports.
+// A missing pair or order is a 404, a non-owner is a 403, and every validation
+// failure is a 400.
+func orderStatus(err error) int {
+	switch {
+	case errors.Is(err, orderbook.ErrUnknownPair), errors.Is(err, orderbook.ErrUnknownOrder):
+		return http.StatusNotFound
+	case errors.Is(err, orderbook.ErrNotOwner):
+		return http.StatusForbidden
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+// orderMessage returns a caller-safe explanation for a rejection. The sentinel
+// errors in the orderbook package describe the caller's own request, so they are
+// returned as-is; anything else is replaced with a fixed message.
+func orderMessage(err error) string {
+	switch {
+	case errors.Is(err, orderbook.ErrUnknownPair):
+		return "pair is not listed"
+	case errors.Is(err, orderbook.ErrUnknownOrder):
+		return "order not found"
+	case errors.Is(err, orderbook.ErrNotOwner):
+		return "order belongs to another trader"
+	case errors.Is(err, orderbook.ErrBadSide), errors.Is(err, orderbook.ErrBadType),
+		errors.Is(err, orderbook.ErrBadTIF), errors.Is(err, orderbook.ErrBadPrice),
+		errors.Is(err, orderbook.ErrBadQuantity), errors.Is(err, orderbook.ErrQtyRange),
+		errors.Is(err, orderbook.ErrNoLiquidity):
+		return err.Error()
+	default:
+		return "order could not be processed"
+	}
 }

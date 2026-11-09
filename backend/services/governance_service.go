@@ -88,7 +88,7 @@ func (s *GovernanceService) CreateLock(c *gin.Context) {
 		DurationSecond int64  `json:"duration_seconds" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -228,7 +228,7 @@ func (s *GovernanceService) CreateGauge(c *gin.Context) {
 		Reference string `json:"reference"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -292,7 +292,7 @@ func (s *GovernanceService) Vote(c *gin.Context) {
 		Weight  string `json:"weight" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -427,7 +427,7 @@ func (s *GovernanceService) AddBribe(c *gin.Context) {
 		Amount  string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -642,7 +642,7 @@ func (s *GovernanceService) SetGaugeWeight(c *gin.Context) {
 		Active *bool  `json:"active"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	weight, err := parseAmountOrZero(req.Weight)

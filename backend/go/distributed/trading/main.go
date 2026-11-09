@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/time/rate"
+	"tigerswap/backend/internal/httperr"
 )
 
 // ============== CONFIGURATION ==============
@@ -292,13 +294,13 @@ func submitOrderHandler(c *gin.Context) {
 
 	var order Order
 	if err := c.ShouldBindJSON(&order); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
 	orderID, err := orderBook.SubmitOrder(order)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		httperr.Internal(c, err)
 		return
 	}
 
@@ -311,7 +313,7 @@ func cancelOrderHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		httperr.BadRequest(c, err)
 		return
 	}
 
@@ -320,7 +322,7 @@ func cancelOrderHandler(c *gin.Context) {
 
 	err := orderBook.CancelOrder(orderID, req.TraderID)
 	if err != nil {
-		c.JSON(404, gin.H{"error": err.Error()})
+		httperr.NotFound(c, "order not found", err)
 		return
 	}
 

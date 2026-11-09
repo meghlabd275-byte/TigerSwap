@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
+	"tigerswap/backend/internal/httperr"
 
 	"tigerswap/backend/internal/netutil"
 )
@@ -331,7 +333,7 @@ func main() {
 			Value interface{} `json:"value"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			httperr.BadRequest(c, err)
 			return
 		}
 		cache.Set(key, req.Value)

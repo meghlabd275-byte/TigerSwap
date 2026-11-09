@@ -880,7 +880,7 @@ func (e *MarginEngine) OpenMarginAccountHandler(c *gin.Context) {
 	}
 	var req OpenAccountRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	account, err := e.OpenAccount(c.Request.Context(), userID, req)
@@ -930,7 +930,7 @@ func (e *MarginEngine) DepositMarginCollateralHandler(c *gin.Context) {
 		Amount    string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	accountID, err := uuid.Parse(req.AccountID)
@@ -957,7 +957,7 @@ func (e *MarginEngine) BorrowMarginHandler(c *gin.Context) {
 		Amount    string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	accountID, err := uuid.Parse(req.AccountID)
@@ -984,7 +984,7 @@ func (e *MarginEngine) RepayMarginHandler(c *gin.Context) {
 		Amount    string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	accountID, err := uuid.Parse(req.AccountID)

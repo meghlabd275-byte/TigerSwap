@@ -565,11 +565,11 @@ func (s *FeeCollectorService) GetConfigHandler(c *gin.Context) {
 func (s *FeeCollectorService) UpdateConfigHandler(c *gin.Context) {
 	var req FeeConfig
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if err := validateFeeConfig(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -688,7 +688,7 @@ func (s *FeeCollectorService) SetMasterWalletHandler(c *gin.Context) {
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !common.IsHexAddress(req.Address) {
@@ -709,7 +709,7 @@ func (s *FeeCollectorService) DistributeFeesHandler(c *gin.Context) {
 		Amount  string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !common.IsHexAddress(req.Token) {

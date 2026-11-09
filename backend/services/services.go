@@ -186,7 +186,7 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 		ChainID  int64  `json:"chain_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if _, ok := parseBaseUnits(req.AmountIn, 0); !ok {
@@ -235,7 +235,7 @@ func (s *SwapService) BuildTransaction(c *gin.Context) {
 		SlippageBps uint32 `json:"slippage_bps"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if globalSwapExecutor == nil {
@@ -472,7 +472,7 @@ func (s *SwapService) ExecuteSwap(c *gin.Context) {
 		Amount   string `json:"amount"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -539,7 +539,7 @@ func (s *SwapService) ApproveToken(c *gin.Context) {
 		Spender   string `json:"spender" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -580,7 +580,7 @@ func (s *SwapService) CreateOrder(c *gin.Context) {
 		ExpiresIn    int    `json:"expires_in"` // seconds
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -673,7 +673,7 @@ func (s *SwapService) AddLiquidity(c *gin.Context) {
 		AmountB  string `json:"amount_b" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -707,7 +707,7 @@ func (s *SwapService) RemoveLiquidity(c *gin.Context) {
 		AmountB   string `json:"amount_b"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -845,7 +845,7 @@ func (s *AuthService) Register(c *gin.Context) {
 		Username string `json:"username" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -912,7 +912,7 @@ func (s *AuthService) Login(c *gin.Context) {
 		Password string `json:"password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1041,7 +1041,7 @@ func (s *AuthService) UpdateProfile(c *gin.Context) {
 		WalletAddress string `json:"wallet_address"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1085,7 +1085,7 @@ func (s *AuthService) ConnectWallet(c *gin.Context) {
 		Address string `json:"address" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if !common.IsHexAddress(req.Address) {
@@ -1232,7 +1232,7 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 		IsVerified *bool  `json:"is_verified"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1310,7 +1310,7 @@ func (s *AdminService) DeleteUser(c *gin.Context) {
 func (s *AdminService) CreateChain(c *gin.Context) {
 	var chain models.Blockchain
 	if err := c.ShouldBindJSON(&chain); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	// chain_id is unique; report the collision as a conflict rather than a 500.
@@ -1340,7 +1340,7 @@ func (s *AdminService) UpdateChain(c *gin.Context) {
 		IsActive    *bool   `json:"is_active"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1402,7 +1402,7 @@ func (s *AdminService) DeleteChain(c *gin.Context) {
 func (s *AdminService) CreateToken(c *gin.Context) {
 	var token models.Token
 	if err := c.ShouldBindJSON(&token); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	// A token is identified by its contract address on a chain. Rejecting the
@@ -1438,7 +1438,7 @@ func (s *AdminService) UpdateToken(c *gin.Context) {
 		IsVerified *bool    `json:"is_verified"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1507,7 +1507,7 @@ func (s *AdminService) DeleteToken(c *gin.Context) {
 func (s *AdminService) CreatePool(c *gin.Context) {
 	var pool models.Pool
 	if err := c.ShouldBindJSON(&pool); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	if err := s.db.Create(&pool).Error; err != nil {
@@ -1528,7 +1528,7 @@ func (s *AdminService) UpdatePool(c *gin.Context) {
 		IsActive *bool    `json:"is_active"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -1609,7 +1609,7 @@ func (s *AdminService) UpdateConfig(c *gin.Context) {
 		NewUserRegistration *bool `json:"new_user_registration_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 

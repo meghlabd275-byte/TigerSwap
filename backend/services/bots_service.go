@@ -302,7 +302,7 @@ func (s *BotsService) CreateBot(c *gin.Context) {
 	}
 	// A daily loss limit of zero means "no limit", so zero is allowed here.
 	if _, err := parseDecimalString(req.MaxDailyLoss); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "max_daily_loss: " + err.Error()})
+		respondBadRequestError(c, fmt.Errorf("max_daily_loss: %w", err))
 		return
 	}
 	if req.MaxOpenOrders <= 0 || req.MaxOpenOrders > 1000 {

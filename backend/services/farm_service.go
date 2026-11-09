@@ -158,7 +158,7 @@ func (s *FarmService) CreateFarm(c *gin.Context) {
 		} `json:"rewards" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -335,7 +335,7 @@ func (s *FarmService) UpdateFarm(c *gin.Context) {
 		BoostGaugeID *string `json:"boost_gauge_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -592,7 +592,7 @@ func (s *FarmService) FundFarmReward(c *gin.Context) {
 		Amount       string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -883,7 +883,7 @@ func (s *FarmService) Stake(c *gin.Context) {
 		Amount string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -991,7 +991,7 @@ func (s *FarmService) Unstake(c *gin.Context) {
 		Amount string `json:"amount" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)

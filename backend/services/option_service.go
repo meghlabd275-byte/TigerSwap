@@ -297,7 +297,7 @@ type createSeriesRequest struct {
 func (s *OptionService) CreateSeries(c *gin.Context) {
 	var req createSeriesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 
@@ -426,7 +426,7 @@ func (s *OptionService) UpdateSeries(c *gin.Context) {
 	}
 	var req updateSeriesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	series, err := s.loadSeries(id)
@@ -600,7 +600,7 @@ func (s *OptionService) SettleSeries(c *gin.Context) {
 	}
 	var req settleSeriesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	settlementPrice, err := parseWad(req.SettlementPrice)
@@ -662,7 +662,7 @@ func (s *OptionService) AddCollateral(c *gin.Context) {
 	}
 	var req collateralRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -738,7 +738,7 @@ func (s *OptionService) RemoveCollateral(c *gin.Context) {
 	}
 	var req collateralRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -864,7 +864,7 @@ func (s *OptionService) Buy(c *gin.Context) {
 	}
 	var req buyOptionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)
@@ -1133,7 +1133,7 @@ func (s *OptionService) WithdrawLiquidity(c *gin.Context) {
 	}
 	var req collateralRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondBadRequestError(c, err)
 		return
 	}
 	userID, ok := authenticatedUserID(c)

@@ -30,6 +30,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
 
+	"tigerswap/backend/internal/httperr"
+
 	"tigerswap/backend/go/amm"
 )
 
@@ -885,7 +887,7 @@ func (h *Handler) GetQuote(c *gin.Context) {
 
 	amountOut, err := conn.GetAmountOut(ctx, amountIn, path, uint32(feeBps))
 	if err != nil {
-		c.JSON(502, gin.H{"error": err.Error()})
+		httperr.BadGateway(c, "amount out unavailable", err)
 		return
 	}
 

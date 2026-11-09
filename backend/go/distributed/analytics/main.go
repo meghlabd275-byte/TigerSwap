@@ -17,7 +17,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
 	"github.com/redis/go-redis/v9"
+	"tigerswap/backend/internal/httperr"
 )
 
 // ============== MESSAGE QUEUE ==============
@@ -228,7 +230,7 @@ func main() {
 	r.POST("/api/v1/queue/:name/push", func(c *gin.Context) {
 		var msg Message
 		if err := c.ShouldBindJSON(&msg); err != nil {
-			c.JSON(400, gin.H{"error": err.Error()})
+			httperr.BadRequest(c, err)
 			return
 		}
 		queue.Push(&msg)
@@ -259,7 +261,7 @@ func main() {
 			Value int64 `json:"value"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			httperr.BadRequest(c, err)
 			return
 		}
 		analytics.Counter(c.Param("name")).Incr(req.Value)
@@ -271,7 +273,7 @@ func main() {
 			Value float64 `json:"value"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			httperr.BadRequest(c, err)
 			return
 		}
 		analytics.Gauge(c.Param("name")).Set(req.Value)
