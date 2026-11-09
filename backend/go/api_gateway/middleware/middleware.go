@@ -442,13 +442,25 @@ func BodyLimiter(maxSize int64) gin.HandlerFunc {
 }
 
 // Secure returns security-related middleware
+// Secure sets the browser-facing hardening headers on every gateway response.
+//
+// The gateway returns JSON only, so the Content-Security-Policy can be the
+// strictest one there is: no resource of any kind may be loaded. A permissive
+// policy with 'unsafe-inline' and 'unsafe-eval' would only matter if a response
+// were ever rendered as a document, and the point of the header is to make that
+// harmless if it happens. The legacy X-XSS-Protection header is deliberately
+// omitted: it is deprecated, and in some browsers a value of 1 enables a filter
+// that is itself exploitable, so its absence is the safe choice.
 func Secure() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
-		c.Header("X-XSS-Protection", "1; mode=block")
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		c.Header("Cross-Origin-Opener-Policy", "same-origin")
+		c.Header("Cross-Origin-Resource-Policy", "same-origin")
 
 		c.Next()
 	}

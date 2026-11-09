@@ -108,13 +108,23 @@ func BodySizeLimit(maxBytes int64) gin.HandlerFunc {
 }
 
 // SecurityHeaders sets the browser-facing hardening headers on every response.
+//
+// This process serves JSON only: it renders no HTML and hosts no script. The
+// policy is therefore the strictest one that cannot break a client -- nothing
+// may be loaded at all -- rather than a permissive policy with 'unsafe-inline'
+// and 'unsafe-eval', which would matter if a response body were ever rendered
+// as a document. If an HTML surface is ever added here, it must ship its own
+// nonce-based policy instead of relaxing this one.
 func SecurityHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "DENY")
-		c.Header("X-XSS-Protection", "1; mode=block")
+		c.Header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		c.Header("Cross-Origin-Opener-Policy", "same-origin")
+		c.Header("Cross-Origin-Resource-Policy", "same-origin")
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		c.Header("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss:;")
 		c.Next()
 	}
 }

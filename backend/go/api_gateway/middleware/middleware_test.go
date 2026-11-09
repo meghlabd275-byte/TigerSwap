@@ -125,8 +125,20 @@ func TestSecure(t *testing.T) {
 	if w.Header().Get("X-Frame-Options") != "DENY" {
 		t.Error("Expected X-Frame-Options header")
 	}
-	if w.Header().Get("X-XSS-Protection") != "1; mode=block" {
-		t.Error("Expected X-XSS-Protection header")
+	// The gateway serves JSON, so the policy forbids loading anything at all.
+	// A permissive policy here would only matter if a response were rendered
+	// as a document, which is exactly the case the header must cover.
+	csp := w.Header().Get("Content-Security-Policy")
+	if csp == "" {
+		t.Error("Expected a Content-Security-Policy header")
+	}
+	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
+		t.Errorf("CSP must not allow inline or eval: %q", csp)
+	}
+	// The legacy X-XSS-Protection filter is deprecated and, set to 1, is
+	// exploitable in some browsers; its absence is the safe choice.
+	if w.Header().Get("X-XSS-Protection") != "" {
+		t.Error("X-XSS-Protection must not be set")
 	}
 }
 
