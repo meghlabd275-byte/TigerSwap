@@ -180,9 +180,10 @@ func (s *Server) SetupRouter() *gin.Engine {
 		v1.POST("/launchpad/contribute", launchpadHandler.Contribute)
 	}
 
-	// Admin routes (protected)
+	// Admin routes (protected). The group requires both a valid token and an
+	// admin role: a plain authenticated user must not reach these handlers.
 	admin := r.Group("/api/v1/admin")
-	admin.Use(middleware.Auth(s.config))
+	admin.Use(middleware.Auth(s.config), middleware.AdminRequired())
 	{
 		adminHandler := handlers.NewAdminHandler(s.config)
 		admin.GET("/stats", adminHandler.GetStats)

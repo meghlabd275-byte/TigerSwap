@@ -226,6 +226,34 @@ func parseJWT(token, secret string) (*jwtClaims, error) {
 	return claims, nil
 }
 
+// AdminRequired admits a caller holding either the `admin` or `superadmin`
+// role. A valid token is not enough: without this check any authenticated user
+// could reach the admin handlers, which is why the admin route group composes
+// Auth and AdminRequired.
+func AdminRequired() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		role, exists := c.Get("role")
+		if !exists {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"error":      "Unauthorized - no role found",
+				"request_id": GetRequestID(c),
+			})
+			return
+		}
+
+		roleStr, ok := role.(string)
+		if !ok || (roleStr != "admin" && roleStr != "superadmin") {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":      "Forbidden - admin access required",
+				"request_id": GetRequestID(c),
+			})
+			return
+		}
+
+		c.Next()
+	}
+}
+
 // Recovery returns a gin middleware for panic recovery
 func Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {

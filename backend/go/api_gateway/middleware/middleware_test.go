@@ -276,3 +276,44 @@ func BenchmarkSecure(b *testing.B) {
 		r.ServeHTTP(w, req)
 	}
 }
+
+// TestAdminRequiredRejectsNonAdmins pins the gateway admin guard: a valid token
+// whose role is not admin/superadmin must be refused, so a plain authenticated
+// user cannot reach the admin handlers. Before the guard was wired into the
+// admin route group, Auth alone admitted any valid token.
+func TestAdminRequiredRejectsNonAdmins(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cases := []struct {
+		name     string
+		role     any
+		wantCode int
+	}{
+		{"plain user is refused", "user", http.StatusForbidden},
+		{"missing role is refused", nil, http.StatusUnauthorized},
+		{"non-string role is refused", 42, http.StatusForbidden},
+		{"admin is admitted", "admin", http.StatusOK},
+		{"superadmin is admitted", "superadmin", http.StatusOK},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := gin.New()
+			r.GET("/admin", func(c *gin.Context) {
+				if tc.role != nil {
+					c.Set("role", tc.role)
+				}
+			}, AdminRequired(), func(c *gin.Context) {
+				c.Status(http.StatusOK)
+			})
+
+			req, _ := http.NewRequest("GET", "/admin", nil)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("role %v: expected %d, got %d", tc.role, tc.wantCode, w.Code)
+			}
+		})
+	}
+}
