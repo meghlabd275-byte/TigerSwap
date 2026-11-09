@@ -519,7 +519,7 @@ func (p *PriceAggregator) GetPricesHandler(c *gin.Context) {
 
 	prices, err := p.GetMultiChainPrices(c.Request.Context(), symbols)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -547,7 +547,7 @@ func (p *PriceAggregator) GetQuoteHandler(c *gin.Context) {
 
 	quote, err := p.GetAggregatedQuote(c.Request.Context(), req.ChainID, req.FromToken, req.ToToken, req.Amount, sources)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -564,7 +564,7 @@ func (p *PriceAggregator) GetHistoricalPricesHandler(c *gin.Context) {
 
 	history, err := p.GetHistoricalPrices(c.Request.Context(), symbol, days)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

@@ -574,7 +574,7 @@ func (s *BridgeService) InitiateTransferHandler(c *gin.Context) {
 
 	transfer, err := s.InitiateTransfer(c.Request.Context(), req.SrcChain, req.DstChain, sender, req.Recipient, req.Token, req.Amount)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

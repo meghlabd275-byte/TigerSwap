@@ -182,7 +182,10 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 	}
 	key, err := deriveEVMKey(req.SeedPhrase, 0)
 	if err != nil {
-		c.JSON(400, gin.H{"error": "Failed to derive key", "details": err.Error()})
+		// The phrase failed to derive a key; the underlying error can name an
+		// internal derivation detail, so it is logged rather than returned.
+		log.Printf("wallet: derive key failed: %v", err)
+		c.JSON(400, gin.H{"error": "Failed to derive key"})
 		return
 	}
 	address := crypto.PubkeyToAddress(key.PublicKey)
@@ -200,7 +203,11 @@ func (s *WalletService) CreateMasterWallet(c *gin.Context) {
 	}
 
 	if err := s.storeMasterWallet(&masterWallet, key); err != nil {
-		c.JSON(500, gin.H{"error": "Failed to persist master wallet", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: failed to persist master wallet: %v", err)
+		c.JSON(500, gin.H{"error": "failed to persist master wallet"})
 		return
 	}
 
@@ -282,7 +289,11 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 
 	privateKey, err := s.loadMasterKey(&stored)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Master wallet signer unavailable", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: master wallet signer unavailable: %v", err)
+		c.JSON(500, gin.H{"error": "master wallet signer unavailable"})
 		return
 	}
 
@@ -297,7 +308,11 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 		req.ToAddress, amount, req.TokenAddress, nil,
 	)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Transaction failed", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: transaction failed: %v", err)
+		c.JSON(500, gin.H{"error": "transaction failed"})
 		return
 	}
 
@@ -344,7 +359,8 @@ func (s *WalletService) ExecuteSwap(c *gin.Context) {
 
 	txHash, err := s.swapExecutor.BroadcastTransaction(c.Request.Context(), req.ChainID, req.SignedTx)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Swap failed", "details": err.Error()})
+		log.Printf("wallet: swap broadcast failed: %v", err)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Swap failed"})
 		return
 	}
 
@@ -375,7 +391,11 @@ func (s *WalletService) GetSwapQuote(c *gin.Context) {
 
 	quote, err := s.swapExecutor.GetSwapQuote(c.Request.Context(), req.ChainID, req.FromToken, req.ToToken, req.Amount)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Quote failed", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: quote failed: %v", err)
+		c.JSON(500, gin.H{"error": "quote failed"})
 		return
 	}
 
@@ -499,7 +519,11 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 
 	closed, err := s.perpetuals.ClosePosition(c.Request.Context(), userID, positionID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Close failed", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: close failed: %v", err)
+		c.JSON(500, gin.H{"error": "close failed"})
 		return
 	}
 
@@ -564,7 +588,11 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	status := "pending"
 	if s.copyEngine != nil {
 		if _, err := s.copyEngine.CopyTrade(c.Request.Context(), req.FollowerAddress, req.TraderAddress, req.Pair, req.Side, req.Amount, ""); err != nil {
-			c.JSON(500, gin.H{"error": "Copy execution failed", "details": err.Error()})
+			// `err` here is an internal failure (a signer, a database write or an
+			// upstream RPC) whose text can carry a path or a connection string; it is
+			// logged for the operator and not returned to the caller.
+			log.Printf("wallet: copy execution failed: %v", err)
+			c.JSON(500, gin.H{"error": "copy execution failed"})
 			return
 		}
 		status = "executed"
@@ -623,7 +651,11 @@ func (s *WalletService) Deposit(c *gin.Context) {
 
 	depositAddress, err := s.deriveDepositAddress(userID, req.ChainID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": "Failed to derive deposit address", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: failed to derive deposit address: %v", err)
+		c.JSON(500, gin.H{"error": "failed to derive deposit address"})
 		return
 	}
 
@@ -637,7 +669,11 @@ func (s *WalletService) Deposit(c *gin.Context) {
 	}
 	if err := s.db.Where("chain_id = ? AND address = ?", req.ChainID, depositAddress).
 		FirstOrCreate(&mapping).Error; err != nil {
-		c.JSON(500, gin.H{"error": "Failed to register deposit address", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: failed to register deposit address: %v", err)
+		c.JSON(500, gin.H{"error": "failed to register deposit address"})
 		return
 	}
 
@@ -697,7 +733,11 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 			c.JSON(409, gin.H{"error": "Insufficient balance"})
 			return
 		}
-		c.JSON(500, gin.H{"error": "Failed to reserve funds", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: failed to reserve funds: %v", err)
+		c.JSON(500, gin.H{"error": "failed to reserve funds"})
 		return
 	}
 
@@ -705,7 +745,11 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	if err != nil {
 		// Reverse the debit so the user is not charged for a failed withdrawal.
 		s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount)
-		c.JSON(500, gin.H{"error": "Platform signer unavailable", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: platform signer unavailable: %v", err)
+		c.JSON(500, gin.H{"error": "platform signer unavailable"})
 		return
 	}
 
@@ -717,7 +761,11 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		if creditErr := s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount); creditErr != nil {
 			log.Printf("failed to reverse withdrawal debit for user %s: %v", userID, creditErr)
 		}
-		c.JSON(500, gin.H{"error": "Withdrawal failed", "details": err.Error()})
+		// `err` here is an internal failure (a signer, a database write or an
+		// upstream RPC) whose text can carry a path or a connection string; it is
+		// logged for the operator and not returned to the caller.
+		log.Printf("wallet: withdrawal failed: %v", err)
+		c.JSON(500, gin.H{"error": "withdrawal failed"})
 		return
 	}
 

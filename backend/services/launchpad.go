@@ -539,7 +539,7 @@ func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 
 	project, err := s.CreateProject(c.Request.Context(), creator, req.Name, req.Description, req.TokenAddress, req.TokenSymbol, req.TokenName, req.TotalSupply, req.TokenPrice, req.PaymentToken, req.MinPurchase, req.MaxPurchase, req.SoftCap, req.HardCap, startTime, endTime, req.WebsiteURL, req.WhitepaperURL, req.LogoURL)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -644,7 +644,7 @@ func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 
 	allocation, err := s.Participate(c.Request.Context(), userAddress, c.Param("id"), req.Amount)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -659,7 +659,7 @@ func (s *LaunchpadService) ClaimTokensHandler(c *gin.Context) {
 
 	amount, err := s.ClaimTokens(userAddress, c.Param("id"))
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

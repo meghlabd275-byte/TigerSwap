@@ -555,7 +555,7 @@ func (s *LiquidityPoolService) GetPoolHandler(c *gin.Context) {
 
 	pool, err := s.GetPoolData(c.Request.Context(), chainIDInt, address)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -573,7 +573,7 @@ func (s *LiquidityPoolService) GetPoolsHandler(c *gin.Context) {
 
 	pools, err := s.GetAllPools(c.Request.Context(), chainIDInt)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

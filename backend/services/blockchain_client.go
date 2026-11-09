@@ -577,7 +577,7 @@ func (b *BlockchainClient) GetBalanceHandler(c *gin.Context) {
 
 	balance, err := b.GetNativeBalance(c.Request.Context(), chainIDInt, address)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -602,7 +602,7 @@ func (b *BlockchainClient) GetTokenBalanceHandler(c *gin.Context) {
 
 	balance, err := b.GetERC20Balance(c.Request.Context(), chainIDInt, address, token)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -655,7 +655,7 @@ func (b *BlockchainClient) GetTransactionReceiptHandler(c *gin.Context) {
 
 	receipt, err := b.GetTransactionReceipt(c.Request.Context(), chainIDInt, txHash)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -673,7 +673,7 @@ func (b *BlockchainClient) GetGasPriceHandler(c *gin.Context) {
 
 	gasPrice, err := b.GetGasPrice(c.Request.Context(), chainIDInt)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -695,7 +695,7 @@ func (b *BlockchainClient) GetCurrentBlockHandler(c *gin.Context) {
 
 	block, err := b.GetCurrentBlock(c.Request.Context(), chainIDInt)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -728,4 +728,3 @@ func parseInt64(s string) (int64, error) {
 	_, err := fmt.Sscanf(s, "%d", &n)
 	return n, err
 }
-

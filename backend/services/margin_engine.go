@@ -901,7 +901,15 @@ func (e *MarginEngine) GetMarginAccountHandler(c *gin.Context) {
 	}
 	view, err := e.GetAccountView(c.Request.Context(), userID, accountID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		if errors.Is(err, ErrMarginAccountNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "margin account not found"})
+			return
+		}
+		// The account is the caller's own, so the remaining failures are a stored
+		// amount or an oracle read: an internal fault whose text must not reach
+		// the client.
+		log.Printf("margin: account view failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load margin account"})
 		return
 	}
 	c.JSON(http.StatusOK, view)

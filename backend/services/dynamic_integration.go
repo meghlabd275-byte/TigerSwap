@@ -675,7 +675,7 @@ func (s *DynamicIntegrationService) AddEVMChainHandler(c *gin.Context) {
 
 	chain, err := s.AddEVMChain(req.Key, req.Name, req.ChainID, req.RPCURL, req.ExplorerURL, req.Symbol, nativeToken, req.Decimals, req.AddedBy)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -707,7 +707,7 @@ func (s *DynamicIntegrationService) AddTokenHandler(c *gin.Context) {
 
 	token, err := s.AddToken(req.Key, req.Address, req.ChainKey, req.Name, req.Symbol, req.Standard, req.Decimals, supply, req.AddedBy)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -765,7 +765,7 @@ func (s *DynamicIntegrationService) CreatePoolHandler(c *gin.Context) {
 
 	pool, err := s.CreatePool(req.Key, req.Name, req.TokenA, req.TokenB, req.FeeRate)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -791,7 +791,7 @@ func (s *DynamicIntegrationService) CreateFarmHandler(c *gin.Context) {
 
 	farm, err := s.CreateFarm(req.Key, req.Name, req.PoolTokenA, req.PoolTokenB, req.RewardToken, req.RewardRate, req.APY, req.DurationDays)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -819,7 +819,7 @@ func (s *DynamicIntegrationService) AddBridgeHandler(c *gin.Context) {
 
 	bridge, err := s.AddBridge(req.Key, req.Name, req.SrcChain, req.DstChain, req.RouterAddress, req.MinAmount, req.MaxAmount, req.FeePercent, req.FeeFixed, req.EstimatedTime)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 
@@ -861,7 +861,7 @@ func (s *DynamicIntegrationService) AddNonEVMChainHandler(c *gin.Context) {
 
 	chain, err := s.AddNonEVMChain(req.Key, req.Name, req.Type, req.RPCURL, req.ExplorerURL, req.Symbol, req.Decimals, req.AddedBy)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

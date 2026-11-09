@@ -203,7 +203,8 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 		c.Request.Context(), req.ChainID, req.TokenIn, req.TokenOut, req.AmountIn, nil,
 	)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "no TigerSwap route available", "details": err.Error()})
+		log.Printf("swap: quote failed: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "no TigerSwap route available"})
 		return
 	}
 
@@ -324,7 +325,8 @@ func (s *SwapService) GetPrice(c *gin.Context) {
 
 	priceData, err := globalPriceAggregator.GetRealPrice(c.Request.Context(), symbol)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "price unavailable", "details": err.Error()})
+		log.Printf("price: lookup failed: %v", err)
+		c.JSON(http.StatusBadGateway, gin.H{"error": "price unavailable"})
 		return
 	}
 

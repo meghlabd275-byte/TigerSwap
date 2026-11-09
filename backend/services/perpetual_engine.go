@@ -1044,7 +1044,7 @@ func (e *PerpetualEngine) GetFundingRateHandler(c *gin.Context) {
 
 	funding, err := e.GetFundingRate(c.Request.Context(), pair)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		respondInternalError(c, err)
 		return
 	}
 

@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -479,7 +480,10 @@ func (s *NFTMarketplaceService) Mint(c *gin.Context) {
 		case errors.Is(err, errNFTCollectionOff):
 			c.JSON(http.StatusConflict, gin.H{"error": "collection is not active"})
 		default:
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			// A failure here is a database or uniqueness error whose text can
+			// carry a SQL fragment; log it and answer generically.
+			log.Printf("nft: mint failed: %v", err)
+			c.JSON(http.StatusConflict, gin.H{"error": "failed to mint token"})
 		}
 		return
 	}
