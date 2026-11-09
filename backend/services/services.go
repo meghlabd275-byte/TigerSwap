@@ -815,6 +815,27 @@ func (s *AuthService) ValidateToken(tokenString string) (jwt.MapClaims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
+// validateUsername trims a submitted username and checks it against the
+// character set the profile renderer can safely display. It is shared by
+// registration and profile update so the two paths cannot drift: a name that is
+// rejected at sign-up must not be accepted later through an update.
+func validateUsername(raw string) (string, error) {
+	username := strings.TrimSpace(raw)
+	if len(username) < 3 || len(username) > 32 {
+		return "", fmt.Errorf("Username must be between 3 and 32 characters")
+	}
+	for _, character := range username {
+		isAllowed := (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '_' || character == '-' || character == '.'
+		if !isAllowed {
+			return "", fmt.Errorf("Username may only contain letters, digits, underscore, hyphen and dot")
+		}
+	}
+	return username, nil
+}
+
 func (s *AuthService) Register(c *gin.Context) {
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
@@ -826,24 +847,10 @@ func (s *AuthService) Register(c *gin.Context) {
 		return
 	}
 
-	// The username is stored verbatim and rendered back to users, so it must be
-	// restricted to a safe character set. Anything else (markup, control
-	// characters, zero-width joiners used to spoof another account) is rejected
-	// at the boundary.
-	username := strings.TrimSpace(req.Username)
-	if len(username) < 3 || len(username) > 32 {
-		c.JSON(400, gin.H{"error": "Username must be between 3 and 32 characters"})
+	username, err := validateUsername(req.Username)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
 		return
-	}
-	for _, character := range username {
-		isAllowed := (character >= 'a' && character <= 'z') ||
-			(character >= 'A' && character <= 'Z') ||
-			(character >= '0' && character <= '9') ||
-			character == '_' || character == '-' || character == '.'
-		if !isAllowed {
-			c.JSON(400, gin.H{"error": "Username may only contain letters, digits, underscore, hyphen and dot"})
-			return
-		}
 	}
 	req.Username = username
 
@@ -1038,7 +1045,12 @@ func (s *AuthService) UpdateProfile(c *gin.Context) {
 
 	updates := map[string]interface{}{}
 	if strings.TrimSpace(req.Username) != "" {
-		updates["username"] = strings.TrimSpace(req.Username)
+		username, err := validateUsername(req.Username)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		updates["username"] = username
 	}
 	if strings.TrimSpace(req.WalletAddress) != "" {
 		if !common.IsHexAddress(req.WalletAddress) {

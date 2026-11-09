@@ -486,6 +486,16 @@ contract TigerSwapPool {
 
     function permit(address owner, address spender, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s) external {
         require(deadline >= block.timestamp, "TigerSwap: EXPIRED");
+        // EIP-2: a signature with s in the upper half of the curve order is
+        // malleable -- the same message verifies under a second (v, s) pair and
+        // recovers to the same key, so a permit could be replayed from a
+        // different digest. `ecrecover` also returns the zero address on
+        // malformed input, which must never be treated as a valid signer.
+        require(v == 27 || v == 28, "TigerSwap: BAD_SIGNATURE_V");
+        require(
+            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,
+            "TigerSwap: BAD_SIGNATURE_S"
+        );
         bytes32 digest = keccak256(
             abi.encodePacked(
                 "\x19\x01",

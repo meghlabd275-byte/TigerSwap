@@ -368,4 +368,70 @@ contract TigerSwapFactoryTest is Test {
         factory.setSwapFee(10);
         assertEq(factory.swapFee(), 10, "new owner can administer");
     }
+
+    // --- Permit signature hardening (EIP-2612 on the LP token) ---
+
+    function _permitDigest(address pool, address owner, address spender, uint256 value, uint256 deadline)
+        internal
+        view
+        returns (bytes32)
+    {
+        bytes32 domain = TigerSwapPool(pool).DOMAIN_SEPARATOR();
+        bytes32 structHash = keccak256(
+            abi.encode(
+                TigerSwapPool(pool).PERMIT_TYPEHASH(),
+                owner,
+                spender,
+                value,
+                TigerSwapPool(pool).nonces(owner),
+                deadline
+            )
+        );
+        return keccak256(abi.encodePacked("\x19\x01", domain, structHash));
+    }
+
+    function testPermitWithValidSignatureSetsAllowance() public {
+        address pool = _pool();
+        uint256 pk = 0xA11CE;
+        address owner = vm.addr(pk);
+
+        uint256 deadline = block.timestamp + 1 days;
+        bytes32 digest = _permitDigest(pool, owner, bob, 500e18, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+
+        TigerSwapPool(pool).permit(owner, bob, 500e18, deadline, v, r, s);
+        assertEq(TigerSwapPool(pool).allowance(owner, bob), 500e18, "allowance set from a valid signature");
+    }
+
+    function testPermitRejectsHighSSignature() public {
+        address pool = _pool();
+        uint256 pk = 0xA11CE;
+        address owner = vm.addr(pk);
+
+        uint256 deadline = block.timestamp + 1 days;
+        bytes32 digest = _permitDigest(pool, owner, bob, 500e18, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+
+        // The malleable partner: (N - s, flipped v) recovers the same owner, so
+        // without the range check the permit would be replayable.
+        bytes32 highS =
+            bytes32(uint256(0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141) - uint256(s));
+        uint8 flippedV = v == 27 ? 28 : 27;
+
+        vm.expectRevert("TigerSwap: BAD_SIGNATURE_S");
+        TigerSwapPool(pool).permit(owner, bob, 500e18, deadline, flippedV, r, highS);
+    }
+
+    function testPermitRejectsInvalidV() public {
+        address pool = _pool();
+        uint256 pk = 0xA11CE;
+        address owner = vm.addr(pk);
+
+        uint256 deadline = block.timestamp + 1 days;
+        bytes32 digest = _permitDigest(pool, owner, bob, 500e18, deadline);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(pk, digest);
+
+        vm.expectRevert("TigerSwap: BAD_SIGNATURE_V");
+        TigerSwapPool(pool).permit(owner, bob, 500e18, deadline, v == 27 ? 0 : 1, r, s);
+    }
 }
