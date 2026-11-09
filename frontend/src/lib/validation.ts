@@ -206,6 +206,27 @@ export const displayText = (value: unknown, path = "value", maxLength = 256): st
   return parsed.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 };
 
+/**
+ * Validates an absolute http(s) URL.
+ *
+ * Used for links built from server data, such as a block-explorer base. A
+ * `javascript:` or `data:` value would otherwise reach an `href` and execute
+ * when the link is clicked, so anything that is not http/https is rejected.
+ */
+export const httpURL = (value: unknown, path = "value"): string => {
+  const parsed = string(value, path);
+  let url: URL;
+  try {
+    url = new URL(parsed);
+  } catch {
+    fail("expected an absolute http(s) URL", path);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    fail("URL must use http or https", path);
+  }
+  return parsed;
+};
+
 /** Validates a value that must be `true`. */
 export const literalTrue = (value: unknown, path = "value"): true => {
   if (value !== true) {

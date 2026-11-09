@@ -12,6 +12,7 @@ import {
   boolean,
   displayText,
   hex,
+  httpURL,
   integer,
   literalTrue,
   marketSymbol,
@@ -66,7 +67,7 @@ export const chainValidator = object<Chain>({
   name: string,
   chainType: string,
   nativeSymbol: string,
-  explorerURL: nullable(string),
+  explorerURL: nullable(httpURL),
   isActive: boolean,
 });
 

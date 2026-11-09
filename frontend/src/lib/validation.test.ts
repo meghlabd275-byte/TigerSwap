@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { chainValidator } from "./types";
 import {
   ValidationError,
   address,
   array,
   boolean,
   displayText,
+  httpURL,
   integer,
   marketSymbol,
   nonNegative,
@@ -126,4 +128,30 @@ test("marketSymbol rejects markup and malformed pairs", () => {
 
 test("symbol still rejects a slash, so token symbols stay single-token", () => {
   assert.throws(() => symbol("BTC/RUSD"), ValidationError);
+});
+
+test("httpURL accepts http(s) and rejects script or relative values", () => {
+  assert.equal(httpURL("https://etherscan.io"), "https://etherscan.io");
+  assert.equal(httpURL("http://127.0.0.1:8545"), "http://127.0.0.1:8545");
+
+  for (const bad of ["javascript:alert(1)", "data:text/html,<script>", "/tx/1", "etherscan.io"]) {
+    assert.throws(() => httpURL(bad), ValidationError, `${bad} must be rejected`);
+  }
+});
+
+test("chainValidator drops a chain whose explorer URL is not http(s)", () => {
+  const valid = chainValidator(
+    { id: 1, name: "Ethereum", chainType: "evm", nativeSymbol: "ETH", explorerURL: "https://etherscan.io", isActive: true },
+    "chain",
+  );
+  assert.equal(valid.explorerURL, "https://etherscan.io");
+
+  assert.throws(
+    () =>
+      chainValidator(
+        { id: 1, name: "Evil", chainType: "evm", nativeSymbol: "ETH", explorerURL: "javascript:alert(1)", isActive: true },
+        "chain",
+      ),
+    ValidationError,
+  );
 });
