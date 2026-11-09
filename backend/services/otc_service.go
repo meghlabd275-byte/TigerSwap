@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -312,7 +313,8 @@ func (s *OtcService) ExpireStaleOrders() (int64, error) {
 func (s *OtcService) ExpireStaleOrdersHandler(c *gin.Context) {
 	expired, err := s.ExpireStaleOrders()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("otc: expire stale orders failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to expire stale orders"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "expired": expired})

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"net/http"
@@ -1015,7 +1016,8 @@ func (e *MarginEngine) LiquidateAccountHandler(c *gin.Context) {
 func (e *MarginEngine) ListLiquidatableHandler(c *gin.Context) {
 	candidates, err := e.LiquidatableAccounts(c.Request.Context())
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("margin: list liquidatable failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load liquidatable accounts"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"accounts": candidates, "count": len(candidates)})

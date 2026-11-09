@@ -574,7 +574,8 @@ func (s *FeeCollectorService) UpdateConfigHandler(c *gin.Context) {
 	}
 
 	if err := s.UpdateConfig(&req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		log.Printf("fee collector: update config failed: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update fee configuration"})
 		return
 	}
 

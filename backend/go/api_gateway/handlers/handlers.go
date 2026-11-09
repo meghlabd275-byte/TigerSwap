@@ -523,7 +523,7 @@ func (h *TokenHandler) GetTokens(c *gin.Context) {
 func (h *TokenHandler) GetToken(c *gin.Context) {
 	address := c.Param("address")
 
-	url := fmt.Sprintf("%s/api/v1/tokens/%s", h.config.Upstream.Blockchain, address)
+	url := fmt.Sprintf("%s/api/v1/tokens/%s", h.config.Upstream.Blockchain, url.PathEscape(address))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
@@ -556,7 +556,7 @@ func (h *TokenHandler) SearchTokens(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/tokens/search?q=%s", h.config.Upstream.Blockchain, query)
+	url := fmt.Sprintf("%s/api/v1/tokens/search?q=%s", h.config.Upstream.Blockchain, url.QueryEscape(query))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
@@ -629,7 +629,7 @@ func (h *PoolHandler) GetPool(c *gin.Context) {
 	tokenA := c.Param("tokenA")
 	tokenB := c.Param("tokenB")
 
-	url := fmt.Sprintf("%s/api/v1/pools/%s/%s", h.config.Upstream.Blockchain, tokenA, tokenB)
+	url := fmt.Sprintf("%s/api/v1/pools/%s/%s", h.config.Upstream.Blockchain, url.PathEscape(tokenA), url.PathEscape(tokenB))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
@@ -654,7 +654,7 @@ func (h *PoolHandler) GetPoolVolume(c *gin.Context) {
 	tokenA := c.Param("tokenA")
 	tokenB := c.Param("tokenB")
 
-	url := fmt.Sprintf("%s/api/v1/pools/%s/%s/volume", h.config.Upstream.Blockchain, tokenA, tokenB)
+	url := fmt.Sprintf("%s/api/v1/pools/%s/%s/volume", h.config.Upstream.Blockchain, url.PathEscape(tokenA), url.PathEscape(tokenB))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "blockchain service upstream unavailable", "details": err.Error()})
@@ -749,7 +749,7 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/wallet/%s/balance?chainId=%s", h.config.Upstream.Wallet, address, chainID)
+	url := fmt.Sprintf("%s/api/v1/wallet/%s/balance?chainId=%s", h.config.Upstream.Wallet, url.PathEscape(address), url.QueryEscape(chainID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
@@ -777,7 +777,7 @@ func (h *WalletHandler) GetTransactions(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/wallet/%s/transactions", h.config.Upstream.Wallet, address)
+	url := fmt.Sprintf("%s/api/v1/wallet/%s/transactions", h.config.Upstream.Wallet, url.PathEscape(address))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "wallet service upstream unavailable", "details": err.Error()})
@@ -1021,7 +1021,7 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 func (h *OrderHandler) GetOrder(c *gin.Context) {
 	orderID := c.Param("orderId")
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, orderID)
+	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
@@ -1051,7 +1051,7 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, orderID)
+	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
@@ -1075,7 +1075,7 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	orderID := c.Param("orderId")
 
-	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, orderID)
+	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1105,7 +1105,7 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 func (h *OrderHandler) GetUserOrders(c *gin.Context) {
 	userID := c.Param("userId")
 
-	url := fmt.Sprintf("%s/api/v1/orders/user/%s", h.config.Upstream.Blockchain, userID)
+	url := fmt.Sprintf("%s/api/v1/orders/user/%s", h.config.Upstream.Blockchain, url.PathEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "order service upstream unavailable", "details": err.Error()})
@@ -1153,7 +1153,7 @@ type Position struct {
 // GetPositions returns user positions
 func (h *PerpetualHandler) GetPositions(c *gin.Context) {
 	userID := c.Query("userId")
-	url := fmt.Sprintf("%s/api/v1/perpetual/positions?userId=%s", h.config.Upstream.Blockchain, userID)
+	url := fmt.Sprintf("%s/api/v1/perpetual/positions?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
@@ -1211,7 +1211,7 @@ func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, positionID)
+	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, url.PathEscape(positionID))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "perpetuals service upstream unavailable", "details": err.Error()})
@@ -1235,7 +1235,7 @@ func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
 func (h *PerpetualHandler) ClosePosition(c *gin.Context) {
 	positionID := c.Param("positionId")
 
-	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, positionID)
+	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, url.PathEscape(positionID))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1376,7 +1376,7 @@ func (h *StakingHandler) Unstake(c *gin.Context) {
 func (h *StakingHandler) GetRewards(c *gin.Context) {
 	userID := c.Query("userId")
 
-	url := fmt.Sprintf("%s/api/v1/staking/rewards?userId=%s", h.config.Upstream.Blockchain, userID)
+	url := fmt.Sprintf("%s/api/v1/staking/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "staking service upstream unavailable", "details": err.Error()})
@@ -1446,7 +1446,7 @@ func (h *BridgeHandler) Transfer(c *gin.Context) {
 func (h *BridgeHandler) GetTransferStatus(c *gin.Context) {
 	txHash := c.Param("txHash")
 
-	url := fmt.Sprintf("%s/api/v1/bridge/transfer/%s", h.config.Upstream.Blockchain, txHash)
+	url := fmt.Sprintf("%s/api/v1/bridge/transfer/%s", h.config.Upstream.Blockchain, url.PathEscape(txHash))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bridge service upstream unavailable", "details": err.Error()})
@@ -1594,7 +1594,7 @@ func (h *FarmingHandler) Withdraw(c *gin.Context) {
 func (h *FarmingHandler) GetRewards(c *gin.Context) {
 	userID := c.Query("userId")
 
-	url := fmt.Sprintf("%s/api/v1/farming/rewards?userId=%s", h.config.Upstream.Blockchain, userID)
+	url := fmt.Sprintf("%s/api/v1/farming/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "farming service upstream unavailable", "details": err.Error()})
@@ -1653,7 +1653,7 @@ func (h *LaunchpadHandler) GetProjects(c *gin.Context) {
 func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 	id := c.Param("id")
 
-	url := fmt.Sprintf("%s/api/v1/launchpad/projects/%s", h.config.Upstream.Blockchain, id)
+	url := fmt.Sprintf("%s/api/v1/launchpad/projects/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "launchpad service upstream unavailable", "details": err.Error()})
@@ -1792,7 +1792,7 @@ func (h *AdminHandler) GetUsers(c *gin.Context) {
 func (h *AdminHandler) GetUser(c *gin.Context) {
 	id := c.Param("id")
 
-	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, id)
+	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
@@ -1822,7 +1822,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 		return
 	}
 
-	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, id)
+	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	resp, err := callUpstreamJSON(c, http.MethodPut, url, updates)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "admin service upstream unavailable", "details": err.Error()})
@@ -1846,7 +1846,7 @@ func (h *AdminHandler) UpdateUser(c *gin.Context) {
 func (h *AdminHandler) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
 
-	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, id)
+	url := fmt.Sprintf("%s/api/v1/admin/users/%s", h.config.Upstream.Blockchain, url.PathEscape(id))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -1979,7 +1979,7 @@ func (h *AdminHandler) AddToWhitelist(c *gin.Context) {
 func (h *AdminHandler) RemoveFromWhitelist(c *gin.Context) {
 	address := c.Param("address")
 
-	url := fmt.Sprintf("%s/api/v1/admin/whitelist/%s", h.config.Upstream.Blockchain, address)
+	url := fmt.Sprintf("%s/api/v1/admin/whitelist/%s", h.config.Upstream.Blockchain, url.PathEscape(address))
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodDelete, url, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

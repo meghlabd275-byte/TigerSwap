@@ -256,6 +256,52 @@ func TestGetBalanceValidatesAddress(t *testing.T) {
 	}
 }
 
+// TestUpstreamPathIsEscaped pins the escaping of request-controlled path and
+// query values before they are interpolated into an upstream URL. A raw `?`,
+// `#` or `..` would otherwise let a caller rewrite the upstream path or smuggle
+// an extra query parameter.
+func TestUpstreamPathIsEscaped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var seenPath, seenQuery string
+	var seenRawQuery string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		seenQuery = r.URL.Query().Get("q")
+		seenRawQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer upstream.Close()
+
+	cfg := &config.Config{}
+	cfg.Upstream = config.UpstreamConfig{Blockchain: upstream.URL}
+
+	r := gin.New()
+	r.GET("/tokens/:address", NewTokenHandler(cfg).GetToken)
+	r.GET("/search", NewTokenHandler(cfg).SearchTokens)
+
+	// A path segment carrying a raw `?` would otherwise be parsed by the
+	// upstream as the start of a query string.
+	req, _ := http.NewRequest("GET", "/tokens/0x1%3Fadmin%3D1", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if seenPath != "/api/v1/tokens/0x1?admin=1" {
+		t.Errorf("token address was not escaped into the path: %q", seenPath)
+	}
+
+	// A query value that tries to inject a second parameter.
+	req, _ = http.NewRequest("GET", "/search?q=abc%26admin%3D1", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if seenQuery != "abc&admin=1" {
+		t.Errorf("search query not escaped, upstream saw q=%q raw=%q", seenQuery, seenRawQuery)
+	}
+	if strings.Count(seenRawQuery, "&") != 0 {
+		t.Errorf("injected query separator reached the upstream: %q", seenRawQuery)
+	}
+}
+
 func BenchmarkHealthCheck(b *testing.B) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
