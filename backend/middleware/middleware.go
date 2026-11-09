@@ -122,13 +122,21 @@ func SecurityHeaders() gin.HandlerFunc {
 // localRateLimiter is a fixed-window per-key limiter used as a fallback when the
 // distributed limiter (Redis) is unreachable. It keeps the API from becoming an
 // open door during a Redis outage, at the cost of being per-process.
+//
+// The key is derived from the caller's address, so a client that rotates it
+// could otherwise grow the map without bound; the map is capped and expired
+// windows are purged so a Redis outage cannot be turned into memory exhaustion.
 type localRateLimiter struct {
-	mu      sync.Mutex
-	counts  map[string]int
-	resetAt map[string]time.Time
-	limit   int
-	window  time.Duration
+	mu        sync.Mutex
+	counts    map[string]int
+	resetAt   map[string]time.Time
+	limit     int
+	window    time.Duration
+	maxKeys   int
+	lastPurge time.Time
 }
+
+const defaultMaxLocalRateLimitKeys = 100_000
 
 func newLocalRateLimiter(limit int, window time.Duration) *localRateLimiter {
 	return &localRateLimiter{
@@ -136,6 +144,7 @@ func newLocalRateLimiter(limit int, window time.Duration) *localRateLimiter {
 		resetAt: make(map[string]time.Time),
 		limit:   limit,
 		window:  window,
+		maxKeys: defaultMaxLocalRateLimitKeys,
 	}
 }
 
@@ -144,12 +153,43 @@ func (l *localRateLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if expiry, ok := l.resetAt[key]; !ok || now.After(expiry) {
+	// Purge drained windows once per window so the map holds live keys only.
+	if now.Sub(l.lastPurge) >= l.window {
+		for existing, expiry := range l.resetAt {
+			if now.After(expiry) {
+				delete(l.counts, existing)
+				delete(l.resetAt, existing)
+			}
+		}
+		l.lastPurge = now
+	}
+
+	expiry, tracked := l.resetAt[key]
+	if !tracked || now.After(expiry) {
+		if !tracked && len(l.counts) >= l.maxKeys {
+			l.evictNearestResetLocked()
+		}
 		l.counts[key] = 0
 		l.resetAt[key] = now.Add(l.window)
 	}
 	l.counts[key]++
 	return l.counts[key] <= l.limit
+}
+
+// evictNearestResetLocked drops the key whose window resets soonest, which is
+// the entry closest to leaving on its own. The caller holds the lock.
+func (l *localRateLimiter) evictNearestResetLocked() {
+	var victim string
+	var victimExpiry time.Time
+	for key, expiry := range l.resetAt {
+		if victim == "" || expiry.Before(victimExpiry) {
+			victim, victimExpiry = key, expiry
+		}
+	}
+	if victim != "" {
+		delete(l.counts, victim)
+		delete(l.resetAt, victim)
+	}
 }
 
 // RedisRateLimiter applies a distributed rate limit backed by Redis. When Redis

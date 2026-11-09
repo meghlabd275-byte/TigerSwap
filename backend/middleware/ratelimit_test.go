@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -139,5 +140,40 @@ func TestConfigureTrustedProxiesRejectsWildcard(t *testing.T) {
 	router := gin.New()
 	if err := ConfigureTrustedProxies(router, "10.0.0.0/8, 192.168.1.1"); err != nil {
 		t.Fatalf("valid proxy list should be accepted: %v", err)
+	}
+
+}
+
+// The fallback limiter keys on the caller address, so a client that rotates it
+// must not be able to grow the maps without bound.
+func TestLocalRateLimiterBoundsKeyCount(t *testing.T) {
+	limiter := newLocalRateLimiter(5, time.Minute)
+	limiter.maxKeys = 16
+
+	for i := 0; i < 500; i++ {
+		limiter.allow("key-" + strconv.Itoa(i))
+	}
+
+	limiter.mu.Lock()
+	counts, resets := len(limiter.counts), len(limiter.resetAt)
+	limiter.mu.Unlock()
+
+	if counts > limiter.maxKeys {
+		t.Fatalf("counts map grew to %d, cap is %d", counts, limiter.maxKeys)
+	}
+	if resets > limiter.maxKeys {
+		t.Fatalf("resetAt map grew to %d, cap is %d", resets, limiter.maxKeys)
+	}
+}
+
+// A tracked key still enforces its limit after unrelated keys are evicted.
+func TestLocalRateLimiterStillLimitsTrackedKey(t *testing.T) {
+	limiter := newLocalRateLimiter(2, time.Minute)
+
+	if !limiter.allow("client") || !limiter.allow("client") {
+		t.Fatal("first two requests from a client should be allowed")
+	}
+	if limiter.allow("client") {
+		t.Fatal("third request from the same client should be rejected")
 	}
 }
