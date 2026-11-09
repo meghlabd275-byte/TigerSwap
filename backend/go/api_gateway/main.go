@@ -107,6 +107,13 @@ func (s *Server) SetupRouter() *gin.Engine {
 	// Rate limiting
 	rateLimiter := middleware.NewRateLimiter(s.redis, s.config.RateLimit)
 
+	// Handlers shared by the public and account-scoped route groups are built
+	// once here so both groups can register their own routes against them.
+	stakingHandler := handlers.NewStakingHandler(s.config)
+	farmingHandler := handlers.NewFarmingHandler(s.config)
+	launchpadHandler := handlers.NewLaunchpadHandler(s.config)
+	bridgeHandler := handlers.NewBridgeHandler(s.config)
+
 	// API v1 routes
 	v1 := r.Group("/api/v1")
 	v1.Use(rateLimiter.Middleware())
@@ -136,62 +143,73 @@ func (s *Server) SetupRouter() *gin.Engine {
 		v1.GET("/pools/:tokenA/:tokenB", poolHandler.GetPool)
 		v1.GET("/pools/:tokenA/:tokenB/volume", poolHandler.GetPoolVolume)
 
-		// Wallet routes
-		walletHandler := handlers.NewWalletHandler(s.config)
-		v1.POST("/wallet/create", walletHandler.CreateWallet)
-		v1.POST("/wallet/import", walletHandler.ImportWallet)
-		v1.GET("/wallet/:address/balance", walletHandler.GetBalance)
-		v1.GET("/wallet/:address/transactions", walletHandler.GetTransactions)
-		v1.POST("/wallet/transfer", walletHandler.Transfer)
-		v1.POST("/wallet/approve", walletHandler.Approve)
-
 		// Chain routes
 		chainHandler := handlers.NewChainHandler(s.config)
 		v1.GET("/chains", chainHandler.GetChains)
 		v1.GET("/chains/:chainId", chainHandler.GetChain)
 		v1.GET("/chains/:chainId/fees", chainHandler.GetGasFees)
 
+		// Public catalogues. Staking and farming pools, the launchpad listing and
+		// the bridge chain list are read-only and need no identity.
+		v1.GET("/staking/pools", stakingHandler.GetPools)
+
+		v1.GET("/farming/pools", farmingHandler.GetPools)
+
+		v1.GET("/launchpad/projects", launchpadHandler.GetProjects)
+		v1.GET("/launchpad/projects/:id", launchpadHandler.GetProject)
+
+		v1.GET("/bridge/chains", bridgeHandler.GetSupportedChains)
+	}
+
+	// Account-scoped routes. A valid bearer token is required so a handler can
+	// resolve the caller from the session; the identity is never taken from the
+	// path, the query string or the body.
+	secured := v1.Group("")
+	secured.Use(middleware.Auth(s.config))
+	{
+		// Wallet routes. Creating or importing a wallet is a per-account action;
+		// balance and history are public chain reads but are kept behind the token
+		// so the gateway never proxies an unauthenticated wallet call.
+		walletHandler := handlers.NewWalletHandler(s.config)
+		secured.POST("/wallet/create", walletHandler.CreateWallet)
+		secured.POST("/wallet/import", walletHandler.ImportWallet)
+		secured.GET("/wallet/:address/balance", walletHandler.GetBalance)
+		secured.GET("/wallet/:address/transactions", walletHandler.GetTransactions)
+		secured.POST("/wallet/transfer", walletHandler.Transfer)
+		secured.POST("/wallet/approve", walletHandler.Approve)
+
 		// Order routes
 		orderHandler := handlers.NewOrderHandler(s.config)
-		v1.POST("/orders", orderHandler.CreateOrder)
-		v1.GET("/orders/:orderId", orderHandler.GetOrder)
-		v1.PUT("/orders/:orderId", orderHandler.UpdateOrder)
-		v1.DELETE("/orders/:orderId", orderHandler.CancelOrder)
-		v1.GET("/orders/user/:userId", orderHandler.GetUserOrders)
+		secured.POST("/orders", orderHandler.CreateOrder)
+		secured.GET("/orders/:orderId", orderHandler.GetOrder)
+		secured.PUT("/orders/:orderId", orderHandler.UpdateOrder)
+		secured.DELETE("/orders/:orderId", orderHandler.CancelOrder)
+		secured.GET("/orders/user/:userId", orderHandler.GetUserOrders)
 
 		// Perpetual routes
 		perpetualHandler := handlers.NewPerpetualHandler(s.config)
-		v1.GET("/perpetual/positions", perpetualHandler.GetPositions)
-		v1.POST("/perpetual/positions", perpetualHandler.OpenPosition)
-		v1.PUT("/perpetual/positions/:positionId", perpetualHandler.UpdatePosition)
-		v1.DELETE("/perpetual/positions/:positionId", perpetualHandler.ClosePosition)
+		secured.GET("/perpetual/positions", perpetualHandler.GetPositions)
+		secured.POST("/perpetual/positions", perpetualHandler.OpenPosition)
+		secured.PUT("/perpetual/positions/:positionId", perpetualHandler.UpdatePosition)
+		secured.DELETE("/perpetual/positions/:positionId", perpetualHandler.ClosePosition)
 
-		// Staking routes
-		stakingHandler := handlers.NewStakingHandler(s.config)
-		v1.GET("/staking/pools", stakingHandler.GetPools)
-		v1.POST("/staking/stake", stakingHandler.Stake)
-		v1.POST("/staking/unstake", stakingHandler.Unstake)
-		v1.GET("/staking/rewards", stakingHandler.GetRewards)
+		// Staking actions
+		secured.POST("/staking/stake", stakingHandler.Stake)
+		secured.POST("/staking/unstake", stakingHandler.Unstake)
+		secured.GET("/staking/rewards", stakingHandler.GetRewards)
 
-		// Bridge routes
-		bridgeHandler := handlers.NewBridgeHandler(s.config)
-		v1.POST("/bridge/transfer", bridgeHandler.Transfer)
-		v1.GET("/bridge/transfer/:txHash", bridgeHandler.GetTransferStatus)
-		v1.GET("/bridge/chains", bridgeHandler.GetSupportedChains)
+		// Bridge actions
+		secured.POST("/bridge/transfer", bridgeHandler.Transfer)
+		secured.GET("/bridge/transfer/:txHash", bridgeHandler.GetTransferStatus)
 
-		// Farming routes
-		farmingHandler := handlers.NewFarmingHandler(s.config)
-		v1.GET("/farming/pools", farmingHandler.GetPools)
-		v1.POST("/farming/deposit", farmingHandler.Deposit)
-		v1.POST("/farming/withdraw", farmingHandler.Withdraw)
-		v1.GET("/farming/rewards", farmingHandler.GetRewards)
+		// Farming actions
+		secured.POST("/farming/deposit", farmingHandler.Deposit)
+		secured.POST("/farming/withdraw", farmingHandler.Withdraw)
+		secured.GET("/farming/rewards", farmingHandler.GetRewards)
 
-		// Launchpad routes
-		launchpadHandler := handlers.NewLaunchpadHandler(s.config)
-		v1.GET("/launchpad/projects", launchpadHandler.GetProjects)
-		v1.GET("/launchpad/projects/:id", launchpadHandler.GetProject)
-		v1.POST("/launchpad/projects", launchpadHandler.CreateProject)
-		v1.POST("/launchpad/contribute", launchpadHandler.Contribute)
+		// Launchpad actions
+		secured.POST("/launchpad/projects", launchpadHandler.CreateProject)
+		secured.POST("/launchpad/contribute", launchpadHandler.Contribute)
 	}
 
 	// Admin routes (protected). The group requires both a valid token and an

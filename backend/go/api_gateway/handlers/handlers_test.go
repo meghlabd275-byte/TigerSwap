@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -93,6 +94,15 @@ func TestHealthCheck(t *testing.T) {
 	}
 }
 
+// identity returns a middleware that plants a fixed caller id, standing in for
+// middleware.Auth in a handler unit test.
+func identity(id string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Set("user_id", id)
+		c.Next()
+	}
+}
+
 func TestWalletRoundTrip(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	up := newTestUpstreams()
@@ -100,8 +110,8 @@ func TestWalletRoundTrip(t *testing.T) {
 
 	r := gin.New()
 	handler := NewWalletHandler(up.cfg)
-	r.POST("/wallet/create", handler.CreateWallet)
-	r.POST("/wallet/import", handler.ImportWallet)
+	r.POST("/wallet/create", identity("user-1"), handler.CreateWallet)
+	r.POST("/wallet/import", identity("user-1"), handler.ImportWallet)
 
 	req, _ := http.NewRequest("POST", "/wallet/create", strings.NewReader(`{"chainId":1}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -113,18 +123,32 @@ func TestWalletRoundTrip(t *testing.T) {
 	}
 
 	var created struct {
-		Address    string `json:"address"`
-		PrivateKey string `json:"privateKey"`
-		Mnemonic   string `json:"mnemonic"`
+		Address string `json:"address"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &created); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(created.Address) != 42 || created.Mnemonic == "" || len(created.PrivateKey) != 64 {
-		t.Fatalf("wallet create returned incomplete data: %+v", created)
+	if len(created.Address) != 42 {
+		t.Fatalf("wallet create returned no usable address: %+v", created)
 	}
 
-	importBody, _ := json.Marshal(map[string]interface{}{"mnemonic": created.Mnemonic, "chainId": 1})
+	// The response must not carry key material. A private key or mnemonic in an
+	// HTTP body is readable by any script on the page and cached by any proxy
+	// that does not strip it, so its presence is a defect, not a feature.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	for _, secret := range []string{"privateKey", "mnemonic", "seedPhrase"} {
+		if _, present := raw[secret]; present {
+			t.Errorf("wallet create response must not contain %q", secret)
+		}
+	}
+
+	// Import must derive the same address from a mnemonic without echoing it.
+	// The canonical test vector is used so the expected address is fixed.
+	const mnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+	importBody, _ := json.Marshal(map[string]interface{}{"mnemonic": mnemonic, "chainId": 1})
 	req, _ = http.NewRequest("POST", "/wallet/import", strings.NewReader(string(importBody)))
 	req.Header.Set("Content-Type", "application/json")
 	w = httptest.NewRecorder()
@@ -139,8 +163,61 @@ func TestWalletRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &imported); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if imported.Address != created.Address {
-		t.Errorf("imported address %s does not match created address %s", imported.Address, created.Address)
+	if !strings.EqualFold(imported.Address, "0x9858EfFD232B4033E47d90003D41EC34EcaEda94") {
+		t.Errorf("imported address %s does not match the canonical derivation", imported.Address)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(mnemonic)) {
+		t.Errorf("import response must not echo the mnemonic")
+	}
+}
+
+// TestWalletCreateRequiresIdentity pins that the wallet endpoints refuse an
+// unauthenticated caller rather than minting an address for anyone.
+func TestWalletCreateRequiresIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := NewWalletHandler(&config.Config{})
+	r := gin.New()
+	r.POST("/wallet/create", handler.CreateWallet)
+
+	req, _ := http.NewRequest("POST", "/wallet/create", strings.NewReader(`{"chainId":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without identity, got %d", w.Code)
+	}
+}
+
+// TestUserOrderRouteIgnoresPathIdentity pins that a caller cannot read another
+// account's orders by editing the path id: the id sent upstream is the
+// session's.
+func TestUserOrderRouteIgnoresPathIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var gotPath string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"orders":[]}`))
+	}))
+	defer up.Close()
+
+	cfg := &config.Config{}
+	cfg.Upstream = config.UpstreamConfig{Blockchain: up.URL}
+
+	r := gin.New()
+	handler := NewOrderHandler(cfg)
+	r.GET("/orders/user/:userId", identity("victim"), handler.GetUserOrders)
+
+	req, _ := http.NewRequest("GET", "/orders/user/attacker-chosen-id", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", w.Code, w.Body.String())
+	}
+	if gotPath != "/api/v1/orders/user/victim" {
+		t.Errorf("upstream path = %q, want the session identity, not the path id", gotPath)
 	}
 }
 
@@ -162,7 +239,7 @@ func TestImportWalletRejectsInvalidMnemonic(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	handler := NewWalletHandler(&config.Config{})
 	r := gin.New()
-	r.POST("/wallet/import", handler.ImportWallet)
+	r.POST("/wallet/import", identity("user-1"), handler.ImportWallet)
 
 	req, _ := http.NewRequest("POST", "/wallet/import", strings.NewReader(`{"mnemonic":"not a valid mnemonic phrase"}`))
 	req.Header.Set("Content-Type", "application/json")

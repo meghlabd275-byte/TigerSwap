@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -686,7 +685,19 @@ func NewWalletHandler(cfg *config.Config) *WalletHandler {
 }
 
 // CreateWallet creates a new wallet
+// CreateWallet derives a fresh watch-only account for the caller.
+//
+// The gateway never returns a private key or a mnemonic. A seed phrase sent to
+// a browser is a seed phrase the browser, every extension and every injected
+// script can read, and it would be cached by any intermediary that does not
+// strip the body. The address alone is safe to return and is all the frontend
+// uses; custody stays with the platform wallet service, which is the only
+// component that holds key material.
 func (h *WalletHandler) CreateWallet(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
+
 	var req struct {
 		ChainID int64 `json:"chainId"`
 	}
@@ -696,22 +707,30 @@ func (h *WalletHandler) CreateWallet(c *gin.Context) {
 		return
 	}
 
-	mnemonic, privateKey, address, err := generateWallet()
+	address, err := generateWatchOnlyAddress()
 	if err != nil {
 		respondInternalError(c, err)
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
-		"address":    address,
-		"privateKey": privateKey,
-		"mnemonic":   mnemonic,
-		"chainId":    req.ChainID,
+		"address": address,
+		"chainId": req.ChainID,
 	})
 }
 
-// ImportWallet imports an existing wallet
+// ImportWallet derives the address for a mnemonic without storing or echoing it.
+//
+// The mnemonic arrives over TLS, is used to derive the account address, and is
+// never written back in the response or to a log. Custody is a separate,
+// authenticated, server-side operation; this endpoint only answers "which
+// address does this phrase control".
 func (h *WalletHandler) ImportWallet(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
+
 	var req struct {
 		Mnemonic string `json:"mnemonic" binding:"required"`
 		ChainID  int64  `json:"chainId"`
@@ -733,6 +752,7 @@ func (h *WalletHandler) ImportWallet(c *gin.Context) {
 		return
 	}
 
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"address":  address,
 		"chainId":  req.ChainID,
@@ -997,6 +1017,14 @@ func (h *OrderHandler) CreateOrder(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	// The order belongs to the authenticated caller. A user id in the body is
+	// overwritten rather than trusted, so an order cannot be placed in another
+	// account's name.
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
+	order.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/orders", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, order)
@@ -1044,6 +1072,9 @@ func (h *OrderHandler) GetOrder(c *gin.Context) {
 
 // UpdateOrder updates an order
 func (h *OrderHandler) UpdateOrder(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
 	orderID := c.Param("orderId")
 
 	var updates map[string]interface{}
@@ -1074,6 +1105,9 @@ func (h *OrderHandler) UpdateOrder(c *gin.Context) {
 
 // CancelOrder cancels an order
 func (h *OrderHandler) CancelOrder(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
 	orderID := c.Param("orderId")
 
 	url := fmt.Sprintf("%s/api/v1/orders/%s", h.config.Upstream.Blockchain, url.PathEscape(orderID))
@@ -1102,9 +1136,16 @@ func (h *OrderHandler) CancelOrder(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetUserOrders returns user orders
+// GetUserOrders returns the caller's own orders.
+//
+// The path carries a user id for the upstream contract, but the value that is
+// actually sent is the authenticated session's, so one account cannot read
+// another's order history by editing the path.
 func (h *OrderHandler) GetUserOrders(c *gin.Context) {
-	userID := c.Param("userId")
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 
 	url := fmt.Sprintf("%s/api/v1/orders/user/%s", h.config.Upstream.Blockchain, url.PathEscape(userID))
 	resp, err := upstreamGet(c, url)
@@ -1151,9 +1192,13 @@ type Position struct {
 	Status           string `json:"status"`
 }
 
-// GetPositions returns user positions
+// GetPositions returns the caller's own perpetual positions. The query string
+// cannot select another account: the id sent upstream is the session's.
 func (h *PerpetualHandler) GetPositions(c *gin.Context) {
-	userID := c.Query("userId")
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
 	if err != nil {
@@ -1181,6 +1226,13 @@ func (h *PerpetualHandler) OpenPosition(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	// A position is opened for the authenticated caller; a body-supplied user id
+	// is replaced, not honoured.
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
+	pos.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, pos)
@@ -1204,6 +1256,9 @@ func (h *PerpetualHandler) OpenPosition(c *gin.Context) {
 
 // UpdatePosition updates a position
 func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
 	positionID := c.Param("positionId")
 
 	var updates map[string]interface{}
@@ -1234,6 +1289,9 @@ func (h *PerpetualHandler) UpdatePosition(c *gin.Context) {
 
 // ClosePosition closes a position
 func (h *PerpetualHandler) ClosePosition(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
 	positionID := c.Param("positionId")
 
 	url := fmt.Sprintf("%s/api/v1/perpetual/positions/%s", h.config.Upstream.Blockchain, url.PathEscape(positionID))
@@ -1307,10 +1365,15 @@ func (h *StakingHandler) GetPools(c *gin.Context) {
 	c.JSON(http.StatusOK, pools)
 }
 
-// Stake stakes tokens
+// Stake stakes tokens for the authenticated caller. A userId in the body is
+// ignored so a stake cannot be attributed to another account.
 func (h *StakingHandler) Stake(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var req struct {
-		UserID string `json:"userId" binding:"required"`
+		UserID string `json:"userId"`
 		PoolID string `json:"poolId" binding:"required"`
 		Amount string `json:"amount" binding:"required"`
 	}
@@ -1319,6 +1382,7 @@ func (h *StakingHandler) Stake(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	req.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/staking/stake", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
@@ -1340,10 +1404,15 @@ func (h *StakingHandler) Stake(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// Unstake unstakes tokens
+// Unstake unstakes tokens for the authenticated caller. The body cannot name
+// another account.
 func (h *StakingHandler) Unstake(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var req struct {
-		UserID string `json:"userId" binding:"required"`
+		UserID string `json:"userId"`
 		PoolID string `json:"poolId" binding:"required"`
 		Amount string `json:"amount" binding:"required"`
 	}
@@ -1352,6 +1421,7 @@ func (h *StakingHandler) Unstake(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	req.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/staking/unstake", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
@@ -1373,9 +1443,13 @@ func (h *StakingHandler) Unstake(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetRewards returns staking rewards
+// GetRewards returns the caller's own staking rewards. The query string cannot
+// select another account.
 func (h *StakingHandler) GetRewards(c *gin.Context) {
-	userID := c.Query("userId")
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 
 	url := fmt.Sprintf("%s/api/v1/staking/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
@@ -1409,6 +1483,9 @@ func NewBridgeHandler(cfg *config.Config) *BridgeHandler {
 
 // Transfer initiates a bridge transfer
 func (h *BridgeHandler) Transfer(c *gin.Context) {
+	if _, ok := requireIdentity(c); !ok {
+		return
+	}
 	var req struct {
 		FromChain   int64  `json:"fromChain" binding:"required"`
 		ToChain     int64  `json:"toChain" binding:"required"`
@@ -1525,9 +1602,15 @@ func (h *FarmingHandler) GetPools(c *gin.Context) {
 }
 
 // Deposit deposits liquidity
+// Deposit adds liquidity for the authenticated caller. A userId in the body is
+// ignored so liquidity cannot be credited to another account.
 func (h *FarmingHandler) Deposit(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var req struct {
-		UserID  string `json:"userId" binding:"required"`
+		UserID  string `json:"userId"`
 		PoolID  string `json:"poolId" binding:"required"`
 		Amount0 string `json:"amount0" binding:"required"`
 		Amount1 string `json:"amount1" binding:"required"`
@@ -1537,6 +1620,7 @@ func (h *FarmingHandler) Deposit(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	req.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/farming/deposit", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
@@ -1559,9 +1643,15 @@ func (h *FarmingHandler) Deposit(c *gin.Context) {
 }
 
 // Withdraw withdraws liquidity
+// Withdraw removes liquidity for the authenticated caller. The body cannot name
+// another account.
 func (h *FarmingHandler) Withdraw(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var req struct {
-		UserID    string `json:"userId" binding:"required"`
+		UserID    string `json:"userId"`
 		PoolID    string `json:"poolId" binding:"required"`
 		Liquidity string `json:"liquidity" binding:"required"`
 	}
@@ -1570,6 +1660,7 @@ func (h *FarmingHandler) Withdraw(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	req.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/farming/withdraw", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
@@ -1591,9 +1682,12 @@ func (h *FarmingHandler) Withdraw(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetRewards returns farming rewards
+// GetRewards returns the caller's own farming rewards.
 func (h *FarmingHandler) GetRewards(c *gin.Context) {
-	userID := c.Query("userId")
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 
 	url := fmt.Sprintf("%s/api/v1/farming/rewards?userId=%s", h.config.Upstream.Blockchain, url.QueryEscape(userID))
 	resp, err := upstreamGet(c, url)
@@ -1674,13 +1768,20 @@ func (h *LaunchpadHandler) GetProject(c *gin.Context) {
 	c.JSON(http.StatusOK, project)
 }
 
-// CreateProject creates a new project
+// CreateProject submits a new project for the authenticated caller. The
+// submission is attributed to the session, not to any owner field the client
+// supplies, so a project cannot be filed under another account.
 func (h *LaunchpadHandler) CreateProject(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var project map[string]interface{}
 	if err := c.ShouldBindJSON(&project); err != nil {
 		respondBadRequest(c, err)
 		return
 	}
+	project["ownerId"] = userID
 
 	url := fmt.Sprintf("%s/api/v1/launchpad/projects", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, project)
@@ -1703,9 +1804,16 @@ func (h *LaunchpadHandler) CreateProject(c *gin.Context) {
 }
 
 // Contribute contributes to a project
+// Contribute records a launchpad contribution for the authenticated caller. A
+// userId in the body is ignored so a contribution cannot be attributed to
+// another account.
 func (h *LaunchpadHandler) Contribute(c *gin.Context) {
+	userID, ok := requireIdentity(c)
+	if !ok {
+		return
+	}
 	var req struct {
-		UserID    string `json:"userId" binding:"required"`
+		UserID    string `json:"userId"`
 		ProjectID string `json:"projectId" binding:"required"`
 		Amount    string `json:"amount" binding:"required"`
 	}
@@ -1714,6 +1822,7 @@ func (h *LaunchpadHandler) Contribute(c *gin.Context) {
 		respondBadRequest(c, err)
 		return
 	}
+	req.UserID = userID
 
 	url := fmt.Sprintf("%s/api/v1/launchpad/contribute", h.config.Upstream.Blockchain)
 	resp, err := callUpstreamService(c, url, req)
@@ -2094,22 +2203,23 @@ func callUpstreamJSON(c *gin.Context, method, url string, body interface{}) (*ht
 	return upstreamClient.Do(req)
 }
 
-// generateWallet creates a BIP39 mnemonic and derives the BIP44 Ethereum account.
-func generateWallet() (mnemonic, privateKey, address string, err error) {
+// generateWatchOnlyAddress creates a BIP39 mnemonic, derives the BIP44
+// Ethereum account and returns only the address. The key material is discarded
+// in this process: the caller is handed an address, never a secret.
+func generateWatchOnlyAddress() (string, error) {
 	entropy, err := bip39.NewEntropy(256)
 	if err != nil {
-		return "", "", "", fmt.Errorf("entropy: %w", err)
+		return "", fmt.Errorf("entropy: %w", err)
 	}
-	mnemonic, err = bip39.NewMnemonic(entropy)
+	mnemonic, err := bip39.NewMnemonic(entropy)
 	if err != nil {
-		return "", "", "", fmt.Errorf("mnemonic: %w", err)
+		return "", fmt.Errorf("mnemonic: %w", err)
 	}
-
-	key, addr, err := deriveKeyFromMnemonic(mnemonic)
+	_, address, err := deriveKeyFromMnemonic(mnemonic)
 	if err != nil {
-		return "", "", "", err
+		return "", err
 	}
-	return mnemonic, hex.EncodeToString(crypto.FromECDSA(key)), addr, nil
+	return address, nil
 }
 
 // deriveAddressFromMnemonic returns the BIP44 Ethereum address for a mnemonic.
