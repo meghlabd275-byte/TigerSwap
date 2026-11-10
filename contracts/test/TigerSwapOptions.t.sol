@@ -471,15 +471,21 @@ contract TigerSwapOptionsTest is Test {
         options.settleSeries(seriesId, 2500e18);
         // The holder has not exercised, so their payout is still owed.
 
+        // The reserve is the real intrinsic owed at the settlement price, not
+        // the mark-price collateral that was locked at purchase time. A deep
+        // in-the-money option is exactly the case the old code got wrong.
+        uint256 reserved = options.holderReserve(seriesId);
+        assertEq(reserved, 500e18, "intrinsic owed is reserved");
+
+        // The claimable pool already excludes the reserve.
         uint256 claim = options.lpClaims(seriesId);
         vm.prank(lp);
-        vm.expectRevert("collateral is reserved");
-        options.withdrawLp(seriesId, claim);
+        vm.expectRevert("exceeds claimable collateral");
+        options.withdrawLp(seriesId, claim + 1);
 
-        // Only the unencumbered remainder can leave the pool.
-        uint256 reserved = 2000e18; // size * spot locked by the open call
+        // The unencumbered part can leave, leaving exactly the reserve behind.
         vm.prank(lp);
-        options.withdrawLp(seriesId, claim - reserved);
+        options.withdrawLp(seriesId, claim);
         assertEq(rusd.balanceOf(address(options)), reserved, "reserved payout stays put");
 
         // The holder can still be paid in full.
@@ -488,6 +494,34 @@ contract TigerSwapOptionsTest is Test {
         uint256 payout = options.exercise(seriesId);
         assertEq(payout, 500e18, "intrinsic paid");
         assertEq(rusd.balanceOf(trader), before + payout, "holder made whole");
+        assertEq(rusd.balanceOf(address(options)), 0, "reserve fully consumed");
+    }
+
+    /// An option deep in the money must stay payable: the reserve is the real
+    /// intrinsic, so an LP cannot withdraw the collateral backing it. Before the
+    /// fix the reserve was the mark-price lock (size * markPrice), which is less
+    /// than the intrinsic when the settlement price runs above the mark.
+    function testDeepItmHolderIsNotStrandedByLpWithdrawal() public {
+        vm.prank(trader);
+        options.buy(seriesId, 1e18, type(uint256).max);
+        vm.warp(block.timestamp + YEAR + 1);
+        // Settle well above the 2000 mark so intrinsic (1000) exceeds the
+        // mark-price lock (2000 is still above it, so settle even higher).
+        options.settleSeries(seriesId, 5000e18);
+
+        uint256 reserved = options.holderReserve(seriesId);
+        assertEq(reserved, 3000e18, "intrinsic is reserved");
+
+        // The LP can take only the free claim; the payout stays funded. Read the
+        // claim before the prank so the prank is not consumed by the view call.
+        uint256 claimAmt = options.lpClaims(seriesId);
+        vm.prank(lp);
+        options.withdrawLp(seriesId, claimAmt);
+        assertGe(rusd.balanceOf(address(options)), reserved, "payout still funded");
+
+        vm.prank(trader);
+        uint256 payout = options.exercise(seriesId);
+        assertEq(payout, 3000e18, "full intrinsic paid");
     }
 
     // ---- LP withdrawal -----------------------------------------------------

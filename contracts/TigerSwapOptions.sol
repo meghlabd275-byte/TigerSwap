@@ -55,6 +55,10 @@ contract TigerSwapOptions {
     mapping(uint256 => mapping(address => uint256)) public longPositions;
     /// @dev Premium the pool has set aside for LPs of each series, withdrawable after settlement.
     mapping(uint256 => uint256) public lpClaims;
+    /// @dev Intrinsic payout owed to unexercised long positions after
+    ///      settlement. It is reserved from `lpClaims` until the holders
+    ///      exercise, so an LP cannot withdraw a holder's payout.
+    mapping(uint256 => uint256) public holderReserve;
     /// @dev Share of the claimable pool each LP owns, per series.
     mapping(uint256 => mapping(address => uint256)) public lpShares;
     /// @dev Total shares issued for a series.
@@ -159,8 +163,17 @@ contract TigerSwapOptions {
 
         s.settled = true;
         s.settlementPrice = _settlementPrice;
-        // Everything still held becomes claimable by LPs once holders exercise.
-        lpClaims[_seriesId] = s.collateral;
+
+        // Reserve the intrinsic owed to every unexercised long before any of the
+        // pool becomes claimable by LPs. The reserve is the real liability at
+        // the settlement price, not the mark-price collateral that was locked
+        // when the option was bought, so an option deep in the money cannot be
+        // left unpaid by an LP withdrawing the collateral backing it.
+        uint256 owed = _settlementLiability(_seriesId, s);
+        holderReserve[_seriesId] = owed;
+
+        // Everything else still held becomes claimable by LPs.
+        lpClaims[_seriesId] = s.collateral > owed ? s.collateral - owed : 0;
         emit SeriesSettled(_seriesId, _settlementPrice);
     }
 
@@ -256,6 +269,19 @@ contract TigerSwapOptions {
     /// @notice Annual risk-free rate used for pricing, 5%.
     uint256 public riskFreeRate = 5e16;
 
+    /// @dev Total intrinsic owed to all unexercised long positions at the
+    ///      settlement price, computed in aggregate so the reserve is one
+    ///      calculation rather than a loop over holders.
+    function _settlementLiability(uint256 _seriesId, Series storage s) private view returns (uint256) {
+        uint256 perUnit = s.isCall
+            ? (s.settlementPrice > s.strike ? s.settlementPrice - s.strike : 0)
+            : (s.strike > s.settlementPrice ? s.strike - s.settlementPrice : 0);
+        if (perUnit == 0) return 0;
+        uint256 owed = perUnit * s.totalLongSize / WAD;
+        // Never reserve more than the pool holds.
+        return owed > s.collateral ? s.collateral : owed;
+    }
+
     /// @notice Collateral the pool must lock to underwrite `_size`.
     function requiredCollateral(uint256 _seriesId, uint256 _size) public view returns (uint256) {
         Series storage s = _requireSeries(_seriesId);
@@ -333,7 +359,12 @@ contract TigerSwapOptions {
         if (s.collateral < s.lockedCollateral) {
             s.lockedCollateral = s.collateral;
         }
-        lpClaims[_seriesId] = s.collateral;
+
+        // Release the reserve for exactly this holder's payout and make the
+        // freed collateral claimable by LPs.
+        uint256 reserve = holderReserve[_seriesId];
+        holderReserve[_seriesId] = payout >= reserve ? 0 : reserve - payout;
+        lpClaims[_seriesId] = s.collateral - holderReserve[_seriesId];
 
         emit Exercised(_seriesId, msg.sender, size, payout);
     }
@@ -347,8 +378,9 @@ contract TigerSwapOptions {
         require(_amount > 0, "amount required");
         require(_amount <= lpClaims[_seriesId], "exceeds claimable collateral");
 
-        uint256 reserved = s.lockedCollateral > lpClaims[_seriesId] ? lpClaims[_seriesId] : s.lockedCollateral;
-        require(_amount <= lpClaims[_seriesId] - reserved, "collateral is reserved");
+        // `lpClaims` already excludes the intrinsic reserved for unexercised
+        // holders (see settleSeries/exercise), so a holder's payout can never be
+        // withdrawn here.
 
         uint256 totalShares = totalLpShares[_seriesId];
         require(totalShares > 0, "no liquidity providers");
