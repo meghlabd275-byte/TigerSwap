@@ -147,6 +147,43 @@ contract BridgeTest is Test {
         bridge.completeBridge(m, sigs);
     }
 
+    /// The threshold is not initialized by the constructor. Before the fix an
+    /// unset threshold was zero, so `_countValidSignatures(...) >= 0` always held
+    /// and anyone could release the bridge's locked liquidity with no signatures.
+    function testInboundRejectsEmptySignaturesWhenThresholdUnset() public {
+        TigerSwapBridge fresh = new TigerSwapBridge(LOCAL_CHAIN);
+        fresh.enableChain(REMOTE_CHAIN, true);
+        fresh.whitelistToken(address(token), true);
+        fresh.setValidator(validator, true);
+        // Deliberately never call setValidatorThreshold.
+
+        TigerSwapBridge.BridgeMessage memory m = _message(5_000e18);
+        vm.expectRevert(bytes("TigerSwap: THRESHOLD_NOT_SET"));
+        fresh.completeBridge(m, "");
+    }
+
+    /// A threshold larger than the live validator set can never be met, which
+    /// would permanently block the inbound path.
+    function testSetValidatorThresholdCannotExceedValidatorCount() public {
+        vm.expectRevert(bytes("TigerSwap: THRESHOLD_EXCEEDS_VALIDATORS"));
+        bridge.setValidatorThreshold(3);
+    }
+
+    /// The validator count follows the set as members are added and removed.
+    function testValidatorCountTracksSet() public {
+        assertEq(bridge.validatorCount(), 2);
+        bridge.setValidator(address(0x1234), true);
+        assertEq(bridge.validatorCount(), 3);
+        // Re-adding an existing validator must not double count.
+        bridge.setValidator(address(0x1234), true);
+        assertEq(bridge.validatorCount(), 3);
+        bridge.setValidator(address(0x1234), false);
+        assertEq(bridge.validatorCount(), 2);
+        // Removing an address that was never a validator must not underflow.
+        bridge.setValidator(address(0x5678), false);
+        assertEq(bridge.validatorCount(), 2);
+    }
+
     function testWithdrawFees() public {
         vm.prank(user);
         bridge.bridge(REMOTE_CHAIN, address(token), 10_000e18, user, 3);

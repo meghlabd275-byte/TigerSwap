@@ -111,6 +111,13 @@ contract TigerSwapPerpetuals {
     mapping(address => uint256) public totalPoolShares;
     /// @dev Settlement token => trading fees accrued to the protocol.
     mapping(address => uint256) public protocolFees;
+    /// @dev Settlement token => liquidity reserved to back the worst-case payout
+    ///      of open positions. LPs may not withdraw this, so a winning trader
+    ///      cannot be left unpaid by a liquidity exit.
+    mapping(address => uint256) public reservedLiquidity;
+    /// @dev Settlement token => trader profit that the pool could not pay at
+    ///      settlement time. It is a claim the pool owes, never discarded.
+    mapping(address => uint256) public unpaidProfits;
 
     // ============ Events ============
     event MarketCreated(bytes32 indexed marketId, address token, uint256 maxLeverage);
@@ -356,8 +363,11 @@ contract TigerSwapPerpetuals {
         }
 
         // The pool must be able to cover the worst case payout for this trade.
+        // That liability is reserved for the life of the position so LPs cannot
+        // withdraw the capital backing it before the trader closes.
         uint256 maxPayout = notional * MAX_PAYOUT_BPS / BPS_DENOMINATOR;
         require(_freeLiquidity(market.token) >= maxPayout, "TigerSwap: INSUFFICIENT_POOL_LIQUIDITY");
+        reservedLiquidity[market.token] += maxPayout;
 
         // Charge the opening fee out of collateral and keep it in the pool.
         uint256 fee = notional * market.openFee / RATIO_PRECISION;
@@ -405,8 +415,9 @@ contract TigerSwapPerpetuals {
         address trader = position.trader;
         uint256 notional = position.size * position.entryPrice / PRICE_PRECISION;
 
-        // Release open interest before touching the pool.
+        // Release open interest and the reserved payout before touching the pool.
         market.openInterest = market.openInterest > notional ? market.openInterest - notional : 0;
+        _releaseReserve(market.token, notional);
         delete positions[positionId];
 
         _settle(market.token, trader, collateral, pnl, 0, address(0));
@@ -441,6 +452,7 @@ contract TigerSwapPerpetuals {
         address trader = position.trader;
 
         market.openInterest = market.openInterest > notional ? market.openInterest - notional : 0;
+        _releaseReserve(market.token, notional);
         delete positions[positionId];
 
         // The fee is a share of positive equity, capped so it never exceeds it.
@@ -474,9 +486,12 @@ contract TigerSwapPerpetuals {
         if (pnl >= 0) {
             uint256 profit = uint256(pnl);
             uint256 pool = poolLiquidity[token];
-            // A profit larger than the pool can pay is capped; the trader keeps
-            // their collateral in full regardless.
+            // A profit larger than the free pool can pay is capped at what the
+            // pool can actually pay out. The remainder is recorded as an unpaid
+            // obligation rather than silently dropped, so it is visible and can
+            // be settled once liquidity returns.
             if (profit > pool) {
+                unpaidProfits[token] += profit - pool;
                 profit = pool;
             }
             poolLiquidity[token] = pool - profit;
@@ -684,9 +699,21 @@ contract TigerSwapPerpetuals {
         return current > reserved ? current - reserved : 0;
     }
 
-    /// @dev Profit currently owed to open positions in `token`, which LPs may
-    ///      not withdraw.
+    /// @dev Liquidity committed in `token` that LPs may not withdraw: the
+    ///      worst-case payout of every open position plus any profit the pool
+    ///      could not pay at settlement, plus accrued protocol fees. Previously
+    ///      this returned only the protocol fees, so an LP could withdraw the
+    ///      capital backing a winning trader.
     function _reservedForOpenInterest(address token) private view returns (uint256) {
-        return protocolFees[token] > poolLiquidity[token] ? poolLiquidity[token] : protocolFees[token];
+        return reservedLiquidity[token] + unpaidProfits[token] + protocolFees[token];
+    }
+
+    /// @dev Release the payout reserve held for a closing position. The reserve
+    ///      was `notional * MAX_PAYOUT_BPS / BPS_DENOMINATOR`; `notional` is
+    ///      recomputed identically here from the stored entry price.
+    function _releaseReserve(address token, uint256 notional) private {
+        uint256 amount = notional * MAX_PAYOUT_BPS / BPS_DENOMINATOR;
+        uint256 reserved = reservedLiquidity[token];
+        reservedLiquidity[token] = amount >= reserved ? 0 : reserved - amount;
     }
 }

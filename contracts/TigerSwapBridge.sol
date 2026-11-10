@@ -31,6 +31,8 @@ contract TigerSwapBridge {
     uint256 public feeBps = 5; // 0.05%
     uint256 public minAmount = 100;
     uint256 public validatorThreshold;
+    /// @notice Number of validators currently registered via setValidator.
+    uint256 public validatorCount;
     uint256 public chainId;
 
     mapping(uint256 => bool) public supportedChains;
@@ -91,12 +93,24 @@ contract TigerSwapBridge {
 
     function setValidator(address validator, bool status) external onlyOwner {
         require(validator != address(0), "TigerSwap: ZERO_ADDRESS");
+        // Keep validatorCount in step with the set so the threshold can be
+        // bounded by it. Only a real change of membership moves the count.
+        if (status && !isValidator[validator]) {
+            validatorCount += 1;
+        } else if (!status && isValidator[validator]) {
+            validatorCount -= 1;
+        }
         isValidator[validator] = status;
         emit ValidatorUpdated(validator, status);
     }
 
+    /// @notice Set how many distinct validator signatures an inbound message needs.
+    /// @dev Bounded above by the live validator set: a threshold above the set
+    ///      size could never be met, and one of zero would let anyone complete a
+    ///      message without a single signature.
     function setValidatorThreshold(uint256 threshold) external onlyOwner {
         require(threshold > 0, "TigerSwap: ZERO_THRESHOLD");
+        require(threshold <= validatorCount, "TigerSwap: THRESHOLD_EXCEEDS_VALIDATORS");
         validatorThreshold = threshold;
         emit ThresholdUpdated(threshold);
     }
@@ -179,6 +193,10 @@ contract TigerSwapBridge {
         ));
         bytes32 digest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", payloadHash));
 
+        // Fail closed when the threshold was never configured. Without this an
+        // unset (zero) threshold would accept an empty signature set and release
+        // the bridge's locked liquidity to any caller.
+        require(validatorThreshold > 0, "TigerSwap: THRESHOLD_NOT_SET");
         require(_countValidSignatures(digest, signatures) >= validatorThreshold,
             "TigerSwap: INSUFFICIENT_SIGNATURES");
 

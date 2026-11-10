@@ -535,6 +535,46 @@ contract TigerSwapPerpetualsTest is Test {
         perps.removeLiquidity(address(rusd), shares);
     }
 
+    /// The worst-case payout of every open position is reserved. Before the fix
+    /// the reserve tracked only protocol fees, so an LP could withdraw the
+    /// capital backing a winning trader and leave the trader unpaid.
+    function testLpCannotWithdrawLiquidityBackingOpenPosition() public {
+        // A position whose reserved payout is a meaningful share of the pool.
+        vm.prank(trader);
+        perps.openPosition(BTC, 10e18, 600_000e18, true);
+
+        uint256 reserved = perps.reservedLiquidity(address(rusd));
+        assertGt(reserved, 0, "an open position must reserve payout liquidity");
+
+        // Withdrawing the whole pool must fail: the reserved part is committed.
+        uint256 shares = perps.poolShares(address(rusd), address(this));
+        vm.expectRevert("TigerSwap: LIQUIDITY_RESERVED");
+        perps.removeLiquidity(address(rusd), shares);
+    }
+
+    /// Closing a position releases its reserve so the LP can withdraw again.
+    function testReserveReleasedWhenPositionCloses() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
+        assertGt(perps.reservedLiquidity(address(rusd)), 0, "reserved while open");
+
+        vm.prank(trader);
+        perps.closePosition(id);
+        assertEq(perps.reservedLiquidity(address(rusd)), 0, "reserve released on close");
+    }
+
+    /// A liquidated position also releases its reserve.
+    function testReserveReleasedWhenPositionLiquidates() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 10_000e18, true);
+        assertGt(perps.reservedLiquidity(address(rusd)), 0, "reserved while open");
+
+        // Crash the price so the position is liquidatable.
+        perps.updatePrice(BTC, 30_000e18);
+        perps.liquidatePosition(id);
+        assertEq(perps.reservedLiquidity(address(rusd)), 0, "reserve released on liquidation");
+    }
+
     function testOpenInterestIsTrackedAndReleased() public {
         vm.prank(trader);
         bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
