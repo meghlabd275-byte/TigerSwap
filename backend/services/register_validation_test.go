@@ -15,7 +15,7 @@ import (
 
 func newAuthHarness(t *testing.T) (*AuthService, *gorm.DB) {
 	t.Helper()
-	t.Setenv("JWT_SECRET", "register-validation-test-secret")
+	t.Setenv("JWT_SECRET", "register-validation-test-secret-0123456789")
 	db := newListingTestDB(t)
 	if err := db.AutoMigrate(&models.User{}, &models.RevokedToken{}); err != nil {
 		t.Fatalf("migrate: %v", err)

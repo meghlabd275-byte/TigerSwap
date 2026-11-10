@@ -22,7 +22,7 @@ func TestUpdateProfileRejectsAnUnsafeUsername(t *testing.T) {
 	if err := db.AutoMigrate(&models.User{}); err != nil {
 		t.Fatalf("migrate users: %v", err)
 	}
-	t.Setenv("JWT_SECRET", "test-secret-for-profile-suite")
+	t.Setenv("JWT_SECRET", "test-secret-for-profile-suite-0123456789")
 	svc := NewAuthService(db)
 
 	user := models.User{

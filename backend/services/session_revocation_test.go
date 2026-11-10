@@ -8,7 +8,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const sessionTestSecret = "register-validation-test-secret"
+const sessionTestSecret = "register-validation-test-secret-0123456789"
 
 // TestDeactivationRevokesExistingSessions proves that revoking a user's sessions
 // invalidates a token that was already issued, that the revocation survives a

@@ -751,11 +751,19 @@ type AuthService struct {
 	revocations  *revocationStore
 }
 
+// minJWTSecretLength is the shortest HS256 secret accepted at startup. A short
+// secret is brute-forceable offline from a single captured token, so it is
+// rejected rather than merely warned about; this matches the api_gateway.
+const minJWTSecretLength = 32
+
 func NewAuthService(db *gorm.DB) *AuthService {
 	// JWT secret must be provided via environment variable
 	jwtSecret := os.Getenv("JWT_SECRET")
 	if jwtSecret == "" {
 		panic("JWT_SECRET environment variable is required for security")
+	}
+	if len(jwtSecret) < minJWTSecretLength {
+		panic(fmt.Sprintf("JWT_SECRET must be at least %d characters", minJWTSecretLength))
 	}
 
 	svc := &AuthService{

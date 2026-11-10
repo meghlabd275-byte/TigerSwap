@@ -50,7 +50,7 @@ func newAuthServiceForTest(t *testing.T, secret string) *services.AuthService {
 // super-admin guard compared against `super_admin`, which no token ever holds.
 func TestAdminRequiredAdmitsAdminAndSuperAdmin(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const secret = "middleware-role-test-secret"
+	const secret = "middleware-role-test-secret-0123456789"
 	auth := newAuthServiceForTest(t, secret)
 
 	router := gin.New()
@@ -71,7 +71,7 @@ func TestAdminRequiredAdmitsAdminAndSuperAdmin(t *testing.T) {
 
 func TestAdminRequiredRejectsPlainUser(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const secret = "middleware-role-test-secret"
+	const secret = "middleware-role-test-secret-0123456789"
 	auth := newAuthServiceForTest(t, secret)
 
 	router := gin.New()
@@ -92,7 +92,7 @@ func TestAdminRequiredRejectsPlainUser(t *testing.T) {
 // the role string a token actually carries and refuses an ordinary admin.
 func TestSuperAdminRequiredMatchesTokenRole(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const secret = "middleware-role-test-secret"
+	const secret = "middleware-role-test-secret-0123456789"
 	auth := newAuthServiceForTest(t, secret)
 
 	router := gin.New()
@@ -121,7 +121,7 @@ func TestSuperAdminRequiredMatchesTokenRole(t *testing.T) {
 
 func TestAuthRequiredRejectsMissingAndMalformedHeader(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	const secret = "middleware-role-test-secret"
+	const secret = "middleware-role-test-secret-0123456789"
 	auth := newAuthServiceForTest(t, secret)
 
 	router := gin.New()
