@@ -166,6 +166,10 @@ impl Fixed {
             .ok_or(BotError::Overflow)
     }
 
+    // The fallible `add`/`sub`/`mul`/`div` deliberately do not implement the
+    // panicking `std::ops` traits: a bot must see an error, not a panic, when
+    // an operation overflows.
+    #[allow(clippy::should_implement_trait)]
     pub fn add(self, other: Self) -> BotResult<Self> {
         self.value
             .checked_add(other.value)
@@ -173,6 +177,7 @@ impl Fixed {
             .ok_or(BotError::Overflow)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn sub(self, other: Self) -> BotResult<Self> {
         self.value
             .checked_sub(other.value)
@@ -184,6 +189,7 @@ impl Fixed {
     ///
     /// The product is formed in 256 bits before the scale is divided out, so
     /// ordinary magnitudes such as `60000 * 0.01` cannot overflow.
+    #[allow(clippy::should_implement_trait)]
     pub fn mul(self, other: Self) -> BotResult<Self> {
         crate::wide::mul_div(self.value, other.value, SCALE_FACTOR)
             .map(Self::from_raw)
@@ -191,6 +197,7 @@ impl Fixed {
     }
 
     /// Divides two values, rounding toward zero.
+    #[allow(clippy::should_implement_trait)]
     pub fn div(self, other: Self) -> BotResult<Self> {
         if other.value == 0 {
             return Err(BotError::DivisionByZero);

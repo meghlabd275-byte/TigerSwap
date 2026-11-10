@@ -56,7 +56,7 @@ impl TokenBucket {
         let tokens = max_tokens as f64;
         Self {
             tokens,
-            max_tokens: tokens as f64,
+            max_tokens: tokens,
             refill_rate: refill_per_second,
             last_refill: Instant::now(),
         }

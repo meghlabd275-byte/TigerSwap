@@ -428,8 +428,7 @@ fn twap_remainder_is_exact() {
     .unwrap();
 
     let mut total = Fixed::ZERO;
-    let mut timestamp = 1_700_000_000_000i64;
-    for _ in 0..3 {
+    for timestamp in (1_700_000_000_000i64..).take(3) {
         let snapshot = MarketSnapshot::new(
             "BTC/RUSD",
             vec![level("99.99", "10")],
@@ -440,7 +439,6 @@ fn twap_remainder_is_exact() {
         .unwrap();
         let orders = bot.step(&snapshot).unwrap();
         total = total.add(orders[0].quantity).unwrap();
-        timestamp += 1;
     }
     assert_eq!(total, fx("10"), "slices must sum to the total");
     assert!(bot.is_complete());
