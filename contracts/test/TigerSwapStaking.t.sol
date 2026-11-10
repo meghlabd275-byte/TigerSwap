@@ -5,6 +5,46 @@ import "forge-std/Test.sol";
 import "../TigerSwapStaking.sol";
 import "./TestERC20.sol";
 
+/// @dev A token whose transfer/transferFrom return no data, like USDT on
+///      Ethereum. A direct `IERC20.transfer` reverts against it; the
+///      call-based helper accepts the empty return.
+contract NoReturnERC20 {
+    string public name;
+    string public symbol;
+    uint8 public decimals = 18;
+    uint256 public totalSupply;
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    constructor(string memory _name, string memory _symbol) {
+        name = _name;
+        symbol = _symbol;
+    }
+
+    function mint(address to, uint256 amount) external {
+        totalSupply += amount;
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external {
+        allowance[msg.sender][spender] = amount;
+    }
+
+    // No return value, deliberately.
+    function transfer(address to, uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external {
+        if (allowance[from][msg.sender] != type(uint256).max) {
+            allowance[from][msg.sender] -= amount;
+        }
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+    }
+}
+
 contract TigerSwapStakingTest is Test {
     TigerSwapStaking public staking;
     TestERC20 public tgr;
@@ -294,5 +334,38 @@ contract TigerSwapStakingTest is Test {
 
         // The whole reward is spread evenly across the duration.
         assertEq(staking.rewardRate(), TOTAL_REWARD / DURATION, "rate spread over the duration");
+    }
+
+    /// A token that returns no data from transfer/transferFrom must still work.
+    /// A direct `IERC20.transfer` reverts against such a token, so staking,
+    /// withdrawal and reward claims all failed before the helper was used.
+    function testStakingWorksWithANoReturnToken() public {
+        NoReturnERC20 usdt = new NoReturnERC20("USDT", "USDT");
+        NoReturnERC20 usdtReward = new NoReturnERC20("RYUSD", "RYUSD");
+        TigerSwapStaking s2 = new TigerSwapStaking(address(usdt), address(usdtReward));
+
+        usdt.mint(alice, 1_000e18);
+        vm.prank(alice);
+        usdt.approve(address(s2), type(uint256).max);
+
+        vm.prank(alice);
+        s2.stake(500e18);
+        assertEq(s2.balanceOf(alice), 500e18, "staked");
+
+        // Fund and start a campaign, then claim in the no-return reward token.
+        usdtReward.mint(address(this), 10_000e18);
+        // The campaign must be funded with the reward token before it starts.
+        usdtReward.transfer(address(s2), 10_000e18);
+        s2.setRewardsDuration(DURATION);
+        s2.notifyRewardAmount(10_000e18);
+
+        vm.warp(block.timestamp + DURATION);
+        vm.prank(alice);
+        s2.getReward();
+        assertGt(usdtReward.balanceOf(alice), 0, "reward paid in a no-return token");
+
+        vm.prank(alice);
+        s2.withdraw(500e18);
+        assertEq(usdt.balanceOf(alice), 1_000e18, "principal returned");
     }
 }

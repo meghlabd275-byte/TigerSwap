@@ -129,7 +129,7 @@ contract TigerSwapVault {
             emit Transfer(address(0), address(0), MINIMUM_SHARES);
         }
 
-        require(asset.transferFrom(msg.sender, address(this), _assets), "transfer in failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(asset), msg.sender, address(this), _assets), "transfer in failed");
 
         totalSupply += shares;
         balanceOf[_receiver] += shares;
@@ -156,7 +156,7 @@ contract TigerSwapVault {
         balanceOf[_owner_] -= shares;
         totalSupply -= shares;
 
-        require(asset.transfer(_receiver, _assets), "transfer out failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(asset), _receiver, _assets), "transfer out failed");
 
         emit Transfer(_owner_, address(0), shares);
         emit Withdraw(msg.sender, _owner_, _assets, shares);
@@ -180,7 +180,7 @@ contract TigerSwapVault {
         balanceOf[_owner_] -= _shares;
         totalSupply -= _shares;
 
-        require(asset.transfer(_receiver, assets), "transfer out failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(asset), _receiver, assets), "transfer out failed");
 
         emit Transfer(_owner_, address(0), _shares);
         emit Withdraw(msg.sender, _owner_, assets, _shares);

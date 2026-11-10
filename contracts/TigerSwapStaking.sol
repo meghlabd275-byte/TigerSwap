@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import "./TigerSwapSafeERC20.sol";
+
 /**
  * @title TigerSwapStaking
  * @notice Staking contract for earning rewards
@@ -104,7 +106,10 @@ contract TigerSwapStaking {
     function stake(uint256 _amount) external nonReentrant updateReward(msg.sender) {
         require(_amount > 0, "TigerSwap: CANNOT_STAKE_ZERO");
         
-        stakingToken.transferFrom(msg.sender, address(this), _amount);
+        require(
+            TigerSwapSafeERC20.safeTransferFrom(address(stakingToken), msg.sender, address(this), _amount),
+            "TigerSwap: TRANSFER_FAILED"
+        );
         balanceOf[msg.sender] += _amount;
         totalSupply += _amount;
         
@@ -121,7 +126,10 @@ contract TigerSwapStaking {
         
         balanceOf[msg.sender] -= _amount;
         totalSupply -= _amount;
-        stakingToken.transfer(msg.sender, _amount);
+        require(
+            TigerSwapSafeERC20.safeTransfer(address(stakingToken), msg.sender, _amount),
+            "TigerSwap: TRANSFER_FAILED"
+        );
         
         emit Withdrawn(msg.sender, _amount);
     }
@@ -134,7 +142,10 @@ contract TigerSwapStaking {
         require(reward > 0, "TigerSwap: NO_REWARD");
         
         rewards[msg.sender] = 0;
-        rewardToken.transfer(msg.sender, reward);
+        require(
+            TigerSwapSafeERC20.safeTransfer(address(rewardToken), msg.sender, reward),
+            "TigerSwap: TRANSFER_FAILED"
+        );
         
         emit RewardClaimed(msg.sender, reward);
     }
@@ -218,10 +229,3 @@ contract TigerSwapStaking {
     }
 }
 
-interface IERC20 {
-    function transfer(address to, uint256 value) external returns (bool);
-    function transferFrom(address from, address to, uint256 value) external returns (bool);
-    function balanceOf(address account) external view returns (uint256);
-    function approve(address spender, uint256 value) external returns (bool);
-    function allowance(address owner, address spender) external view returns (uint256);
-}

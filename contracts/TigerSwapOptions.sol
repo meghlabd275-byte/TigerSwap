@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
 import "./TigerSwapOptionMath.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapOptions
@@ -188,7 +189,7 @@ contract TigerSwapOptions {
         require(!s.settled, "series already settled");
         require(_amount > 0, "amount required");
 
-        require(collateralToken.transferFrom(msg.sender, address(this), _amount), "transfer in failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(collateralToken), msg.sender, address(this), _amount), "transfer in failed");
 
         uint256 free = s.collateral > s.lockedCollateral ? s.collateral - s.lockedCollateral : 0;
         // When the pool is fully committed every existing share is momentarily
@@ -225,7 +226,7 @@ contract TigerSwapOptions {
         totalLpShares[_seriesId] -= burn;
         lpShares[_seriesId][msg.sender] -= burn;
         lpPrincipal[_seriesId][msg.sender] -= _amount;
-        require(collateralToken.transfer(msg.sender, _amount), "transfer out failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(collateralToken), msg.sender, _amount), "transfer out failed");
 
         emit CollateralRemoved(_seriesId, msg.sender, _amount);
     }
@@ -309,7 +310,7 @@ contract TigerSwapOptions {
         uint256 lock = requiredCollateral(_seriesId, _size);
         require(s.lockedCollateral + lock <= s.collateral, "insufficient pool collateral");
 
-        require(collateralToken.transferFrom(msg.sender, address(this), paid), "premium transfer failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(collateralToken), msg.sender, address(this), paid), "premium transfer failed");
 
         s.premiumCollected += paid;
         // The premium is now pool money, so it joins the collateral the LPs
@@ -350,7 +351,7 @@ contract TigerSwapOptions {
         if (payout > 0) {
             require(payout <= s.collateral, "pool cannot cover payout");
             s.collateral -= payout;
-            require(collateralToken.transfer(msg.sender, payout), "payout transfer failed");
+            require(TigerSwapSafeERC20.safeTransfer(address(collateralToken), msg.sender, payout), "payout transfer failed");
         }
 
         // Release the collateral that backed this position.
