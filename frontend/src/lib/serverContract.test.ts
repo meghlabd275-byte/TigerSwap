@@ -16,6 +16,7 @@ import {
   bridgeChainsValidator,
   bridgeQuoteValidator,
   chainListValidator,
+  copyPositionListValidator,
   copyTraderListValidator,
   futuresMarketListValidator,
   marginListingListValidator,
@@ -128,6 +129,13 @@ const SERVER_TWAMM_ORDERS = `[${SERVER_TWAMM_ORDER}]`;
 const SERVER_COPY_TRADER = `{"address":"0x1111111111111111111111111111111111111111","name":"Alpha Whale","avatar":"https://example.com/a.png","win_rate":0,"total_profit":"0","weekly_profit":0,"monthly_profit":0,"total_trades":0,"followers":0,"total_volume":"0","avg_holding_time":"","is_verified":false,"is_pro":false,"risk_score":"medium","strategies":null,"last_active":"2026-10-31T16:35:21.407518436Z"}`;
 
 const SERVER_COPY_TRADERS = `{"count":1,"traders":[${SERVER_COPY_TRADER}]}`;
+
+// Captured from `GET /copy-trading/positions` on a running server via
+// `TestCopyPositionResponseWireFormat` in
+// `backend/services/copy_trading_contract_test.go` (run with -v to regenerate).
+const SERVER_COPY_POSITION = `{"id":"cp_1794312461797982574","follower_address":"0x1111111111111111111111111111111111111111","trader_address":"0x2222222222222222222222222222222222222222","original_position":"","pair":"BTC/RUSD","side":"long","size":"1000","entry_price":100,"current_price":100,"leverage":1,"pnl":"0","status":"open","opened_at":"2026-11-10T12:07:41.797983184Z","closed_at":null,"copied_at":"2026-11-10T12:07:41.797983234Z"}`;
+
+const SERVER_COPY_POSITIONS = `{"count":1,"positions":[${SERVER_COPY_POSITION}]}`;
 
 // Captured from `GET /bridge/chains` on a running server.
 const SERVER_BRIDGE_CHAINS = `{"chains":[8453,43114,1,137,56,42161,10]}`;
@@ -304,6 +312,17 @@ test("live /copy-trading/traders payload satisfies copyTraderListValidator", () 
   assert.equal(traders[0].name, "Alpha Whale");
   assert.equal(traders[0].address, "0x1111111111111111111111111111111111111111");
   assert.deepEqual(traders[0].strategies, []);
+});
+
+test("live /copy-trading/positions payload satisfies copyPositionListValidator", () => {
+  const positions = parse(copyPositionListValidator, SERVER_COPY_POSITIONS, "copyPositions");
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].follower_address, "0x1111111111111111111111111111111111111111");
+  assert.equal(positions[0].trader_address, "0x2222222222222222222222222222222222222222");
+  assert.equal(positions[0].pair, "BTC/RUSD");
+  assert.equal(positions[0].side, "long");
+  assert.equal(positions[0].status, "open");
+  assert.equal(positions[0].closed_at, null);
 });
 
 test("live /bridge/chains payload satisfies bridgeChainsValidator", () => {

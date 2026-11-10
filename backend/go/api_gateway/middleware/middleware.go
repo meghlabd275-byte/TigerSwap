@@ -480,6 +480,12 @@ func Secure() gin.HandlerFunc {
 		c.Header("Cross-Origin-Opener-Policy", "same-origin")
 		c.Header("Cross-Origin-Resource-Policy", "same-origin")
 
+		// Every gateway response carries account-scoped data, so it must not be
+		// retained by a shared or browser cache and replayed to another account.
+		// Nothing here is a static asset that benefits from caching.
+		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		c.Header("Pragma", "no-cache")
+
 		c.Next()
 	}
 }

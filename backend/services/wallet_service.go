@@ -550,14 +550,16 @@ func (s *WalletService) GetPerpetualPositions(c *gin.Context) {
 	c.JSON(200, gin.H{"success": true, "positions": positions, "count": len(positions)})
 }
 
-// CreateCopyTrade records a copy trade and mirrors the trader's order.
+// CreateCopyTrade records a copy trade and mirrors the trader's order. The
+// follower is the authenticated caller's own wallet, resolved from the account
+// rather than a client-supplied address, so one account cannot mirror a trade
+// under another wallet's identity.
 func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	var req struct {
-		TraderAddress   string `json:"trader_address" binding:"required"`
-		FollowerAddress string `json:"follower_address" binding:"required"`
-		Pair            string `json:"pair" binding:"required"`
-		Amount          string `json:"amount" binding:"required"`
-		Side            string `json:"side" binding:"required"`
+		TraderAddress string `json:"trader_address" binding:"required"`
+		Pair          string `json:"pair" binding:"required"`
+		Amount        string `json:"amount" binding:"required"`
+		Side          string `json:"side" binding:"required"`
 	}
 
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -568,14 +570,20 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !common.IsHexAddress(req.TraderAddress) || !common.IsHexAddress(req.FollowerAddress) {
-		c.JSON(400, gin.H{"error": "Invalid address"})
+	if !common.IsHexAddress(req.TraderAddress) {
+		c.JSON(400, gin.H{"error": "Invalid trader address"})
+		return
+	}
+
+	followerAddress, err := s.walletAddressForUser(userID)
+	if err != nil {
+		c.JSON(400, gin.H{"error": "connect a wallet before copying trades"})
 		return
 	}
 
 	status := "pending"
 	if s.copyEngine != nil {
-		if _, err := s.copyEngine.CopyTrade(c.Request.Context(), req.FollowerAddress, req.TraderAddress, req.Pair, req.Side, req.Amount, ""); err != nil {
+		if _, err := s.copyEngine.CopyTrade(c.Request.Context(), followerAddress, strings.ToLower(req.TraderAddress), req.Pair, req.Side, req.Amount, ""); err != nil {
 			// `err` here is an internal failure (a signer, a database write or an
 			// upstream RPC) whose text can carry a path or a connection string; it is
 			// logged for the operator and not returned to the caller.
@@ -589,7 +597,7 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 	copyTrade := models.CopyTrade{
 		FollowerID:      userID,
 		TraderAddress:   common.HexToAddress(req.TraderAddress).Hex(),
-		FollowerAddress: common.HexToAddress(req.FollowerAddress).Hex(),
+		FollowerAddress: common.HexToAddress(followerAddress).Hex(),
 		Pair:            req.Pair,
 		Amount:          req.Amount,
 		Side:            req.Side,
@@ -618,6 +626,25 @@ func (s *WalletService) GetCopyTrades(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"success": true, "trades": trades, "count": len(trades)})
+}
+
+// walletAddressForUser returns the wallet address bound to an account. A copy
+// trade is executed under the account's own wallet, so an account with no bound
+// wallet cannot copy a trade.
+func (s *WalletService) walletAddressForUser(userID string) (string, error) {
+	id, err := uuid.Parse(userID)
+	if err != nil {
+		return "", fmt.Errorf("invalid user id: %w", err)
+	}
+	var user models.User
+	if err := s.db.Select("wallet_address").First(&user, "id = ?", id).Error; err != nil {
+		return "", fmt.Errorf("failed to load account: %w", err)
+	}
+	address := strings.TrimSpace(user.WalletAddress)
+	if !common.IsHexAddress(address) {
+		return "", errors.New("account has no wallet address")
+	}
+	return strings.ToLower(address), nil
 }
 
 // Deposit derives the user's deterministic deposit address and returns it.

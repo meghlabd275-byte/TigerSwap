@@ -169,7 +169,7 @@ func main() {
 			log.Printf("failed to refresh perpetual markets: %v", err)
 		}
 	})
-	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator)
+	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator).SetDB(db)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
 	launchpadService := services.NewLaunchpadService(db, blockchainClient, priceAggregator)
 	feeCollector := services.NewFeeCollectorService()

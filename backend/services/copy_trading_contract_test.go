@@ -76,3 +76,50 @@ func TestBridgeQuoteResponseWireFormat(t *testing.T) {
 		"src_chain", "dst_chain", "token", "amount_in", "amount_out", "fee",
 		"fee_usd", "estimated_time", "router", "price_impact")
 }
+
+// TestCopyPositionResponseWireFormat captures the real `/copy-trading/positions`
+// payload the frontend's `copyPositionValidator` is written against. The
+// fixture in `frontend/src/lib/serverContract.test.ts` is copied from this log
+// output, so a renamed field fails the frontend contract first. The payload is
+// produced by the real engine against a real (in-memory) database, not
+// hand-written.
+func TestCopyPositionResponseWireFormat(t *testing.T) {
+	engine, user := newCopyIdentityEngine(t)
+
+	if err := engine.StartFollowing(user.WalletAddress, "0x2222222222222222222222222222222222222222", CopyConfig{CopyRatio: 1}); err != nil {
+		t.Fatalf("StartFollowing: %v", err)
+	}
+	if _, err := engine.CopyTrade(t.Context(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "1000", ""); err != nil {
+		t.Fatalf("CopyTrade: %v", err)
+	}
+
+	status, body := callHandler(t, engine.GetPositionsHandler, user.ID.String(), http.MethodGet, "/copy-trading/positions", "", nil)
+	if status != http.StatusOK {
+		t.Fatalf("positions: status %d body %s", status, body)
+	}
+	t.Logf("SERVER_COPY_POSITION = `%s`", body)
+
+	var envelope struct {
+		Count     int             `json:"count"`
+		Positions []*CopyPosition `json:"positions"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		t.Fatalf("positions is not an envelope: %v (%s)", err, body)
+	}
+	if envelope.Count != 1 || len(envelope.Positions) != 1 {
+		t.Fatalf("expected one position, got count=%d len=%d", envelope.Count, len(envelope.Positions))
+	}
+	if got := envelope.Positions[0].FollowerAddress; got != user.WalletAddress {
+		t.Fatalf("follower_address = %q, want the caller's wallet %q", got, user.WalletAddress)
+	}
+
+	// The emitted object must carry every field the frontend validator requires.
+	encodedPosition, err := json.Marshal(envelope.Positions[0])
+	if err != nil {
+		t.Fatalf("marshal position: %v", err)
+	}
+	assertKeys(t, string(encodedPosition),
+		"id", "follower_address", "trader_address", "original_position", "pair",
+		"side", "size", "entry_price", "current_price", "leverage", "pnl",
+		"status", "opened_at", "closed_at", "copied_at")
+}

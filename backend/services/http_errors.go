@@ -59,6 +59,7 @@ var serviceErrors = []serviceError{
 	{errCopyPositionNotFound, http.StatusNotFound, "copy position not found"},
 	{errCopyPositionClosed, http.StatusConflict, "copy position already closed"},
 	{errCopyPositionForbidden, http.StatusForbidden, "copy position belongs to another account"},
+	{errNoWalletBound, http.StatusForbidden, "no wallet is bound to this account"},
 
 	// Dynamic chain/token registry.
 	{errChainNotFound, http.StatusNotFound, "chain not found"},

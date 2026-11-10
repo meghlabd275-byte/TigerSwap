@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"net/http"
 	"sort"
 	"strconv"
@@ -13,6 +15,9 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // Sentinels for the copy-trading engine's caller-caused failures.
@@ -23,6 +28,7 @@ var (
 	errCopyPositionNotFound  = errors.New("copy position not found")
 	errCopyPositionClosed    = errors.New("copy position already closed")
 	errCopyPositionForbidden = errors.New("copy position belongs to another account")
+	errNoWalletBound         = errors.New("no wallet is bound to this account")
 )
 
 // CopyTradingEngine handles real copy trading
@@ -41,6 +47,19 @@ type CopyTradingEngine struct {
 	// Copy positions
 	copyPositions map[string]*CopyPosition // positionID -> position
 	orders        map[string]*CopyOrder
+
+	// Per-follower copy configuration, keyed by follower address. The ratio
+	// scales every copied size and the stop/take levels are enforced when a
+	// position is re-marked, so the values the follower supplied actually take
+	// effect instead of being silently discarded.
+	configs map[string]CopyConfig
+
+	// db resolves the authenticated account to its bound wallet address. The
+	// engine keys a follower by that address, so the HTTP handlers and the
+	// wallet copy-trade path agree on one identity domain; keying one by the
+	// account UUID and the other by the address would make a followed trader
+	// impossible to copy from the wallet route.
+	db *gorm.DB
 }
 
 // Trader represents a trader that can be copied
@@ -115,7 +134,42 @@ func NewCopyTradingEngine(blockchain *BlockchainClient, priceAgg priceSource) *C
 		following:     make(map[string]string),
 		copyPositions: make(map[string]*CopyPosition),
 		orders:        make(map[string]*CopyOrder),
+		configs:       make(map[string]CopyConfig),
 	}
+}
+
+// SetDB attaches the database used to resolve an account's bound wallet. The
+// engine stores a follower by wallet address, so it needs the account row to map
+// the authenticated session to that address.
+func (e *CopyTradingEngine) SetDB(db *gorm.DB) *CopyTradingEngine {
+	e.db = db
+	return e
+}
+
+// resolveFollowerAddress maps the authenticated account to its bound wallet
+// address and fails closed when the account has none. Identity is never taken
+// from the request, and the engine keys a follower by wallet address so the
+// follow handlers and the wallet copy-trade path use one identity domain.
+func (e *CopyTradingEngine) resolveFollowerAddress(c *gin.Context) (string, error) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return "", errCopyPositionForbidden
+	}
+	if e.db == nil {
+		return "", fmt.Errorf("copy trading store is not configured")
+	}
+	var user models.User
+	if err := e.db.Select("wallet_address").Where("id = ?", userID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errNoWalletBound
+		}
+		return "", fmt.Errorf("failed to load account: %w", err)
+	}
+	address := strings.TrimSpace(user.WalletAddress)
+	if !common.IsHexAddress(address) {
+		return "", errNoWalletBound
+	}
+	return strings.ToLower(address), nil
 }
 
 // RegisterTrader registers a new trader
@@ -200,6 +254,12 @@ func (e *CopyTradingEngine) StartFollowing(followerAddress, traderAddress string
 	// Add follow relationship
 	e.following[followerAddress] = traderAddress
 
+	// Persist the copy configuration so the ratio and stop/take levels apply to
+	// every position copied under this relationship.
+	config.FollowerAddress = followerAddress
+	config.TraderAddress = traderAddress
+	e.configs[followerAddress] = config
+
 	if e.followers[traderAddress] == nil {
 		e.followers[traderAddress] = []string{}
 	}
@@ -234,6 +294,7 @@ func (e *CopyTradingEngine) StopFollowing(followerAddress string) error {
 
 	// Remove following
 	delete(e.following, followerAddress)
+	delete(e.configs, followerAddress)
 
 	return nil
 }
@@ -253,6 +314,26 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 	price, err := e.getPriceForPair(ctx, pair)
 	if err != nil {
 		return nil, err
+	}
+
+	// The follower's configured ratio scales the copied size: a 0.5 ratio copies
+	// half the trader's notional. A missing or invalid config falls back to the
+	// full size, which is the ratio the follow request defaults to.
+	config, hasConfig := e.configs[followerAddress]
+	if hasConfig && config.CopyRatio > 0 && config.CopyRatio <= 1 && config.CopyRatio != 1 {
+		notional, parseErr := parseDecimal(size)
+		if parseErr != nil {
+			return nil, fmt.Errorf("copy size %q is not a decimal amount: %w", size, parseErr)
+		}
+		ratio, ratioErr := rationalFromFloat(config.CopyRatio)
+		if ratioErr != nil {
+			return nil, ratioErr
+		}
+		scaled := new(big.Rat).Mul(notional, ratio)
+		if scaled.Sign() <= 0 {
+			return nil, fmt.Errorf("copy_ratio scales the size to zero")
+		}
+		size = trimDecimal(formatDecimal(scaled, 18))
 	}
 
 	position := &CopyPosition{
@@ -315,9 +396,48 @@ func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
 		}
 		position.CurrentPrice = price
 		position.PNL = e.calculateCopyPNL(position)
+
+		// Enforce the follower's stop-loss and take-profit. Both are percentages
+		// of the position's entry notional, so they are compared against the
+		// signed price move rather than the absolute price.
+		config, hasConfig := e.configs[position.FollowerAddress]
+		if !hasConfig || (config.StopLoss <= 0 && config.TakeProfit <= 0) {
+			continue
+		}
+		movePct, err := e.copyMovePercent(position)
+		if err != nil {
+			continue
+		}
+		if config.StopLoss > 0 && movePct <= -config.StopLoss {
+			now := time.Now()
+			position.Status = "closed"
+			position.ClosedAt = &now
+			continue
+		}
+		if config.TakeProfit > 0 && movePct >= config.TakeProfit {
+			now := time.Now()
+			position.Status = "closed"
+			position.ClosedAt = &now
+		}
 	}
 
 	return nil
+}
+
+// copyMovePercent returns the signed percentage move of a position from its
+// entry price to its current price, positive when the position is in profit.
+func (e *CopyTradingEngine) copyMovePercent(position *CopyPosition) (float64, error) {
+	if position.EntryPrice <= 0 || math.IsNaN(position.EntryPrice) || math.IsInf(position.EntryPrice, 0) {
+		return 0, errors.New("position has no usable entry price")
+	}
+	if math.IsNaN(position.CurrentPrice) || math.IsInf(position.CurrentPrice, 0) {
+		return 0, errors.New("position has no usable mark price")
+	}
+	move := (position.CurrentPrice - position.EntryPrice) / position.EntryPrice
+	if strings.EqualFold(position.Side, "short") {
+		move = -move
+	}
+	return move * 100, nil
 }
 
 // CloseCopyPosition closes a copy position owned by caller. Ownership is
@@ -381,7 +501,17 @@ func (e *CopyTradingEngine) calculateCopyPNL(position *CopyPosition) string {
 		// never credits the follower with a gain.
 		return "0"
 	}
-	return formatDecimal(pnl, 8)
+	return trimDecimal(formatDecimal(pnl, 8))
+}
+
+// trimDecimal removes trailing zeros (and a trailing dot) from a fixed-point
+// decimal string so a scaled size is stored in its canonical shortest form.
+func trimDecimal(value string) string {
+	if !strings.Contains(value, ".") {
+		return value
+	}
+	value = strings.TrimRight(value, "0")
+	return strings.TrimSuffix(value, ".")
 }
 
 // API Handlers
@@ -453,10 +583,12 @@ func (e *CopyTradingEngine) StartFollowingHandler(c *gin.Context) {
 		return
 	}
 
-	// The follower is the authenticated account, never a client-supplied value.
-	follower := c.GetString("user_id")
-	if follower == "" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "authentication required"})
+	// The follower is the authenticated account's own wallet, never a
+	// client-supplied value. The engine keys a follower by wallet address so
+	// the wallet copy-trade path resolves the same identity.
+	follower, err := e.resolveFollowerAddress(c)
+	if err != nil {
+		respondServiceError(c, err)
 		return
 	}
 	if !common.IsHexAddress(req.TraderAddress) {
@@ -487,9 +619,9 @@ func (e *CopyTradingEngine) StartFollowingHandler(c *gin.Context) {
 
 // StopFollowingHandler stops copying for the authenticated caller.
 func (e *CopyTradingEngine) StopFollowingHandler(c *gin.Context) {
-	follower := c.GetString("user_id")
-	if follower == "" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "authentication required"})
+	follower, err := e.resolveFollowerAddress(c)
+	if err != nil {
+		respondServiceError(c, err)
 		return
 	}
 
@@ -503,9 +635,9 @@ func (e *CopyTradingEngine) StopFollowingHandler(c *gin.Context) {
 
 // GetPositionsHandler returns the authenticated caller's copy positions.
 func (e *CopyTradingEngine) GetPositionsHandler(c *gin.Context) {
-	follower := c.GetString("user_id")
-	if follower == "" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "authentication required"})
+	follower, err := e.resolveFollowerAddress(c)
+	if err != nil {
+		respondServiceError(c, err)
 		return
 	}
 
@@ -519,7 +651,11 @@ func (e *CopyTradingEngine) GetPositionsHandler(c *gin.Context) {
 // ClosePositionHandler closes a copy position owned by the caller.
 func (e *CopyTradingEngine) ClosePositionHandler(c *gin.Context) {
 	positionID := c.Param("id")
-	follower := c.GetString("user_id")
+	follower, err := e.resolveFollowerAddress(c)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
 
 	position, err := e.CloseCopyPosition(positionID, follower)
 	if err != nil {

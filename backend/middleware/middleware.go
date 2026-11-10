@@ -125,6 +125,11 @@ func SecurityHeaders() gin.HandlerFunc {
 		c.Header("Cross-Origin-Opener-Policy", "same-origin")
 		c.Header("Cross-Origin-Resource-Policy", "same-origin")
 		c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		// Every response carries account-scoped data (balances, positions, keys),
+		// so it must not be retained by a shared or browser cache and replayed to
+		// another account. Nothing here is a static asset that benefits from caching.
+		c.Header("Cache-Control", "no-store, no-cache, must-revalidate, private")
+		c.Header("Pragma", "no-cache")
 		c.Next()
 	}
 }

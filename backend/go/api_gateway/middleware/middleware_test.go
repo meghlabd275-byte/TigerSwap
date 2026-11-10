@@ -140,6 +140,11 @@ func TestSecure(t *testing.T) {
 	if w.Header().Get("X-XSS-Protection") != "" {
 		t.Error("X-XSS-Protection must not be set")
 	}
+	// Account-scoped responses must not be cached and replayed to another
+	// account by a shared or browser cache.
+	if cc := w.Header().Get("Cache-Control"); !strings.Contains(cc, "no-store") {
+		t.Errorf("Cache-Control %q must include no-store", cc)
+	}
 }
 
 // TestBodyLimiter tests the body limiter middleware

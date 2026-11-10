@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,6 +31,10 @@ type Server struct {
 	config     *config.Config
 	started    atomic.Bool
 	ready      atomic.Bool
+	// probeLeaf is the DER of the leaf certificate the listener loaded. The
+	// readiness probe pins to it so the probe verifies the exact certificate
+	// this process serves instead of disabling verification.
+	probeLeaf []byte
 }
 
 // NewServer creates a new API Gateway server
@@ -258,6 +264,14 @@ func (s *Server) Start() error {
 		}
 		s.httpServer.TLSConfig = &tls.Config{
 			Certificates: []tls.Certificate{cert},
+			// Refuse anything below TLS 1.2 so a downgrade to an obsolete
+			// protocol cannot be negotiated against the public API.
+			MinVersion: tls.VersionTLS12,
+		}
+		// Record the DER of the leaf certificate so the readiness probe can pin to
+		// the exact certificate this listener serves.
+		if len(cert.Certificate) > 0 {
+			s.probeLeaf = cert.Certificate[0]
 		}
 	}
 
@@ -281,9 +295,22 @@ func (s *Server) Start() error {
 	probeClient := &http.Client{Timeout: 2 * time.Second}
 	if s.config.TLS.Enabled {
 		scheme = "https"
-		// The certificate is the one this process just loaded; verifying it
-		// against the system roots would only test the local trust store.
-		probeClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+		// Pin to the leaf certificate this process just loaded. The probe talks
+		// to the server over loopback, so pinning verifies the exact cert being
+		// served without weakening verification or trusting the system roots.
+		leaf := s.probeLeaf
+		probeClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+				if len(rawCerts) == 0 {
+					return fmt.Errorf("probe received no server certificate")
+				}
+				if len(leaf) == 0 || !bytes.Equal(rawCerts[0], leaf) {
+					return fmt.Errorf("probe server certificate does not match the loaded certificate")
+				}
+				return nil
+			},
+		}}
 	}
 	for i := 0; i < 10; i++ {
 		time.Sleep(100 * time.Millisecond)
