@@ -270,6 +270,14 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 		c.JSON(403, gin.H{"error": "Auto-sign is disabled for this wallet"})
 		return
 	}
+	if !common.IsHexAddress(req.ToAddress) {
+		c.JSON(400, gin.H{"error": "Invalid destination address"})
+		return
+	}
+	if !chainSupported(stored.SupportedChains, req.ChainID) {
+		c.JSON(400, gin.H{"error": "Chain is not enabled for this wallet"})
+		return
+	}
 	if s.blockchain == nil {
 		c.JSON(503, gin.H{"error": "Blockchain client not configured"})
 		return
@@ -305,6 +313,21 @@ func (s *WalletService) AutoSignTransaction(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"success": true, "tx_hash": txHash, "status": "submitted"})
+}
+
+// chainSupported reports whether chainID appears in a master wallet's enabled
+// chain list. An empty list means the wallet was created without an explicit
+// restriction, so every configured chain is allowed.
+func chainSupported(supported []int64, chainID int64) bool {
+	if len(supported) == 0 {
+		return true
+	}
+	for _, id := range supported {
+		if id == chainID {
+			return true
+		}
+	}
+	return false
 }
 
 // loadMasterKey returns the decrypted private key for a stored master wallet,

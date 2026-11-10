@@ -1236,11 +1236,25 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 		return
 	}
 
+	// The row is loaded before any change so the transition can be authorized
+	// against the role the account holds now, not the one being requested.
+	var target models.User
+	if err := s.db.Where("id = ?", id).First(&target).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
 	updates := map[string]interface{}{}
 	if req.Role != "" {
 		if !models.ValidRole(req.Role) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid role"})
 			return
+		}
+		if req.Role != target.Role {
+			if err := authorizeRoleChange(roleFromContext(c), target.Role, req.Role); err != nil {
+				c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+				return
+			}
 		}
 		updates["role"] = req.Role
 	}
@@ -1260,18 +1274,21 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update user"})
 		return
 	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
 
 	var user models.User
 	if err := s.db.Where("id = ?", id).First(&user).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
 		return
 	}
-	// Deactivating an account must also end the sessions it already holds.
-	if req.IsActive != nil && !*req.IsActive && s.auth != nil {
+	// Deactivating an account must also end the sessions it already holds, and a
+	// role change must invalidate any token that still carries the old role so a
+	// demoted operator cannot keep acting on it.
+	roleChanged := false
+	if updatedRole, ok := updates["role"].(string); ok && updatedRole != target.Role {
+		roleChanged = true
+	}
+	deactivated := req.IsActive != nil && !*req.IsActive
+	if (deactivated || roleChanged) && s.auth != nil {
 		if err := s.auth.RevokeUserSessions(id); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke user sessions"})
 			return
@@ -1281,9 +1298,47 @@ func (s *AdminService) UpdateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
+// authorizeRoleChange enforces the platform's two-step privilege model: only a
+// superadmin may grant or revoke the superadmin role. Without it an ordinary
+// `admin` could promote any account (including its own) to superadmin through
+// the user-update endpoint and hold the highest privilege the platform has.
+func authorizeRoleChange(actorRole, from, to string) error {
+	if !models.IsAdminRole(actorRole) {
+		return errors.New("only an operator may change an account role")
+	}
+	if (from == models.RoleSuperAdmin || to == models.RoleSuperAdmin) && actorRole != models.RoleSuperAdmin {
+		return errors.New("only a superadmin may grant or revoke the superadmin role")
+	}
+	return nil
+}
+
+// roleFromContext reads the authenticated caller's role set by the auth
+// middleware. It returns the empty string when the context carries none, which
+// authorizeRoleChange treats as the least privilege.
+func roleFromContext(c *gin.Context) string {
+	if role, ok := c.Get("role"); ok {
+		if name, ok := role.(string); ok {
+			return name
+		}
+	}
+	return ""
+}
+
 // DeleteUser deactivates a user account. Records are retained for audit.
 func (s *AdminService) DeleteUser(c *gin.Context) {
 	id := c.Param("id")
+
+	// Deactivating a superadmin is the same privilege transition as demoting one:
+	// an ordinary admin must not be able to lock the platform owner out.
+	var target models.User
+	if err := s.db.Where("id = ?", id).First(&target).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+	if target.Role == models.RoleSuperAdmin && roleFromContext(c) != models.RoleSuperAdmin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only a superadmin may deactivate a superadmin"})
+		return
+	}
 
 	result := s.db.Model(&models.User{}).Where("id = ?", id).Update("is_active", false)
 	if result.Error != nil {

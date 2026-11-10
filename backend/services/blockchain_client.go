@@ -322,6 +322,21 @@ func (b *BlockchainClient) GetAllTokenBalances(ctx context.Context, chainID int6
 
 // SendTransaction sends a transaction on the given chain
 func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, privateKey string, toAddress string, amount *big.Int, tokenAddress string, gasPrice *big.Int) (string, error) {
+	// Validate the inputs before touching the network. common.HexToAddress
+	// silently truncates or zero-pads malformed hex, so an unchecked value could
+	// sign a transfer to the zero address (burning the funds) or to an address
+	// the caller never intended.
+	if !common.IsHexAddress(toAddress) {
+		return "", fmt.Errorf("destination address is not a valid hex address")
+	}
+	to := common.HexToAddress(toAddress)
+	if to == (common.Address{}) {
+		return "", fmt.Errorf("destination address must not be the zero address")
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return "", fmt.Errorf("transfer amount must be positive")
+	}
+
 	client, err := b.GetClient(chainID)
 	if err != nil {
 		return "", err
@@ -339,11 +354,13 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 		return "", fmt.Errorf("failed to get nonce: %v", err)
 	}
 
-	// Get gas price if not provided
+	// Get gas price if not provided. A hardcoded fallback is not used: an
+	// underpriced transaction would sit unmined while the caller is told it was
+	// broadcast, so a failure to read the network gas price is surfaced instead.
 	if gasPrice == nil {
 		gasPrice, err = client.SuggestGasPrice(ctx)
 		if err != nil {
-			gasPrice = big.NewInt(1000000000) // 1 gwei fallback
+			return "", fmt.Errorf("failed to read gas price: %w", err)
 		}
 	}
 
@@ -356,14 +373,14 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 		gasLimit = 65000
 		transferABI, _ := abi.JSON(strings.NewReader(`[{"constant":false,"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}]`))
 
-		data, _ = transferABI.Pack("transfer", common.HexToAddress(toAddress), amount)
+		data, _ = transferABI.Pack("transfer", to, amount)
 		value = big.NewInt(0)
 	} else {
 		// Native ETH transfer
 		value = amount
 	}
 
-	tx := types.NewTransaction(nonce, common.HexToAddress(toAddress), value, gasLimit, gasPrice, data)
+	tx := types.NewTransaction(nonce, to, value, gasLimit, gasPrice, data)
 
 	chainIDBig := big.NewInt(chainID)
 	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainIDBig), key)
