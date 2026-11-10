@@ -64,6 +64,14 @@ var serviceErrors = []serviceError{
 	{errChainNotFound, http.StatusNotFound, "chain not found"},
 	{errTokenNotFound, http.StatusNotFound, "token not found"},
 	{errTokenAlreadyExists, http.StatusConflict, "token already exists"},
+	{errDuplicateKey, http.StatusConflict, "a registration with that key already exists"},
+	{errChainKeyRequired, http.StatusBadRequest, "chain key is required"},
+	{errTokenKeyRequired, http.StatusBadRequest, "token key is required"},
+	{errBridgeKeyRequired, http.StatusBadRequest, "bridge key is required"},
+	{errFarmKeyRequired, http.StatusBadRequest, "farm key is required"},
+	{errInvalidRPCURL, http.StatusBadRequest, "rpc_url must be an absolute http(s) URL"},
+	{errUnsupportedChain, http.StatusBadRequest, "unsupported chain type"},
+	{errPositiveDuration, http.StatusBadRequest, "duration_days must be positive"},
 
 	// Launchpad.
 	{errLaunchpadProjectNotFound, http.StatusNotFound, "launchpad project not found"},

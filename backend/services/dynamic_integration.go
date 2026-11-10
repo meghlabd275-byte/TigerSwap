@@ -3,11 +3,14 @@ package services
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // Sentinels for dynamic integration lookups.
@@ -15,33 +18,39 @@ var (
 	errChainNotFound      = errors.New("chain not found")
 	errTokenNotFound      = errors.New("token not found")
 	errTokenAlreadyExists = errors.New("token already exists")
+	errChainKeyRequired   = errors.New("chain key is required")
+	errTokenKeyRequired   = errors.New("token key is required")
+	errBridgeKeyRequired  = errors.New("bridge key is required")
+	errFarmKeyRequired    = errors.New("farm key is required")
+	errDuplicateKey       = errors.New("a registration with that key already exists")
+	errInvalidRPCURL      = errors.New("rpc_url must be an absolute http(s) URL")
+	errUnsupportedChain   = errors.New("unsupported chain type")
+	errPositiveDuration   = errors.New("duration_days must be positive")
 )
 
-// DynamicIntegrationService provides runtime management for chains, tokens, bridges, farms
+// DynamicIntegrationService manages the registry of chains, tokens, bridges and
+// farms an operator adds at runtime, without a redeploy.
+//
+// Every entry is persisted: the registry is backed by the database, so an
+// operator's work survives a restart and is shared by every API replica. There
+// are no seeded defaults — a fresh install lists nothing until an operator
+// registers a real chain, token, bridge or farm. A fabricated chain with a
+// placeholder address would be indistinguishable from a real one to every
+// caller, so none is invented here.
 type DynamicIntegrationService struct {
-	mu sync.RWMutex
-
-	// Dynamic chains management
-	chains map[string]*DynamicChain
-
-	// Dynamic tokens management
-	tokens map[string]*DynamicToken
-
-	// Dynamic bridges management
-	bridges map[string]*DynamicBridge
-
-	// Dynamic farms management
-	farms map[string]*DynamicFarm
-
-	// Statistics
-	stats *IntegrationStats
+	db *gorm.DB
 }
 
-// DynamicChain represents a dynamically added blockchain
+// NewDynamicIntegrationService returns a registry backed by db.
+func NewDynamicIntegrationService(db *gorm.DB) *DynamicIntegrationService {
+	return &DynamicIntegrationService{db: db}
+}
+
+// DynamicChain is the wire shape of a registered chain.
 type DynamicChain struct {
 	Key         string    `json:"key"`
 	Name        string    `json:"name"`
-	Type        string    `json:"type"` // evm, solana, cosmos, ton, aptos, bitcoin
+	Type        string    `json:"type"`
 	ChainID     int64     `json:"chain_id"`
 	RPCURL      string    `json:"rpc_url"`
 	ExplorerURL string    `json:"explorer_url"`
@@ -54,7 +63,7 @@ type DynamicChain struct {
 	AddedBy     string    `json:"added_by"`
 }
 
-// DynamicToken represents a dynamically added token
+// DynamicToken is the wire shape of a registered token.
 type DynamicToken struct {
 	Key        string    `json:"key"`
 	Address    string    `json:"address"`
@@ -63,14 +72,14 @@ type DynamicToken struct {
 	Symbol     string    `json:"symbol"`
 	Decimals   int       `json:"decimals"`
 	Supply     string    `json:"total_supply"`
-	Standard   string    `json:"standard"` // ERC20, SPL, etc.
+	Standard   string    `json:"standard"`
 	IsActive   bool      `json:"is_active"`
 	IsVerified bool      `json:"is_verified"`
 	AddedAt    time.Time `json:"added_at"`
 	AddedBy    string    `json:"added_by"`
 }
 
-// DynamicBridge represents a dynamically added bridge
+// DynamicBridge is the wire shape of a registered bridge route.
 type DynamicBridge struct {
 	Key           string    `json:"key"`
 	Name          string    `json:"name"`
@@ -86,7 +95,7 @@ type DynamicBridge struct {
 	AddedAt       time.Time `json:"added_at"`
 }
 
-// DynamicFarm represents a dynamically added farm
+// DynamicFarm is the wire shape of a registered pool or farm.
 type DynamicFarm struct {
 	Key         string    `json:"key"`
 	Name        string    `json:"name"`
@@ -102,7 +111,7 @@ type DynamicFarm struct {
 	AddedAt     time.Time `json:"added_at"`
 }
 
-// IntegrationStats tracks system statistics
+// IntegrationStats tracks registry counts.
 type IntegrationStats struct {
 	TotalChains   int       `json:"total_chains"`
 	TotalTokens   int       `json:"total_tokens"`
@@ -115,545 +124,432 @@ type IntegrationStats struct {
 	LastUpdated   time.Time `json:"last_updated"`
 }
 
-func NewDynamicIntegrationService() *DynamicIntegrationService {
-	svc := &DynamicIntegrationService{
-		chains:  make(map[string]*DynamicChain),
-		tokens:  make(map[string]*DynamicToken),
-		bridges: make(map[string]*DynamicBridge),
-		farms:   make(map[string]*DynamicFarm),
-		stats:   &IntegrationStats{},
-	}
-
-	// Initialize with default TigerSmartChain
-	svc.initializeDefaultChains()
-
-	return svc
+// validChainTypes is the set of chain families the registry understands. An
+// unknown type would be routed to a client that cannot speak it.
+var validChainTypes = map[string]bool{
+	"evm": true, "solana": true, "cosmos": true, "ton": true,
+	"aptos": true, "sui": true, "bitcoin": true,
 }
 
-func (s *DynamicIntegrationService) initializeDefaultChains() {
-	// TigerSmartChain - Main EVM Chain
-	tigerChain := &DynamicChain{
-		Key:         "tigersmartchain",
-		Name:        "TigerSmartChain",
-		Type:        "evm",
-		ChainID:     8888, // TigerChain mainnet
-		RPCURL:      "https://rpc.tigersmartchain.com",
-		ExplorerURL: "https://explorer.tigersmartchain.com",
-		Symbol:      "TGR",
-		Decimals:    18,
-		NativeToken: "0x0000000000000000000000000000000000000000000",
-		IsActive:    true,
-		IsTestnet:   false,
-		AddedAt:     time.Now(),
-		AddedBy:     "system",
-	}
-	s.chains[tigerChain.Key] = tigerChain
-
-	// TigerSmartChain Testnet
-	tigerTestnet := &DynamicChain{
-		Key:         "tigersmartchain_testnet",
-		Name:        "TigerSmartChain Testnet",
-		Type:        "evm",
-		ChainID:     18888,
-		RPCURL:      "https://rpc-testnet.tigersmartchain.com",
-		ExplorerURL: "https://explorer-testnet.tigersmartchain.com",
-		Symbol:      "TGR",
-		Decimals:    18,
-		NativeToken: "0x0000000000000000000000000000000000000000000",
-		IsActive:    true,
-		IsTestnet:   true,
-		AddedAt:     time.Now(),
-		AddedBy:     "system",
-	}
-	s.chains[tigerTestnet.Key] = tigerTestnet
-
-	// Initialize TGR Token
-	tgrToken := &DynamicToken{
-		Key:        "tgr_tigersmartchain",
-		Address:    "0x0000000000000000000000000000000000000000001",
-		ChainKey:   "tigersmartchain",
-		Name:       "Tiger Coin",
-		Symbol:     "TGR",
-		Decimals:   18,
-		Supply:     "1000000000", // 1 billion supply
-		Standard:   "ERC20",
-		IsActive:   true,
-		IsVerified: true,
-		AddedAt:    time.Now(),
-		AddedBy:    "system",
-	}
-	s.tokens[tgrToken.Key] = tgrToken
-
-	// Initialize RUSD - Royal Tiger USD Stablecoin
-	rusdToken := &DynamicToken{
-		Key:        "rusd_tigersmartchain",
-		Address:    "0x0000000000000000000000000000000000000000002",
-		ChainKey:   "tigersmartchain",
-		Name:       "Royal Tiger USD",
-		Symbol:     "RUSD",
-		Decimals:   18,
-		Supply:     "10000000000", // 10 billion supply
-		Standard:   "ERC20",
-		IsActive:   true,
-		IsVerified: true,
-		AddedAt:    time.Now(),
-		AddedBy:    "system",
-	}
-	s.tokens[rusdToken.Key] = rusdToken
-
-	// Add default pools for Tigerswap
-	farmTGRUSDT := &DynamicFarm{
-		Key:         "farm_tgr_usdt",
-		Name:        "TGR/USDT",
-		PoolTokenA:  "0x0000000000000000000000000000000000000001",
-		PoolTokenB:  "0x0000000000000000000000000000000000000000003", // USDT
-		RewardToken: "0x0000000000000000000000000000000000000000001",
-		RewardRate:  "1000", // per block
-		APY:         25.0,
-		TotalStaked: "0",
-		StartTime:   time.Now(),
-		EndTime:     time.Now().Add(365 * 24 * time.Hour),
-		IsActive:    true,
-		AddedAt:     time.Now(),
-	}
-	s.farms[farmTGRUSDT.Key] = farmTGRUSDT
-
-	farmRUSDT := &DynamicFarm{
-		Key:         "farm_rusd_usdt",
-		Name:        "RUSD/USDT",
-		PoolTokenA:  "0x0000000000000000000000000000000000000000002",
-		PoolTokenB:  "0x0000000000000000000000000000000000000000003",
-		RewardToken: "0x0000000000000000000000000000000000000000001",
-		RewardRate:  "500",
-		APY:         15.0,
-		TotalStaked: "0",
-		StartTime:   time.Now(),
-		EndTime:     time.Now().Add(365 * 24 * time.Hour),
-		IsActive:    true,
-		AddedAt:     time.Now(),
-	}
-	s.farms[farmRUSDT.Key] = farmRUSDT
-
-	s.updateStats()
+func validChainType(t string) bool {
+	return validChainTypes[strings.ToLower(strings.TrimSpace(t))]
 }
 
-// AddEVMChain dynamically adds a new EVM blockchain
-func (s *DynamicIntegrationService) AddEVMChain(key, name, chainId, rpcURL, explorer, symbol, nativeToken string, decimals int, addedBy string) (*DynamicChain, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func toChain(m *models.IntegrationChain) *DynamicChain {
+	return &DynamicChain{
+		Key: m.Key, Name: m.Name, Type: m.Type, ChainID: m.ChainID,
+		RPCURL: m.RPCURL, ExplorerURL: m.ExplorerURL, Symbol: m.Symbol,
+		Decimals: m.Decimals, NativeToken: m.NativeToken, IsActive: m.IsActive,
+		IsTestnet: m.IsTestnet, AddedAt: m.AddedAt, AddedBy: m.AddedBy,
+	}
+}
 
-	chainID, err := parseInt64(chainId)
+func toToken(m *models.IntegrationToken) *DynamicToken {
+	return &DynamicToken{
+		Key: m.Key, Address: m.Address, ChainKey: m.ChainKey, Name: m.Name,
+		Symbol: m.Symbol, Decimals: m.Decimals, Supply: m.Supply,
+		Standard: m.Standard, IsActive: m.IsActive, IsVerified: m.IsVerified,
+		AddedAt: m.AddedAt, AddedBy: m.AddedBy,
+	}
+}
+
+func toBridge(m *models.IntegrationBridge) *DynamicBridge {
+	return &DynamicBridge{
+		Key: m.Key, Name: m.Name, SrcChain: m.SrcChain, DstChain: m.DstChain,
+		RouterAddr: m.RouterAddr, MinAmount: m.MinAmount, MaxAmount: m.MaxAmount,
+		FeePercent: m.FeePercent, FeeFixed: m.FeeFixed,
+		EstimatedTime: m.EstimatedTime, IsActive: m.IsActive, AddedAt: m.AddedAt,
+	}
+}
+
+func toFarm(m *models.IntegrationFarm) *DynamicFarm {
+	return &DynamicFarm{
+		Key: m.Key, Name: m.Name, PoolTokenA: m.PoolTokenA, PoolTokenB: m.PoolTokenB,
+		RewardToken: m.RewardToken, RewardRate: m.RewardRate, APY: m.APY,
+		TotalStaked: m.TotalStaked, StartTime: m.StartTime, EndTime: m.EndTime,
+		IsActive: m.IsActive, AddedAt: m.AddedAt,
+	}
+}
+
+// validateRPCURL rejects a non-absolute or non-http(s) URL: an operator typo
+// must fail at registration rather than surface as a failed call at trade time.
+func validateRPCURL(raw string) error {
+	u := strings.TrimSpace(raw)
+	if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+		return errInvalidRPCURL
+	}
+	if len(u) <= len("https://") {
+		return errInvalidRPCURL
+	}
+	return nil
+}
+
+// AddEVMChain registers an EVM chain.
+func (s *DynamicIntegrationService) AddEVMChain(key, name, chainID, rpcURL, explorer, symbol, nativeToken string, decimals int, addedBy string) (*DynamicChain, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errChainKeyRequired
+	}
+	if err := validateRPCURL(rpcURL); err != nil {
+		return nil, err
+	}
+	parsedID, err := parseInt64(chainID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid chain ID: %v", err)
 	}
 
-	// Check if exists
-	if _, exists := s.chains[key]; exists {
-		return nil, fmt.Errorf("chain already exists: %s", key)
+	row := &models.IntegrationChain{
+		Key: key, Name: name, Type: "evm", ChainID: parsedID,
+		RPCURL: rpcURL, ExplorerURL: explorer, Symbol: symbol, Decimals: decimals,
+		NativeToken: nativeToken, IsActive: true, AddedAt: time.Now(), AddedBy: addedBy,
 	}
-
-	chain := &DynamicChain{
-		Key:         key,
-		Name:        name,
-		Type:        "evm",
-		ChainID:     chainID,
-		RPCURL:      rpcURL,
-		ExplorerURL: explorer,
-		Symbol:      symbol,
-		Decimals:    decimals,
-		NativeToken: nativeToken,
-		IsActive:    true,
-		IsTestnet:   false,
-		AddedAt:     time.Now(),
-		AddedBy:     addedBy,
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errDuplicateKey, key)
+		}
+		return nil, err
 	}
-
-	s.chains[key] = chain
-	s.updateStats()
-
-	return chain, nil
+	return toChain(row), nil
 }
 
-// AddNonEVMChain dynamically adds a new Non-EVM blockchain
+// AddNonEVMChain registers a non-EVM chain (Solana, Cosmos, TON, Aptos,
+// Bitcoin, ...), the only path for a chain whose addresses are not 20-byte hex.
 func (s *DynamicIntegrationService) AddNonEVMChain(key, name, chainType, rpcURL, explorer, symbol string, decimals int, addedBy string) (*DynamicChain, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.chains[key]; exists {
-		return nil, fmt.Errorf("chain already exists: %s", key)
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errChainKeyRequired
+	}
+	if !validChainType(chainType) {
+		return nil, fmt.Errorf("%w: %s", errUnsupportedChain, chainType)
+	}
+	if err := validateRPCURL(rpcURL); err != nil {
+		return nil, err
 	}
 
-	chain := &DynamicChain{
-		Key:         key,
-		Name:        name,
-		Type:        chainType,
-		ChainID:     0, // Non-EVM chains use 0
-		RPCURL:      rpcURL,
-		ExplorerURL: explorer,
-		Symbol:      symbol,
-		Decimals:    decimals,
-		IsActive:    true,
-		IsTestnet:   false,
-		AddedAt:     time.Now(),
-		AddedBy:     addedBy,
+	row := &models.IntegrationChain{
+		Key: key, Name: name, Type: strings.ToLower(strings.TrimSpace(chainType)),
+		RPCURL: rpcURL, ExplorerURL: explorer, Symbol: symbol, Decimals: decimals,
+		IsActive: true, AddedAt: time.Now(), AddedBy: addedBy,
 	}
-
-	s.chains[key] = chain
-	s.updateStats()
-
-	return chain, nil
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errDuplicateKey, key)
+		}
+		return nil, err
+	}
+	return toChain(row), nil
 }
 
-// AddToken dynamically adds a new token
+// AddToken registers a token on an already-registered chain.
 func (s *DynamicIntegrationService) AddToken(key, address, chainKey, name, symbol, tokenStandard string, decimals int, supply, addedBy string) (*DynamicToken, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Verify chain exists
-	if _, exists := s.chains[chainKey]; !exists {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errTokenKeyRequired
+	}
+	if _, err := s.GetChain(chainKey); err != nil {
 		return nil, fmt.Errorf("%w: %s", errChainNotFound, chainKey)
 	}
 
-	// Check if exists
-	if _, exists := s.tokens[key]; exists {
-		return nil, fmt.Errorf("%w: %s", errTokenAlreadyExists, key)
+	row := &models.IntegrationToken{
+		Key: key, Address: address, ChainKey: chainKey, Name: name, Symbol: symbol,
+		Decimals: decimals, Supply: supply, Standard: tokenStandard,
+		IsActive: true, AddedAt: time.Now(), AddedBy: addedBy,
 	}
-
-	token := &DynamicToken{
-		Key:      key,
-		Address:  address,
-		ChainKey: chainKey,
-		Name:     name,
-		Symbol:   symbol,
-		Decimals: decimals,
-		Supply:   supply,
-		Standard: tokenStandard,
-		IsActive: true,
-		AddedAt:  time.Now(),
-		AddedBy:  addedBy,
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errTokenAlreadyExists, key)
+		}
+		return nil, err
 	}
-
-	s.tokens[key] = token
-	s.updateStats()
-
-	return token, nil
+	return toToken(row), nil
 }
 
-// AddBridge dynamically adds a new bridge
+// AddBridge registers a bridge route between two registered chains.
 func (s *DynamicIntegrationService) AddBridge(key, name, srcChain, dstChain, routerAddr, minAmount, maxAmount string, feePercent float64, feeFixed, estimatedTime string) (*DynamicBridge, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Verify chains exist
-	if _, exists := s.chains[srcChain]; !exists {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errBridgeKeyRequired
+	}
+	if _, err := s.GetChain(srcChain); err != nil {
 		return nil, fmt.Errorf("%w: source %s", errChainNotFound, srcChain)
 	}
-	if _, exists := s.chains[dstChain]; !exists {
+	if _, err := s.GetChain(dstChain); err != nil {
 		return nil, fmt.Errorf("%w: destination %s", errChainNotFound, dstChain)
 	}
 
-	bridge := &DynamicBridge{
-		Key:           key,
-		Name:          name,
-		SrcChain:      srcChain,
-		DstChain:      dstChain,
-		RouterAddr:    routerAddr,
-		MinAmount:     minAmount,
-		MaxAmount:     maxAmount,
-		FeePercent:    feePercent,
-		FeeFixed:      feeFixed,
-		EstimatedTime: estimatedTime,
-		IsActive:      true,
-		AddedAt:       time.Now(),
+	row := &models.IntegrationBridge{
+		Key: key, Name: name, SrcChain: srcChain, DstChain: dstChain,
+		RouterAddr: routerAddr, MinAmount: minAmount, MaxAmount: maxAmount,
+		FeePercent: feePercent, FeeFixed: feeFixed, EstimatedTime: estimatedTime,
+		IsActive: true, AddedAt: time.Now(),
 	}
-
-	s.bridges[key] = bridge
-	s.updateStats()
-
-	return bridge, nil
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errDuplicateKey, key)
+		}
+		return nil, err
+	}
+	return toBridge(row), nil
 }
 
-// CreatePool creates a new DEX liquidity pool
+// CreatePool registers a pool over two registered tokens. A pool is a farm with
+// no reward stream yet.
 func (s *DynamicIntegrationService) CreatePool(key, name, tokenA, tokenB string, feeRate float64) (*DynamicFarm, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Verify tokens exist
-	if _, exists := s.tokens[tokenA]; !exists {
-		return nil, fmt.Errorf("token A not found: %s", tokenA)
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errFarmKeyRequired
 	}
-	if _, exists := s.tokens[tokenB]; !exists {
-		return nil, fmt.Errorf("token B not found: %s", tokenB)
+	if _, err := s.GetToken(tokenA); err != nil {
+		return nil, fmt.Errorf("%w: token A %s", errTokenNotFound, tokenA)
 	}
-
-	pool := &DynamicFarm{
-		Key:         key,
-		Name:        name,
-		PoolTokenA:  tokenA,
-		PoolTokenB:  tokenB,
-		RewardToken: tokenA,
-		RewardRate:  "0",
-		APY:         0,
-		TotalStaked: "0",
-		IsActive:    true,
-		AddedAt:     time.Now(),
+	if _, err := s.GetToken(tokenB); err != nil {
+		return nil, fmt.Errorf("%w: token B %s", errTokenNotFound, tokenB)
 	}
 
-	s.farms[key] = pool
-	s.updateStats()
-
-	return pool, nil
+	row := &models.IntegrationFarm{
+		Key: key, Name: name, PoolTokenA: tokenA, PoolTokenB: tokenB,
+		RewardToken: tokenA, RewardRate: "0", TotalStaked: "0",
+		IsActive: true, AddedAt: time.Now(),
+	}
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errDuplicateKey, key)
+		}
+		return nil, err
+	}
+	return toFarm(row), nil
 }
 
-// CreateFarm creates a new farm
+// CreateFarm registers a farm with a reward stream over a duration.
 func (s *DynamicIntegrationService) CreateFarm(key, name, poolTokenA, poolTokenB, rewardToken, rewardRate string, apy float64, durationDays int) (*DynamicFarm, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	farm := &DynamicFarm{
-		Key:         key,
-		Name:        name,
-		PoolTokenA:  poolTokenA,
-		PoolTokenB:  poolTokenB,
-		RewardToken: rewardToken,
-		RewardRate:  rewardRate,
-		APY:         apy,
-		TotalStaked: "0",
-		StartTime:   time.Now(),
-		EndTime:     time.Now().Add(time.Duration(durationDays) * 24 * time.Hour),
-		IsActive:    true,
-		AddedAt:     time.Now(),
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, errFarmKeyRequired
+	}
+	if durationDays <= 0 {
+		return nil, errPositiveDuration
 	}
 
-	s.farms[key] = farm
-	s.updateStats()
-
-	return farm, nil
+	row := &models.IntegrationFarm{
+		Key: key, Name: name, PoolTokenA: poolTokenA, PoolTokenB: poolTokenB,
+		RewardToken: rewardToken, RewardRate: rewardRate, APY: apy,
+		TotalStaked: "0", StartTime: time.Now(),
+		EndTime:  time.Now().Add(time.Duration(durationDays) * 24 * time.Hour),
+		IsActive: true, AddedAt: time.Now(),
+	}
+	if err := s.db.Create(row).Error; err != nil {
+		if isDuplicateKey(err) {
+			return nil, fmt.Errorf("%w: %s", errDuplicateKey, key)
+		}
+		return nil, err
+	}
+	return toFarm(row), nil
 }
 
-// ActivateChain activates/deactivates a chain
+// ActivateChain pauses or resumes a chain.
 func (s *DynamicIntegrationService) ActivateChain(key string, active bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	chain, exists := s.chains[key]
-	if !exists {
+	res := s.db.Model(&models.IntegrationChain{}).Where("key = ?", key).Update("is_active", active)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
 		return fmt.Errorf("%w: %s", errChainNotFound, key)
 	}
-
-	chain.IsActive = active
-	s.updateStats()
-
 	return nil
 }
 
-// ActivateToken activates/deactivates a token
+// ActivateToken pauses or resumes a token.
 func (s *DynamicIntegrationService) ActivateToken(key string, active bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	token, exists := s.tokens[key]
-	if !exists {
+	res := s.db.Model(&models.IntegrationToken{}).Where("key = ?", key).Update("is_active", active)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
 		return fmt.Errorf("%w: %s", errTokenNotFound, key)
 	}
-
-	token.IsActive = active
-	s.updateStats()
-
 	return nil
 }
 
-// GetChain returns a chain by key
+// GetChain returns a chain by key.
 func (s *DynamicIntegrationService) GetChain(key string) (*DynamicChain, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if chain, exists := s.chains[key]; exists {
-		return chain, nil
+	var row models.IntegrationChain
+	if err := s.db.Where("key = ?", key).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w: %s", errChainNotFound, key)
+		}
+		return nil, err
 	}
-
-	return nil, fmt.Errorf("%w: %s", errChainNotFound, key)
+	return toChain(&row), nil
 }
 
-// GetToken returns a token by key
+// GetToken returns a token by key.
 func (s *DynamicIntegrationService) GetToken(key string) (*DynamicToken, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	if token, exists := s.tokens[key]; exists {
-		return token, nil
+	var row models.IntegrationToken
+	if err := s.db.Where("key = ?", key).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("%w: %s", errTokenNotFound, key)
+		}
+		return nil, err
 	}
-
-	return nil, fmt.Errorf("%w: %s", errTokenNotFound, key)
+	return toToken(&row), nil
 }
 
-// GetAllChains returns all chains with optional filter
+// GetAllChains returns all chains, optionally only the active ones.
 func (s *DynamicIntegrationService) GetAllChains(activeOnly bool) []*DynamicChain {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*DynamicChain
-	for _, chain := range s.chains {
-		if !activeOnly || chain.IsActive {
-			result = append(result, chain)
-		}
+	var rows []models.IntegrationChain
+	q := s.db.Order("added_at asc")
+	if activeOnly {
+		q = q.Where("is_active = ?", true)
 	}
-
-	return result
+	if err := q.Find(&rows).Error; err != nil {
+		return []*DynamicChain{}
+	}
+	out := make([]*DynamicChain, 0, len(rows))
+	for i := range rows {
+		out = append(out, toChain(&rows[i]))
+	}
+	return out
 }
 
-// GetAllTokens returns all tokens with optional filter
+// GetAllTokens returns tokens, optionally filtered by chain and active state.
 func (s *DynamicIntegrationService) GetAllTokens(chainKey string, activeOnly bool) []*DynamicToken {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*DynamicToken
-	for _, token := range s.tokens {
-		if (chainKey == "" || token.ChainKey == chainKey) && (!activeOnly || token.IsActive) {
-			result = append(result, token)
-		}
+	var rows []models.IntegrationToken
+	q := s.db.Order("added_at asc")
+	if chainKey != "" {
+		q = q.Where("chain_key = ?", chainKey)
 	}
-
-	return result
+	if activeOnly {
+		q = q.Where("is_active = ?", true)
+	}
+	if err := q.Find(&rows).Error; err != nil {
+		return []*DynamicToken{}
+	}
+	out := make([]*DynamicToken, 0, len(rows))
+	for i := range rows {
+		out = append(out, toToken(&rows[i]))
+	}
+	return out
 }
 
-// GetAllBridges returns all bridges
+// GetAllBridges returns every registered bridge route.
 func (s *DynamicIntegrationService) GetAllBridges() []*DynamicBridge {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*DynamicBridge
-	for _, bridge := range s.bridges {
-		result = append(result, bridge)
+	var rows []models.IntegrationBridge
+	if err := s.db.Order("added_at asc").Find(&rows).Error; err != nil {
+		return []*DynamicBridge{}
 	}
-
-	return result
+	out := make([]*DynamicBridge, 0, len(rows))
+	for i := range rows {
+		out = append(out, toBridge(&rows[i]))
+	}
+	return out
 }
 
-// GetAllFarms returns all farms
+// GetAllFarms returns registered pools and farms.
 func (s *DynamicIntegrationService) GetAllFarms(activeOnly bool) []*DynamicFarm {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*DynamicFarm
-	for _, farm := range s.farms {
-		if !activeOnly || farm.IsActive {
-			result = append(result, farm)
-		}
+	var rows []models.IntegrationFarm
+	q := s.db.Order("added_at asc")
+	if activeOnly {
+		q = q.Where("is_active = ?", true)
 	}
-
-	return result
+	if err := q.Find(&rows).Error; err != nil {
+		return []*DynamicFarm{}
+	}
+	out := make([]*DynamicFarm, 0, len(rows))
+	for i := range rows {
+		out = append(out, toFarm(&rows[i]))
+	}
+	return out
 }
 
-// GetStats returns integration statistics
+// GetStats reports registry counts from the database.
 func (s *DynamicIntegrationService) GetStats() *IntegrationStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	// Return a snapshot: the shared pointer would let a caller read fields
-	// while a concurrent write updates them.
-	stats := *s.stats
-	return &stats
+	return &IntegrationStats{
+		TotalChains:   s.count(&models.IntegrationChain{}, false),
+		TotalTokens:   s.count(&models.IntegrationToken{}, false),
+		TotalBridges:  s.count(&models.IntegrationBridge{}, false),
+		TotalFarms:    s.count(&models.IntegrationFarm{}, false),
+		ActiveChains:  s.count(&models.IntegrationChain{}, true),
+		ActiveTokens:  s.count(&models.IntegrationToken{}, true),
+		ActiveBridges: s.count(&models.IntegrationBridge{}, true),
+		ActiveFarms:   s.count(&models.IntegrationFarm{}, true),
+		LastUpdated:   time.Now(),
+	}
 }
 
-func (s *DynamicIntegrationService) updateStats() {
-	s.stats.TotalChains = len(s.chains)
-	s.stats.TotalTokens = len(s.tokens)
-	s.stats.TotalBridges = len(s.bridges)
-	s.stats.TotalFarms = len(s.farms)
-
-	var activeChains, activeTokens, activeBridges, activeFarms int
-
-	for _, c := range s.chains {
-		if c.IsActive {
-			activeChains++
-		}
+func (s *DynamicIntegrationService) count(model interface{}, activeOnly bool) int {
+	var n int64
+	q := s.db.Model(model)
+	if activeOnly {
+		q = q.Where("is_active = ?", true)
 	}
-	for _, t := range s.tokens {
-		if t.IsActive {
-			activeTokens++
-		}
+	if err := q.Count(&n).Error; err != nil {
+		return 0
 	}
-	for _, b := range s.bridges {
-		if b.IsActive {
-			activeBridges++
-		}
-	}
-	for _, f := range s.farms {
-		if f.IsActive {
-			activeFarms++
-		}
-	}
-
-	s.stats.ActiveChains = activeChains
-	s.stats.ActiveTokens = activeTokens
-	s.stats.ActiveBridges = activeBridges
-	s.stats.ActiveFarms = activeFarms
-	s.stats.LastUpdated = time.Now()
+	return int(n)
 }
 
-// SearchChains searches chains by name or symbol
+// SearchChains matches a chain name or symbol, case-insensitively.
 func (s *DynamicIntegrationService) SearchChains(query string) []*DynamicChain {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	query = strings.ToLower(query)
-	var result []*DynamicChain
-
-	for _, chain := range s.chains {
-		if strings.Contains(strings.ToLower(chain.Name), query) || strings.Contains(strings.ToLower(chain.Symbol), query) {
-			result = append(result, chain)
-		}
+	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+	var rows []models.IntegrationChain
+	s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+		Order("added_at asc").Find(&rows)
+	out := make([]*DynamicChain, 0, len(rows))
+	for i := range rows {
+		out = append(out, toChain(&rows[i]))
 	}
-
-	return result
+	return out
 }
 
-// SearchTokens searches tokens by name or symbol
+// SearchTokens matches a token name or symbol, case-insensitively.
 func (s *DynamicIntegrationService) SearchTokens(query string) []*DynamicToken {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	query = strings.ToLower(query)
-	var result []*DynamicToken
-
-	for _, token := range s.tokens {
-		if strings.Contains(strings.ToLower(token.Name), query) || strings.Contains(strings.ToLower(token.Symbol), query) {
-			result = append(result, token)
-		}
+	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+	var rows []models.IntegrationToken
+	s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+		Order("added_at asc").Find(&rows)
+	out := make([]*DynamicToken, 0, len(rows))
+	for i := range rows {
+		out = append(out, toToken(&rows[i]))
 	}
-
-	return result
+	return out
 }
 
-// DeleteChain removes a chain
+// DeleteChain removes a chain registration.
 func (s *DynamicIntegrationService) DeleteChain(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.chains[key]; !exists {
+	res := s.db.Where("key = ?", key).Delete(&models.IntegrationChain{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
 		return fmt.Errorf("%w: %s", errChainNotFound, key)
 	}
-
-	delete(s.chains, key)
-	s.updateStats()
-
 	return nil
 }
 
-// DeleteToken removes a token
+// DeleteToken removes a token registration.
 func (s *DynamicIntegrationService) DeleteToken(key string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if _, exists := s.tokens[key]; !exists {
+	res := s.db.Where("key = ?", key).Delete(&models.IntegrationToken{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
 		return fmt.Errorf("%w: %s", errTokenNotFound, key)
 	}
-
-	delete(s.tokens, key)
-	s.updateStats()
-
 	return nil
+}
+
+// isDuplicateKey reports whether err is a unique-constraint violation. The
+// registry uses string primary keys, so a duplicate registration surfaces as a
+// constraint error rather than a GORM "record not found".
+func isDuplicateKey(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate")
 }
 
 // API Handlers
@@ -670,24 +566,17 @@ func (s *DynamicIntegrationService) AddEVMChainHandler(c *gin.Context) {
 		NativeToken string `json:"native_token"`
 		AddedBy     string `json:"added_by"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
 	}
 
-	nativeToken := req.NativeToken
-	if nativeToken == "" {
-		nativeToken = "0x0000000000000000000000000000000000000000"
-	}
-
-	chain, err := s.AddEVMChain(req.Key, req.Name, req.ChainID, req.RPCURL, req.ExplorerURL, req.Symbol, nativeToken, req.Decimals, req.AddedBy)
+	chain, err := s.AddEVMChain(req.Key, req.Name, req.ChainID, req.RPCURL, req.ExplorerURL, req.Symbol, req.NativeToken, req.Decimals, req.AddedBy)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, chain)
+	c.JSON(http.StatusOK, chain)
 }
 
 func (s *DynamicIntegrationService) AddTokenHandler(c *gin.Context) {
@@ -702,7 +591,6 @@ func (s *DynamicIntegrationService) AddTokenHandler(c *gin.Context) {
 		Supply   string `json:"supply"`
 		AddedBy  string `json:"added_by"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
@@ -715,46 +603,33 @@ func (s *DynamicIntegrationService) AddTokenHandler(c *gin.Context) {
 
 	token, err := s.AddToken(req.Key, req.Address, req.ChainKey, req.Name, req.Symbol, req.Standard, req.Decimals, supply, req.AddedBy)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, token)
+	c.JSON(http.StatusOK, token)
 }
 
 func (s *DynamicIntegrationService) GetChainsHandler(c *gin.Context) {
 	activeOnly := c.Query("active_only") == "true"
-
 	chains := s.GetAllChains(activeOnly)
-	c.JSON(200, gin.H{
-		"chains": chains,
-		"count":  len(chains),
-	})
+	c.JSON(http.StatusOK, gin.H{"chains": chains, "count": len(chains)})
 }
 
 func (s *DynamicIntegrationService) GetTokensHandler(c *gin.Context) {
 	chainKey := c.Query("chain_key")
 	activeOnly := c.Query("active_only") == "true"
-
 	tokens := s.GetAllTokens(chainKey, activeOnly)
-	c.JSON(200, gin.H{
-		"tokens": tokens,
-		"count":  len(tokens),
-	})
+	c.JSON(http.StatusOK, gin.H{"tokens": tokens, "count": len(tokens)})
 }
 
 func (s *DynamicIntegrationService) GetFarmsHandler(c *gin.Context) {
 	activeOnly := c.Query("active_only") == "true"
-
 	farms := s.GetAllFarms(activeOnly)
-	c.JSON(200, gin.H{
-		"farms": farms,
-		"count": len(farms),
-	})
+	c.JSON(http.StatusOK, gin.H{"farms": farms, "count": len(farms)})
 }
 
 func (s *DynamicIntegrationService) GetStatsHandler(c *gin.Context) {
-	c.JSON(200, s.GetStats())
+	c.JSON(http.StatusOK, s.GetStats())
 }
 
 func (s *DynamicIntegrationService) CreatePoolHandler(c *gin.Context) {
@@ -763,9 +638,8 @@ func (s *DynamicIntegrationService) CreatePoolHandler(c *gin.Context) {
 		Name    string  `json:"name" binding:"required"`
 		TokenA  string  `json:"token_a" binding:"required"`
 		TokenB  string  `json:"token_b" binding:"required"`
-		FeeRate float64 `json:"fee_rate" binding:"required"`
+		FeeRate float64 `json:"fee_rate"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
@@ -773,11 +647,10 @@ func (s *DynamicIntegrationService) CreatePoolHandler(c *gin.Context) {
 
 	pool, err := s.CreatePool(req.Key, req.Name, req.TokenA, req.TokenB, req.FeeRate)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, pool)
+	c.JSON(http.StatusOK, pool)
 }
 
 func (s *DynamicIntegrationService) CreateFarmHandler(c *gin.Context) {
@@ -788,10 +661,9 @@ func (s *DynamicIntegrationService) CreateFarmHandler(c *gin.Context) {
 		PoolTokenB   string  `json:"pool_token_b" binding:"required"`
 		RewardToken  string  `json:"reward_token" binding:"required"`
 		RewardRate   string  `json:"reward_rate" binding:"required"`
-		APY          float64 `json:"apy" binding:"required"`
+		APY          float64 `json:"apy"`
 		DurationDays int     `json:"duration_days" binding:"required"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
@@ -799,11 +671,10 @@ func (s *DynamicIntegrationService) CreateFarmHandler(c *gin.Context) {
 
 	farm, err := s.CreateFarm(req.Key, req.Name, req.PoolTokenA, req.PoolTokenB, req.RewardToken, req.RewardRate, req.APY, req.DurationDays)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, farm)
+	c.JSON(http.StatusOK, farm)
 }
 
 func (s *DynamicIntegrationService) AddBridgeHandler(c *gin.Context) {
@@ -815,11 +686,10 @@ func (s *DynamicIntegrationService) AddBridgeHandler(c *gin.Context) {
 		RouterAddress string  `json:"router_address" binding:"required"`
 		MinAmount     string  `json:"min_amount" binding:"required"`
 		MaxAmount     string  `json:"max_amount" binding:"required"`
-		FeePercent    float64 `json:"fee_percent" binding:"required"`
+		FeePercent    float64 `json:"fee_percent"`
 		FeeFixed      string  `json:"fee_fixed" binding:"required"`
 		EstimatedTime string  `json:"estimated_time" binding:"required"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
@@ -827,29 +697,25 @@ func (s *DynamicIntegrationService) AddBridgeHandler(c *gin.Context) {
 
 	bridge, err := s.AddBridge(req.Key, req.Name, req.SrcChain, req.DstChain, req.RouterAddress, req.MinAmount, req.MaxAmount, req.FeePercent, req.FeeFixed, req.EstimatedTime)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, bridge)
+	c.JSON(http.StatusOK, bridge)
 }
 
 func (s *DynamicIntegrationService) SearchHandler(c *gin.Context) {
 	query := c.Query("q")
-	Type := c.Query("type")
-
-	if Type == "tokens" {
+	kind := c.Query("type")
+	if kind == "tokens" {
 		tokens := s.SearchTokens(query)
-		c.JSON(200, gin.H{"tokens": tokens, "count": len(tokens)})
-	} else {
-		chains := s.SearchChains(query)
-		c.JSON(200, gin.H{"chains": chains, "count": len(chains)})
+		c.JSON(http.StatusOK, gin.H{"tokens": tokens, "count": len(tokens)})
+		return
 	}
+	chains := s.SearchChains(query)
+	c.JSON(http.StatusOK, gin.H{"chains": chains, "count": len(chains)})
 }
 
-// AddNonEVMChainHandler adds a non-EVM chain (Solana, Cosmos, TON, Aptos,
-// Bitcoin, ...). EVM chains go through AddEVMChainHandler; this is the only path
-// that can register a chain whose addresses are not 20-byte hex.
+// AddNonEVMChainHandler adds a non-EVM chain.
 func (s *DynamicIntegrationService) AddNonEVMChainHandler(c *gin.Context) {
 	var req struct {
 		Key         string `json:"key" binding:"required"`
@@ -861,7 +727,6 @@ func (s *DynamicIntegrationService) AddNonEVMChainHandler(c *gin.Context) {
 		Decimals    int    `json:"decimals" binding:"required"`
 		AddedBy     string `json:"added_by"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
 		return
@@ -869,15 +734,13 @@ func (s *DynamicIntegrationService) AddNonEVMChainHandler(c *gin.Context) {
 
 	chain, err := s.AddNonEVMChain(req.Key, req.Name, req.Type, req.RPCURL, req.ExplorerURL, req.Symbol, req.Decimals, req.AddedBy)
 	if err != nil {
-		respondInternalError(c, err)
+		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, chain)
+	c.JSON(http.StatusOK, chain)
 }
 
-// ActivateChainHandler pauses or resumes a chain. Pausing hides it from the
-// active-only listings without discarding the entry.
+// ActivateChainHandler pauses or resumes a chain.
 func (s *DynamicIntegrationService) ActivateChainHandler(c *gin.Context) {
 	var req struct {
 		Active bool `json:"active"`
@@ -886,14 +749,12 @@ func (s *DynamicIntegrationService) ActivateChainHandler(c *gin.Context) {
 		respondBadRequestError(c, err)
 		return
 	}
-
 	key := c.Param("key")
 	if err := s.ActivateChain(key, req.Active); err != nil {
 		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, gin.H{"key": key, "active": req.Active})
+	c.JSON(http.StatusOK, gin.H{"key": key, "active": req.Active})
 }
 
 // ActivateTokenHandler pauses or resumes a token.
@@ -905,14 +766,12 @@ func (s *DynamicIntegrationService) ActivateTokenHandler(c *gin.Context) {
 		respondBadRequestError(c, err)
 		return
 	}
-
 	key := c.Param("key")
 	if err := s.ActivateToken(key, req.Active); err != nil {
 		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, gin.H{"key": key, "active": req.Active})
+	c.JSON(http.StatusOK, gin.H{"key": key, "active": req.Active})
 }
 
 // DeleteChainHandler removes a chain registration.
@@ -922,8 +781,7 @@ func (s *DynamicIntegrationService) DeleteChainHandler(c *gin.Context) {
 		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, gin.H{"key": key, "deleted": true})
+	c.JSON(http.StatusOK, gin.H{"key": key, "deleted": true})
 }
 
 // DeleteTokenHandler removes a token registration.
@@ -933,17 +791,11 @@ func (s *DynamicIntegrationService) DeleteTokenHandler(c *gin.Context) {
 		respondServiceError(c, err)
 		return
 	}
-
-	c.JSON(200, gin.H{"key": key, "deleted": true})
+	c.JSON(http.StatusOK, gin.H{"key": key, "deleted": true})
 }
 
 // GetBridgesHandler lists every registered bridge route.
 func (s *DynamicIntegrationService) GetBridgesHandler(c *gin.Context) {
 	bridges := s.GetAllBridges()
-	c.JSON(200, gin.H{
-		"bridges": bridges,
-		"count":   len(bridges),
-	})
+	c.JSON(http.StatusOK, gin.H{"bridges": bridges, "count": len(bridges)})
 }
-
-// Helper functions

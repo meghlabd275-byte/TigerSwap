@@ -124,6 +124,10 @@ func main() {
 		&models.NFTListing{},
 		&models.NFTOffer{},
 		&models.VolumeBucket{},
+		&models.IntegrationChain{},
+		&models.IntegrationToken{},
+		&models.IntegrationBridge{},
+		&models.IntegrationFarm{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -177,7 +181,7 @@ func main() {
 	otcService := services.NewOtcService(db)
 	twammService := services.NewTwammService(db)
 	botsService := services.NewBotsService(db)
-	dynamicIntegration := services.NewDynamicIntegrationService()
+	dynamicIntegration := services.NewDynamicIntegrationService(db)
 
 	ledgerService := services.NewLedgerService(db)
 

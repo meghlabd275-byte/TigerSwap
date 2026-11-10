@@ -3,12 +3,47 @@ package services
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
+	"tigerswap/backend/models"
 )
+
+var integrationTestDBSeq uint64
+
+// newIntegrationTestService returns a DB-backed registry over a fresh in-memory
+// database. The registry must not fabricate any entry, so a brand-new service
+// is expected to be empty.
+func newIntegrationTestService(t *testing.T) *DynamicIntegrationService {
+	t.Helper()
+	dsn := fmt.Sprintf("file:integration-%s-%d?mode=memory&cache=shared", t.Name(), atomic.AddUint64(&integrationTestDBSeq, 1))
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { sqlDB.Close() })
+
+	if err := db.AutoMigrate(
+		&models.IntegrationChain{}, &models.IntegrationToken{},
+		&models.IntegrationBridge{}, &models.IntegrationFarm{},
+	); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return NewDynamicIntegrationService(db)
+}
 
 // callJSON drives a handler with a JSON body and an explicit HTTP method and
 // returns the recorder. postJSON only issues POSTs; the integration admin
@@ -37,10 +72,69 @@ func callJSON(t *testing.T, handler gin.HandlerFunc, method, path string, body i
 	return rec
 }
 
+// TestRegistryStartsEmpty proves the registry fabricates no chain, token or
+// farm: a fresh install must list nothing until an operator registers one.
+func TestRegistryStartsEmpty(t *testing.T) {
+	svc := newIntegrationTestService(t)
+
+	if chains := svc.GetAllChains(false); len(chains) != 0 {
+		t.Fatalf("chains = %d, want 0 (no seeded default)", len(chains))
+	}
+	if tokens := svc.GetAllTokens("", false); len(tokens) != 0 {
+		t.Fatalf("tokens = %d, want 0", len(tokens))
+	}
+	stats := svc.GetStats()
+	if stats.TotalChains != 0 || stats.TotalTokens != 0 || stats.TotalFarms != 0 {
+		t.Fatalf("stats = %+v, want all zero", stats)
+	}
+}
+
+// TestAddEVMChainPersists proves a registered chain is written to the database
+// and is visible to a second service instance over the same DB — a restart
+// must not lose it.
+func TestAddEVMChainPersists(t *testing.T) {
+	svc := newIntegrationTestService(t)
+
+	if _, err := svc.AddEVMChain("ethereum", "Ethereum", "1", "https://rpc.tigerswap.example/eth", "https://etherscan.io", "ETH", "0x0000000000000000000000000000000000000000", 18, "operator"); err != nil {
+		t.Fatalf("AddEVMChain: %v", err)
+	}
+
+	// A second service over the same DB stands in for a restarted process.
+	restarted := NewDynamicIntegrationService(svc.db)
+	chain, err := restarted.GetChain("ethereum")
+	if err != nil {
+		t.Fatalf("GetChain after restart: %v", err)
+	}
+	if chain.ChainID != 1 || !chain.IsActive {
+		t.Fatalf("chain = %+v, want active chain 1", chain)
+	}
+}
+
+// TestAddEVMChainRejectsBadRPC proves a malformed RPC URL fails at registration.
+func TestAddEVMChainRejectsBadRPC(t *testing.T) {
+	svc := newIntegrationTestService(t)
+
+	if _, err := svc.AddEVMChain("bad", "Bad", "1", "not-a-url", "https://x", "BAD", "", 18, "op"); err == nil {
+		t.Fatal("expected a non-absolute rpc_url to be rejected")
+	}
+}
+
+// TestAddDuplicateChainRejected proves a duplicate key is a conflict, not a
+// silent overwrite.
+func TestAddDuplicateChainRejected(t *testing.T) {
+	svc := newIntegrationTestService(t)
+	if _, err := svc.AddEVMChain("base", "Base", "8453", "https://rpc.base", "https://basescan.org", "ETH", "", 18, "op"); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if _, err := svc.AddEVMChain("base", "Base Again", "8453", "https://rpc.base", "https://basescan.org", "ETH", "", 18, "op"); err == nil {
+		t.Fatal("expected a duplicate chain key to be rejected")
+	}
+}
+
 // TestAddNonEVMChainRegistersChain proves a non-EVM chain (whose addresses are
 // not 20-byte hex) can be registered through the admin surface.
 func TestAddNonEVMChainRegistersChain(t *testing.T) {
-	svc := NewDynamicIntegrationService()
+	svc := newIntegrationTestService(t)
 
 	rec := callJSON(t, svc.AddNonEVMChainHandler, http.MethodPost, "/api/v1/admin/integration/chains/non-evm", gin.H{
 		"key":          "solana",
@@ -66,10 +160,19 @@ func TestAddNonEVMChainRegistersChain(t *testing.T) {
 	}
 }
 
+// TestAddNonEVMChainRejectsUnknownType proves an unsupported chain type is
+// rejected rather than stored and later routed to a client that cannot speak it.
+func TestAddNonEVMChainRejectsUnknownType(t *testing.T) {
+	svc := newIntegrationTestService(t)
+	if _, err := svc.AddNonEVMChain("weird", "Weird", "fictional", "https://rpc.x", "https://x", "W", 9, "op"); err == nil {
+		t.Fatal("expected an unsupported chain type to be rejected")
+	}
+}
+
 // TestActivateChainTogglesVisibility proves pausing a chain hides it from the
 // active-only listing and resuming brings it back.
 func TestActivateChainTogglesVisibility(t *testing.T) {
-	svc := NewDynamicIntegrationService()
+	svc := newIntegrationTestService(t)
 
 	if rec := callJSON(t, svc.AddNonEVMChainHandler, http.MethodPost, "/x", gin.H{
 		"key": "sui", "name": "Sui", "type": "sui", "rpc_url": "https://rpc.sui",
@@ -110,7 +213,7 @@ func TestActivateChainTogglesVisibility(t *testing.T) {
 // TestActivateChainRejectsUnknownKey proves an unknown key is a 404 rather than
 // a silent success.
 func TestActivateChainRejectsUnknownKey(t *testing.T) {
-	svc := NewDynamicIntegrationService()
+	svc := newIntegrationTestService(t)
 
 	rec := callJSON(t, svc.ActivateChainHandler, http.MethodPost, "/x", gin.H{"active": false},
 		gin.Params{{Key: "key", Value: "does-not-exist"}})
@@ -122,7 +225,7 @@ func TestActivateChainRejectsUnknownKey(t *testing.T) {
 // TestDeleteChainHandlerRemovesChain proves deletion removes the registration and
 // a second delete reports not found.
 func TestDeleteChainHandlerRemovesChain(t *testing.T) {
-	svc := NewDynamicIntegrationService()
+	svc := newIntegrationTestService(t)
 
 	if rec := callJSON(t, svc.AddNonEVMChainHandler, http.MethodPost, "/x", gin.H{
 		"key": "aptos", "name": "Aptos", "type": "aptos", "rpc_url": "https://rpc.aptos",
@@ -147,12 +250,28 @@ func TestDeleteChainHandlerRemovesChain(t *testing.T) {
 	}
 }
 
+// TestTokenRequiresRegisteredChain proves a token cannot be attached to a chain
+// that was never registered.
+func TestTokenRequiresRegisteredChain(t *testing.T) {
+	svc := newIntegrationTestService(t)
+	if _, err := svc.AddToken("ghost", "0xabc", "no-such-chain", "Ghost", "GH", "ERC20", 18, "0", "op"); err == nil {
+		t.Fatal("expected a token on an unregistered chain to be rejected")
+	}
+}
+
 // TestGetBridgesHandlerListsRegisteredBridges proves the listing handler returns
 // the bridges that were registered.
 func TestGetBridgesHandlerListsRegisteredBridges(t *testing.T) {
-	svc := NewDynamicIntegrationService()
+	svc := newIntegrationTestService(t)
 
-	if _, err := svc.AddBridge("tgr-to-testnet", "TGR to Testnet", "tigersmartchain", "tigersmartchain_testnet",
+	if _, err := svc.AddNonEVMChain("solana", "Solana", "solana", "https://rpc.sol", "https://explorer.sol", "SOL", 9, "op"); err != nil {
+		t.Fatalf("add solana: %v", err)
+	}
+	if _, err := svc.AddNonEVMChain("bitcoin", "Bitcoin", "bitcoin", "https://rpc.btc", "https://explorer.btc", "BTC", 8, "op"); err != nil {
+		t.Fatalf("add bitcoin: %v", err)
+	}
+
+	if _, err := svc.AddBridge("sol-btc", "SOL to BTC", "solana", "bitcoin",
 		"0xRouter", "0.01", "100", 0.1, "0", "15 minutes"); err != nil {
 		t.Fatalf("AddBridge: %v", err)
 	}
@@ -169,7 +288,7 @@ func TestGetBridgesHandlerListsRegisteredBridges(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.Count != 1 || len(out.Bridges) != 1 || out.Bridges[0].Key != "tgr-to-testnet" {
-		t.Fatalf("bridges = %+v, want the single tgr-to-testnet bridge", out)
+	if out.Count != 1 || len(out.Bridges) != 1 || out.Bridges[0].Key != "sol-btc" {
+		t.Fatalf("bridges = %+v, want the single sol-btc bridge", out)
 	}
 }
