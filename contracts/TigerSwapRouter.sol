@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapRouter
@@ -56,8 +57,8 @@ contract TigerSwapRouter {
         address pool = ITigerSwapFactory(factory).getPoolAddress(tokenA, tokenB);
         
         // Transfer tokens to pool
-        IERC20(tokenA).transferFrom(msg.sender, pool, amountA);
-        IERC20(tokenB).transferFrom(msg.sender, pool, amountB);
+        TigerSwapSafeERC20.safeTransferFrom(tokenA, msg.sender, pool, amountA);
+        TigerSwapSafeERC20.safeTransferFrom(tokenB, msg.sender, pool, amountB);
         
         // Mint LP tokens
         liquidity = ITigerSwapPool(pool).mint(to);
@@ -79,7 +80,7 @@ contract TigerSwapRouter {
         (amountToken, amountETH) = _addLiquidity(token, WETH, amountTokenDesired, msg.value, amountTokenMin, amountETHMin);
         address pool = ITigerSwapFactory(factory).getPoolAddress(token, WETH);
         
-        IERC20(token).transferFrom(msg.sender, pool, amountToken);
+        TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, pool, amountToken);
         IWETH(WETH).deposit{value: amountETH}();
         IWETH(WETH).transfer(pool, amountETH);
         
@@ -109,7 +110,7 @@ contract TigerSwapRouter {
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
         
         // Transfer LP tokens
-        IERC20(pool).transferFrom(msg.sender, pool, liquidity);
+        TigerSwapSafeERC20.safeTransferFrom(pool, msg.sender, pool, liquidity);
         
         // Burn and get amounts
         (amountA, amountB) = ITigerSwapPool(pool).burn(to);
@@ -141,7 +142,7 @@ contract TigerSwapRouter {
         
         address pool = ITigerSwapFactory(factory).getPoolAddress(path[0], path[1]);
         require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
-        IERC20(path[0]).transferFrom(msg.sender, pool, amounts[0]);
+        TigerSwapSafeERC20.safeTransferFrom(path[0], msg.sender, pool, amounts[0]);
         _swap(amounts, path, to);
     }
 
@@ -178,18 +179,18 @@ contract TigerSwapRouter {
         if (family == 0) {
             uint256[] memory amounts = getAmountsOut(amountIn, _pairPath(tokenIn, tokenOut));
             amountOut = amounts[1];
-            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            TigerSwapSafeERC20.safeTransferFrom(tokenIn, msg.sender, pool, amountIn);
             (address token0,) = sortTokens(tokenIn, tokenOut);
             (uint256 amount0Out, uint256 amount1Out) =
                 tokenIn == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
             ITigerSwapPool(pool).swap(amount0Out, amount1Out, to, new bytes(0));
         } else if (family == 2) {
             (int128 i, int128 j) = _stableIndices(pool, tokenIn, tokenOut);
-            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            TigerSwapSafeERC20.safeTransferFrom(tokenIn, msg.sender, pool, amountIn);
             amountOut = ITigerSwapStablePool(pool).exchange(i, j, amountIn, amountOutMin);
         } else if (family == 3) {
             (uint256 i, uint256 j) = _weightedIndices(pool, tokenIn, tokenOut);
-            IERC20(tokenIn).transferFrom(msg.sender, pool, amountIn);
+            TigerSwapSafeERC20.safeTransferFrom(tokenIn, msg.sender, pool, amountIn);
             amountOut = ITigerSwapWeightedPool(pool).swap(i, j, amountIn, amountOutMin);
         } else {
             revert("TigerSwap: UNSUPPORTED_FAMILY");
@@ -266,8 +267,8 @@ contract TigerSwapRouter {
         if (family == 0) {
             require(to != address(0), "TigerSwap: ZERO_ADDRESS");
             (amountA, amountB) = _addLiquidity(tokenA, tokenB, amountADesired, amountBDesired, amountAMin, amountBMin);
-            IERC20(tokenA).transferFrom(msg.sender, pool, amountA);
-            IERC20(tokenB).transferFrom(msg.sender, pool, amountB);
+            TigerSwapSafeERC20.safeTransferFrom(tokenA, msg.sender, pool, amountA);
+            TigerSwapSafeERC20.safeTransferFrom(tokenB, msg.sender, pool, amountB);
             liquidity = ITigerSwapPool(pool).mint(to);
         } else if (family == 2) {
             require(to == msg.sender, "TigerSwap: SELF_ONLY");
@@ -315,7 +316,7 @@ contract TigerSwapRouter {
 
         if (family == 0) {
             require(to != address(0), "TigerSwap: ZERO_ADDRESS");
-            IERC20(pool).transferFrom(msg.sender, pool, liquidity);
+            TigerSwapSafeERC20.safeTransferFrom(pool, msg.sender, pool, liquidity);
             (amountA, amountB) = ITigerSwapPool(pool).burn(to);
         } else if (family == 2) {
             require(to == msg.sender, "TigerSwap: SELF_ONLY");

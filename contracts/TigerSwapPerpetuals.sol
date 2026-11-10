@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapPerpetuals
@@ -266,7 +267,7 @@ contract TigerSwapPerpetuals {
         uint256 supply = totalPoolShares[token];
         shares = supply == 0 || current == 0 ? amount : amount * supply / current;
 
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
 
         poolLiquidity[token] = current + amount;
         poolShares[token][msg.sender] += shares;
@@ -296,7 +297,7 @@ contract TigerSwapPerpetuals {
         totalPoolShares[token] = supply - shares;
         poolLiquidity[token] = current - amount;
 
-        require(IERC20(token).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
 
         emit LiquidityRemoved(msg.sender, token, amount, shares);
     }
@@ -310,7 +311,7 @@ contract TigerSwapPerpetuals {
 
         protocolFees[token] = 0;
         poolLiquidity[token] -= amount;
-        require(IERC20(token).transfer(to, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, to, amount), "TigerSwap: TRANSFER_FAILED");
 
         emit ProtocolFeesWithdrawn(token, to, amount);
     }
@@ -365,7 +366,7 @@ contract TigerSwapPerpetuals {
         uint256 protocolCut = fee * protocolFeeShare / RATIO_PRECISION;
         protocolFees[market.token] += protocolCut;
 
-        require(IERC20(market.token).transferFrom(msg.sender, address(this), collateral), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(market.token, msg.sender, address(this), collateral), "TigerSwap: TRANSFER_FAILED");
         poolLiquidity[market.token] += fee;
 
         // Re-check the margin against the net collateral, since the fee reduces it.
@@ -485,9 +486,9 @@ contract TigerSwapPerpetuals {
             if (liquidatorFee > 0) {
                 uint256 fee = liquidatorFee > payout ? payout : liquidatorFee;
                 traderPayout = payout - fee;
-                require(IERC20(token).transfer(liquidator, fee), "TigerSwap: TRANSFER_FAILED");
+                require(TigerSwapSafeERC20.safeTransfer(token, liquidator, fee), "TigerSwap: TRANSFER_FAILED");
             }
-            require(IERC20(token).transfer(trader, traderPayout), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token, trader, traderPayout), "TigerSwap: TRANSFER_FAILED");
         } else {
             uint256 loss = uint256(-pnl);
             if (loss >= collateral) {
@@ -506,11 +507,11 @@ contract TigerSwapPerpetuals {
                 uint256 fee = liquidatorFee > remainder ? remainder : liquidatorFee;
                 poolLiquidity[token] += loss;
                 if (fee > 0) {
-                    require(IERC20(token).transfer(liquidator, fee), "TigerSwap: TRANSFER_FAILED");
+                    require(TigerSwapSafeERC20.safeTransfer(token, liquidator, fee), "TigerSwap: TRANSFER_FAILED");
                 }
                 uint256 traderPayout = remainder - fee;
                 if (traderPayout > 0) {
-                    require(IERC20(token).transfer(trader, traderPayout), "TigerSwap: TRANSFER_FAILED");
+                    require(TigerSwapSafeERC20.safeTransfer(token, trader, traderPayout), "TigerSwap: TRANSFER_FAILED");
                 }
             }
         }
@@ -527,7 +528,7 @@ contract TigerSwapPerpetuals {
         bytes32 marketId = position.marketId;
         address token = markets[marketId].token;
 
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
         position.collateral += amount;
         position.lastUpdated = block.timestamp;
     }
@@ -557,7 +558,7 @@ contract TigerSwapPerpetuals {
         position.collateral = newCollateral;
         position.lastUpdated = block.timestamp;
 
-        require(IERC20(market.token).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(market.token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
     }
 
     // ============ Oracle ============

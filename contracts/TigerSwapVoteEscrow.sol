@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapVoteEscrow
@@ -388,7 +389,7 @@ contract TigerSwapVoteEscrow {
         }
         bribeTotal[_gauge][epoch][_token] += _amount;
 
-        require(IERC20(_token).transferFrom(msg.sender, address(this), _amount), "bribe transfer failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(_token, msg.sender, address(this), _amount), "bribe transfer failed");
 
         emit BribeAdded(_gauge, epoch, _token, _amount, msg.sender);
     }
@@ -414,7 +415,7 @@ contract TigerSwapVoteEscrow {
         require(share > 0, "share is zero");
 
         bribeClaimed[msg.sender][_gauge][_epoch][_token] = true;
-        require(IERC20(_token).transfer(msg.sender, share), "bribe payout failed");
+        require(TigerSwapSafeERC20.safeTransfer(_token, msg.sender, share), "bribe payout failed");
 
         emit BribeClaimed(msg.sender, _gauge, _epoch, _token, share);
         return share;

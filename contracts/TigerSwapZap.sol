@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /// @notice Minimal view of a TigerSwap V2 pool, which is also its LP token.
 interface ITigerSwapPoolView {
@@ -163,7 +164,7 @@ contract TigerSwapZap {
         uint256 reserveOut = _reserveOf(pool, _tokenOut);
         require(reserveIn > 0 && reserveOut > 0, "pool has no liquidity");
 
-        require(IERC20(_tokenIn).transferFrom(msg.sender, address(this), _amountIn), "transfer in failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(_tokenIn, msg.sender, address(this), _amountIn), "transfer in failed");
 
         uint256 swapAmount = _optimalSwapAmount(_amountIn, reserveIn);
         uint256 amountOut = _swap(_tokenIn, _tokenOut, swapAmount, _deadline);
@@ -172,7 +173,7 @@ contract TigerSwapZap {
         liquidity = _addLiquidity(_tokenIn, _tokenOut, amountInRemaining, amountOut, _deadline);
 
         require(liquidity >= _minLp, "slippage exceeded");
-        require(IERC20(pool).transfer(msg.sender, liquidity), "lp transfer failed");
+        require(TigerSwapSafeERC20.safeTransfer(pool, msg.sender, liquidity), "lp transfer failed");
 
         _refundDust(msg.sender, _tokenIn, _tokenOut);
 
@@ -204,7 +205,7 @@ contract TigerSwapZap {
 
         liquidity = _addLiquidity(WETH, _tokenOut, msg.value - swapAmount, amountOut, _deadline);
         require(liquidity >= _minLp, "slippage exceeded");
-        require(IERC20(pool).transfer(msg.sender, liquidity), "lp transfer failed");
+        require(TigerSwapSafeERC20.safeTransfer(pool, msg.sender, liquidity), "lp transfer failed");
 
         _refundDustETH(msg.sender, _tokenOut);
 
@@ -239,7 +240,7 @@ contract TigerSwapZap {
         amountOut = amountIn + swapped;
 
         require(amountOut >= _minAmountOut, "slippage exceeded");
-        require(IERC20(_tokenIn).transfer(msg.sender, amountOut), "payout failed");
+        require(TigerSwapSafeERC20.safeTransfer(_tokenIn, msg.sender, amountOut), "payout failed");
 
         emit ZappedOut(msg.sender, _tokenIn, _tokenOut, _lpAmount, amountOut);
     }
@@ -290,7 +291,7 @@ contract TigerSwapZap {
         if (_amountIn == 0) {
             return 0;
         }
-        IERC20(_tokenIn).approve(address(router), _amountIn);
+        TigerSwapSafeERC20.safeApprove(_tokenIn, address(router), _amountIn);
 
         address[] memory path = new address[](2);
         path[0] = _tokenIn;
@@ -307,8 +308,8 @@ contract TigerSwapZap {
         uint256 _amountB,
         uint256 _deadline
     ) internal returns (uint256 liquidity) {
-        IERC20(_tokenA).approve(address(router), _amountA);
-        IERC20(_tokenB).approve(address(router), _amountB);
+        TigerSwapSafeERC20.safeApprove(_tokenA, address(router), _amountA);
+        TigerSwapSafeERC20.safeApprove(_tokenB, address(router), _amountB);
 
         (, , liquidity) = router.addLiquidity(_tokenA, _tokenB, _amountA, _amountB, 0, 0, address(this), _deadline);
     }
@@ -317,12 +318,12 @@ contract TigerSwapZap {
     function _refundDust(address _user, address _tokenIn, address _tokenOut) internal {
         uint256 dustIn = IERC20(_tokenIn).balanceOf(address(this));
         if (dustIn > 0) {
-            require(IERC20(_tokenIn).transfer(_user, dustIn), "dust refund failed");
+            require(TigerSwapSafeERC20.safeTransfer(_tokenIn, _user, dustIn), "dust refund failed");
             emit DustRefunded(_user, _tokenIn, dustIn);
         }
         uint256 dustOut = IERC20(_tokenOut).balanceOf(address(this));
         if (dustOut > 0) {
-            require(IERC20(_tokenOut).transfer(_user, dustOut), "dust refund failed");
+            require(TigerSwapSafeERC20.safeTransfer(_tokenOut, _user, dustOut), "dust refund failed");
             emit DustRefunded(_user, _tokenOut, dustOut);
         }
     }
@@ -334,7 +335,7 @@ contract TigerSwapZap {
         }
         uint256 dustToken = IERC20(_tokenOut).balanceOf(address(this));
         if (dustToken > 0) {
-            require(IERC20(_tokenOut).transfer(_user, dustToken), "dust refund failed");
+            require(TigerSwapSafeERC20.safeTransfer(_tokenOut, _user, dustToken), "dust refund failed");
             emit DustRefunded(_user, _tokenOut, dustToken);
         }
         uint256 balance = address(this).balance;
@@ -351,7 +352,7 @@ contract TigerSwapZap {
     /// mid-operation because every zap path is atomic and guarded.
     function sweep(address _token, address _to, uint256 _amount) external onlyOwner {
         require(_to != address(0), "zero address");
-        require(IERC20(_token).transfer(_to, _amount), "sweep failed");
+        require(TigerSwapSafeERC20.safeTransfer(_token, _to, _amount), "sweep failed");
     }
 
     function transferOwnership(address _newOwner) external onlyOwner {

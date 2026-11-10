@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapVault
@@ -204,7 +205,7 @@ contract TigerSwapVault {
 
         uint256 balanceBefore = totalAssets();
 
-        IERC20(_rewardToken).approve(router, _amount);
+        TigerSwapSafeERC20.safeApprove(_rewardToken, router, _amount);
         uint256[] memory amounts =
             ITigerSwapRouterHarvest(router).swapExactTokensForTokens(_amount, _minAssetsOut, _path, address(this), block.timestamp);
 
@@ -258,7 +259,7 @@ contract TigerSwapVault {
     function sweep(address _token, address _to, uint256 _amount) external onlyOwner {
         require(_token != address(asset), "cannot sweep the asset");
         require(_to != address(0), "zero address");
-        require(IERC20(_token).transfer(_to, _amount), "sweep failed");
+        require(TigerSwapSafeERC20.safeTransfer(_token, _to, _amount), "sweep failed");
     }
 
     function transferOwnership(address _newOwner) external onlyOwner {

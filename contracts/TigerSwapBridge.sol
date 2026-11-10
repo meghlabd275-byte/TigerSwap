@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapBridge
@@ -120,7 +121,7 @@ contract TigerSwapBridge {
         uint256 amount = collectedFees[token];
         require(amount > 0, "TigerSwap: NO_FEES");
         collectedFees[token] = 0;
-        require(IERC20(token).transfer(to, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, to, amount), "TigerSwap: TRANSFER_FAILED");
         emit FeesWithdrawn(token, to, amount);
     }
 
@@ -143,7 +144,7 @@ contract TigerSwapBridge {
         uint256 transferAmount = amount - fee;
         require(transferAmount > 0, "TigerSwap: AMOUNT_TOO_LOW");
 
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
         collectedFees[token] += fee;
 
         messageId = keccak256(abi.encodePacked(
@@ -184,7 +185,7 @@ contract TigerSwapBridge {
         // Set replay protection before the external transfer.
         processedMessages[message.messageId] = true;
 
-        require(IERC20(message.token).transfer(message.receiver, message.amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(message.token, message.receiver, message.amount), "TigerSwap: TRANSFER_FAILED");
 
         emit BridgeCompleted(message.receiver, message.fromChain, message.token, message.amount, message.messageId);
     }

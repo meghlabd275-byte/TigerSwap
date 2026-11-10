@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /// @notice Router surface the order book needs to settle fills.
 interface ITigerSwapRouter {
@@ -172,7 +173,7 @@ contract TigerSwapAdvancedOrders {
         uint256 amount = feesCollected[token];
         require(amount > 0, "TigerSwap: NO_FEES");
         feesCollected[token] = 0;
-        require(IERC20(token).transfer(to, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, to, amount), "TigerSwap: TRANSFER_FAILED");
         emit FeesWithdrawn(token, to, amount);
     }
 
@@ -315,7 +316,7 @@ contract TigerSwapAdvancedOrders {
         order.twapParts = twapParts;
 
         // Escrow the input so a fill is always fundable.
-        require(IERC20(tokenIn).transferFrom(msg.sender, address(this), amountIn), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(tokenIn, msg.sender, address(this), amountIn), "TigerSwap: TRANSFER_FAILED");
 
         userOrders[msg.sender].push(orderId);
 
@@ -380,7 +381,7 @@ contract TigerSwapAdvancedOrders {
             order.status = OrderStatus.PARTIALLY_FILLED;
         }
 
-        require(IERC20(order.tokenOut).transfer(order.owner, amountOut), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(order.tokenOut, order.owner, amountOut), "TigerSwap: TRANSFER_FAILED");
 
         emit OrderFilled(orderId, actualFill, amountOut, msg.sender);
     }
@@ -408,7 +409,7 @@ contract TigerSwapAdvancedOrders {
         order.status = OrderStatus.FILLED;
         feesCollected[order.tokenIn] += fee;
 
-        require(IERC20(order.tokenOut).transfer(order.owner, amountOut), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(order.tokenOut, order.owner, amountOut), "TigerSwap: TRANSFER_FAILED");
 
         emit OrderTriggered(orderId, currentPrice);
         emit OrderFilled(orderId, remaining, amountOut, msg.sender);
@@ -426,7 +427,7 @@ contract TigerSwapAdvancedOrders {
         uint256 remaining = order.amountIn - order.filledAmount;
         order.status = OrderStatus.CANCELLED;
         if (remaining > 0) {
-            require(IERC20(order.tokenIn).transfer(order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(order.tokenIn, order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit OrderCancelled(orderId, msg.sender, "cancelled by owner");
@@ -444,7 +445,7 @@ contract TigerSwapAdvancedOrders {
         uint256 remaining = order.amountIn - order.filledAmount;
         order.status = OrderStatus.EXPIRED;
         if (remaining > 0) {
-            require(IERC20(order.tokenIn).transfer(order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(order.tokenIn, order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit OrderCancelled(orderId, order.owner, "expired");
@@ -459,7 +460,7 @@ contract TigerSwapAdvancedOrders {
         uint256 remaining = order.amountIn - order.filledAmount;
         order.status = OrderStatus.CANCELLED;
         if (remaining > 0) {
-            require(IERC20(order.tokenIn).transfer(order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(order.tokenIn, order.owner, remaining), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit OrderCancelled(orderId, order.owner, "IOC expired");
@@ -477,7 +478,7 @@ contract TigerSwapAdvancedOrders {
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        require(IERC20(tokenIn).approve(router, amountIn), "TigerSwap: APPROVE_FAILED");
+        require(TigerSwapSafeERC20.safeApprove(tokenIn, router, amountIn), "TigerSwap: APPROVE_FAILED");
         uint256[] memory amounts = ITigerSwapRouter(router).swapExactTokensForTokens(
             amountIn, amountOutMin, path, address(this), block.timestamp
         );

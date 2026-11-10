@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapTWAMM
@@ -259,8 +260,8 @@ contract TigerSwapTWAMM {
         require(shares > 0, "TigerSwap: ZERO_SHARES");
         require(shares >= minShares, "TigerSwap: SLIPPAGE");
 
-        require(IERC20(token0).transferFrom(msg.sender, address(this), amount0), "TigerSwap: TRANSFER_IN");
-        require(IERC20(token1).transferFrom(msg.sender, address(this), amount1), "TigerSwap: TRANSFER_IN");
+        require(TigerSwapSafeERC20.safeTransferFrom(token0, msg.sender, address(this), amount0), "TigerSwap: TRANSFER_IN");
+        require(TigerSwapSafeERC20.safeTransferFrom(token1, msg.sender, address(this), amount1), "TigerSwap: TRANSFER_IN");
 
         reserve0 += amount0;
         reserve1 += amount1;
@@ -296,8 +297,8 @@ contract TigerSwapTWAMM {
         reserve0 -= amount0;
         reserve1 -= amount1;
 
-        require(IERC20(token0).transfer(msg.sender, amount0), "TigerSwap: TRANSFER_OUT");
-        require(IERC20(token1).transfer(msg.sender, amount1), "TigerSwap: TRANSFER_OUT");
+        require(TigerSwapSafeERC20.safeTransfer(token0, msg.sender, amount0), "TigerSwap: TRANSFER_OUT");
+        require(TigerSwapSafeERC20.safeTransfer(token1, msg.sender, amount1), "TigerSwap: TRANSFER_OUT");
 
         emit LiquidityRemoved(msg.sender, amount0, amount1, shares);
         emit Transfer(msg.sender, address(0), shares);
@@ -343,7 +344,7 @@ contract TigerSwapTWAMM {
         orderIds.push(orderId);
 
         address sellToken = isToken0 ? token0 : token1;
-        require(IERC20(sellToken).transferFrom(msg.sender, address(this), escrow), "TigerSwap: TRANSFER_IN");
+        require(TigerSwapSafeERC20.safeTransferFrom(sellToken, msg.sender, address(this), escrow), "TigerSwap: TRANSFER_IN");
 
         emit OrderCreated(orderId, msg.sender, isToken0, sellRate, expiration, escrow);
     }
@@ -395,10 +396,10 @@ contract TigerSwapTWAMM {
         address sellToken = order.isToken0 ? token0 : token1;
 
         if (proceeds > 0) {
-            require(IERC20(buyToken).transfer(msg.sender, proceeds), "TigerSwap: TRANSFER_OUT");
+            require(TigerSwapSafeERC20.safeTransfer(buyToken, msg.sender, proceeds), "TigerSwap: TRANSFER_OUT");
         }
         if (refund > 0) {
-            require(IERC20(sellToken).transfer(msg.sender, refund), "TigerSwap: TRANSFER_OUT");
+            require(TigerSwapSafeERC20.safeTransfer(sellToken, msg.sender, refund), "TigerSwap: TRANSFER_OUT");
         }
 
         if (cancelled) {
@@ -669,12 +670,12 @@ contract TigerSwapTWAMM {
         if (amount0 > 0) {
             require(reserve0 >= amount0, "TigerSwap: FEE_EXCEEDS_RESERVE");
             reserve0 -= amount0;
-            require(IERC20(token0).transfer(feeRecipient, amount0), "TigerSwap: TRANSFER_OUT");
+            require(TigerSwapSafeERC20.safeTransfer(token0, feeRecipient, amount0), "TigerSwap: TRANSFER_OUT");
         }
         if (amount1 > 0) {
             require(reserve1 >= amount1, "TigerSwap: FEE_EXCEEDS_RESERVE");
             reserve1 -= amount1;
-            require(IERC20(token1).transfer(feeRecipient, amount1), "TigerSwap: TRANSFER_OUT");
+            require(TigerSwapSafeERC20.safeTransfer(token1, feeRecipient, amount1), "TigerSwap: TRANSFER_OUT");
         }
 
         emit FeesCollected(feeRecipient, amount0, amount1);

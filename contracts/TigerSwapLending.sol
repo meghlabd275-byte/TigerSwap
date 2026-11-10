@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapLending
@@ -161,7 +162,7 @@ contract TigerSwapLending {
         uint256 amount = m.totalReserves;
         require(amount > 0, "TigerSwap: NO_RESERVES");
         m.totalReserves = 0;
-        require(IERC20(token).transfer(to, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, to, amount), "TigerSwap: TRANSFER_FAILED");
         emit ReservesWithdrawn(token, amount);
     }
 
@@ -173,7 +174,7 @@ contract TigerSwapLending {
         require(m.isActive, "TigerSwap: MARKET_NOT_ACTIVE");
         _accrue(m);
 
-        require(IERC20(token).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
 
         uint256 shares = amount * WAD / m.depositIndex;
         accounts[msg.sender].deposits[token] += shares;
@@ -196,7 +197,7 @@ contract TigerSwapLending {
         // A withdrawal must not push the account into liquidation.
         require(_isHealthy(msg.sender), "TigerSwap: WITHDRAW_WOULD_LIQUIDATE");
 
-        require(IERC20(token).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         emit Withdrawn(msg.sender, token, amount);
     }
 
@@ -217,7 +218,7 @@ contract TigerSwapLending {
 
         require(_isHealthy(msg.sender), "TigerSwap: INSUFFICIENT_COLLATERAL");
 
-        require(IERC20(token).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         emit Borrowed(msg.sender, token, amount);
     }
 
@@ -230,7 +231,7 @@ contract TigerSwapLending {
         uint256 payAmount = amount > owed ? owed : amount;
         require(payAmount > 0, "TigerSwap: NO_DEBT");
 
-        require(IERC20(token).transferFrom(msg.sender, address(this), payAmount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), payAmount), "TigerSwap: TRANSFER_FAILED");
 
         uint256 shares = _sharesForAmount(m.borrowIndex, payAmount);
         accounts[msg.sender].borrows[token] -= shares;
@@ -281,7 +282,7 @@ contract TigerSwapLending {
         );
         require(collateralSeized <= userCollateral, "TigerSwap: INSUFFICIENT_COLLATERAL");
 
-        require(IERC20(debtToken).transferFrom(msg.sender, address(this), actualRepay), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(debtToken, msg.sender, address(this), actualRepay), "TigerSwap: TRANSFER_FAILED");
 
         uint256 repayShares = _sharesForAmount(debtMarket.borrowIndex, actualRepay);
         accounts[user].borrows[debtToken] -= repayShares;
@@ -291,7 +292,7 @@ contract TigerSwapLending {
         accounts[user].deposits[collateralToken] -= seizeShares;
         collMarket.totalDeposits -= seizeShares;
 
-        require(IERC20(collateralToken).transfer(msg.sender, collateralSeized), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(collateralToken, msg.sender, collateralSeized), "TigerSwap: TRANSFER_FAILED");
 
         emit Liquidated(msg.sender, user, debtToken, collateralToken, actualRepay, collateralSeized);
     }
@@ -321,7 +322,7 @@ contract TigerSwapLending {
         uint256 fee = amount * flashLoanFee / WAD;
         uint256 balanceBefore = IERC20(token).balanceOf(address(this));
 
-        require(IERC20(token).transfer(receiver, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(token, receiver, amount), "TigerSwap: TRANSFER_FAILED");
         IFlashLoanReceiver(receiver).onFlashLoan(msg.sender, token, amount, fee, data);
 
         uint256 balanceAfter = IERC20(token).balanceOf(address(this));

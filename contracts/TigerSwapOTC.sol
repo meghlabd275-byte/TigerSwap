@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapOTC
@@ -190,7 +191,7 @@ contract TigerSwapOTC {
         });
 
         require(
-            IERC20(sellToken).transferFrom(msg.sender, address(this), sellAmount),
+            TigerSwapSafeERC20.safeTransferFrom(sellToken, msg.sender, address(this), sellAmount),
             "TigerSwap: TRANSFER_IN"
         );
 
@@ -215,20 +216,20 @@ contract TigerSwapOTC {
         uint256 sellerProceeds = trade.buyAmount - fee;
 
         require(
-            IERC20(trade.buyToken).transferFrom(msg.sender, address(this), trade.buyAmount),
+            TigerSwapSafeERC20.safeTransferFrom(trade.buyToken, msg.sender, address(this), trade.buyAmount),
             "TigerSwap: TRANSFER_IN"
         );
 
         if (fee > 0) {
-            require(IERC20(trade.buyToken).transfer(feeRecipient, fee), "TigerSwap: FEE_TRANSFER");
+            require(TigerSwapSafeERC20.safeTransfer(trade.buyToken, feeRecipient, fee), "TigerSwap: FEE_TRANSFER");
         }
         require(
-            IERC20(trade.buyToken).transfer(trade.seller, sellerProceeds),
+            TigerSwapSafeERC20.safeTransfer(trade.buyToken, trade.seller, sellerProceeds),
             "TigerSwap: PAY_SELLER"
         );
 
         received = trade.sellAmount;
-        require(IERC20(trade.sellToken).transfer(msg.sender, received), "TigerSwap: PAY_BUYER");
+        require(TigerSwapSafeERC20.safeTransfer(trade.sellToken, msg.sender, received), "TigerSwap: PAY_BUYER");
 
         emit TradeAccepted(tradeId, msg.sender, fee);
     }
@@ -244,7 +245,7 @@ contract TigerSwapOTC {
         trade.active = false;
         refunded = trade.sellAmount;
 
-        require(IERC20(trade.sellToken).transfer(trade.seller, refunded), "TigerSwap: REFUND");
+        require(TigerSwapSafeERC20.safeTransfer(trade.sellToken, trade.seller, refunded), "TigerSwap: REFUND");
 
         emit TradeCancelled(tradeId, trade.seller, refunded);
     }

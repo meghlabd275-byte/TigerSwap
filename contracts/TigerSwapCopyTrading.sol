@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /// @dev Median price oracle used to price copy positions.
 interface ITigerSwapPriceOracle {
@@ -160,7 +161,7 @@ contract TigerSwapCopyTrading {
         require(amount > 0 && amount <= platformFeesStored, "TigerSwap: INSUFFICIENT_FEES");
 
         platformFeesStored -= amount;
-        require(IERC20(paymentToken).transfer(to, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(paymentToken, to, amount), "TigerSwap: TRANSFER_FAILED");
 
         emit PlatformFeesWithdrawn(to, amount);
     }
@@ -209,7 +210,7 @@ contract TigerSwapCopyTrading {
     /// @notice Deposit the payment token. The balance is the follower's own.
     function deposit(uint256 amount) external nonReentrant {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
-        require(IERC20(paymentToken).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(paymentToken, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
 
         balances[msg.sender][paymentToken] += amount;
         emit Deposited(msg.sender, amount);
@@ -222,7 +223,7 @@ contract TigerSwapCopyTrading {
         require(amount <= free, "TigerSwap: INSUFFICIENT_BALANCE");
 
         balances[msg.sender][paymentToken] -= amount;
-        require(IERC20(paymentToken).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(paymentToken, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
 
         emit Withdrawn(msg.sender, amount);
     }
@@ -234,7 +235,7 @@ contract TigerSwapCopyTrading {
         require(!isFollowing[msg.sender][trader], "TigerSwap: ALREADY_FOLLOWING");
         require(amount >= traderInfo.minFollowAmount, "TigerSwap: AMOUNT_TOO_LOW");
 
-        require(IERC20(paymentToken).transferFrom(msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(paymentToken, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
         balances[msg.sender][paymentToken] += amount;
 
         isFollowing[msg.sender][trader] = true;

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapStable
@@ -176,7 +177,7 @@ contract TigerSwapStable {
 
         for (uint256 i = 0; i < N_COINS; i++) {
             if (amounts[i] == 0) continue;
-            require(IERC20(coins[i]).transferFrom(msg.sender, address(this), amounts[i]), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransferFrom(coins[i], msg.sender, address(this), amounts[i]), "TigerSwap: TRANSFER_FAILED");
         }
     }
 
@@ -211,7 +212,7 @@ contract TigerSwapStable {
         emit RemoveLiquidity(msg.sender, amounts, fees, totalSupply);
 
         for (uint256 i = 0; i < N_COINS; i++) {
-            require(IERC20(coins[i]).transfer(msg.sender, amounts[i]), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(coins[i], msg.sender, amounts[i]), "TigerSwap: TRANSFER_FAILED");
         }
     }
 
@@ -265,7 +266,7 @@ contract TigerSwapStable {
         fees[idx] = dyFee;
         emit RemoveLiquidityOne(msg.sender, amount, dy, fees);
 
-        require(IERC20(coins[idx]).transfer(msg.sender, dy), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(coins[idx], msg.sender, dy), "TigerSwap: TRANSFER_FAILED");
     }
 
     // ============ Swapping ============
@@ -302,8 +303,8 @@ contract TigerSwapStable {
         balances[idxJ] -= (dy + adminPart);
         adminFees[idxJ] += adminPart;
 
-        require(IERC20(coins[idxI]).transferFrom(msg.sender, address(this), dx), "TigerSwap: TRANSFER_FAILED");
-        require(IERC20(coins[idxJ]).transfer(msg.sender, dy), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(coins[idxI], msg.sender, address(this), dx), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(coins[idxJ], msg.sender, dy), "TigerSwap: TRANSFER_FAILED");
 
         emit TokenExchange(msg.sender, idxI, dx, idxJ, dy);
     }
@@ -548,7 +549,7 @@ contract TigerSwapStable {
             // without touching the reserves LPs can withdraw.
             adminFees[i] = 0;
             amounts[i] = amount;
-            require(IERC20(coins[i]).transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(coins[i], msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         }
         emit AdminFeesWithdrawn(msg.sender, amounts);
     }

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapConcentrated
@@ -132,10 +133,10 @@ contract TigerSwapConcentrated {
         amount1 = uint256(amount1Delta);
 
         if (amount0 > 0) {
-            require(IERC20(token0).transferFrom(msg.sender, address(this), amount0), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransferFrom(token0, msg.sender, address(this), amount0), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
-            require(IERC20(token1).transferFrom(msg.sender, address(this), amount1), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransferFrom(token1, msg.sender, address(this), amount1), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit Mint(msg.sender, recipient, tickLower, tickUpper, amount, amount0, amount1);
@@ -167,10 +168,10 @@ contract TigerSwapConcentrated {
         amount1 = amount1 + owed1;
 
         if (amount0 > 0) {
-            require(IERC20(token0).transfer(msg.sender, amount0), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token0, msg.sender, amount0), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
-            require(IERC20(token1).transfer(msg.sender, amount1), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token1, msg.sender, amount1), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit Burn(msg.sender, msg.sender, tickLower, tickUpper, amount, amount0, amount1);
@@ -208,10 +209,10 @@ contract TigerSwapConcentrated {
         position.tokensOwed1 = 0;
 
         if (amount0 > 0) {
-            require(IERC20(token0).transfer(recipient, amount0), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token0, recipient, amount0), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
-            require(IERC20(token1).transfer(recipient, amount1), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token1, recipient, amount1), "TigerSwap: TRANSFER_FAILED");
         }
 
         emit Collect(msg.sender, recipient, tickLower, tickUpper, amount0, amount1);
@@ -330,16 +331,16 @@ contract TigerSwapConcentrated {
 
         // Settle: positive means the caller owes the pool, negative means the pool owes the caller.
         if (amount0 > 0) {
-            require(IERC20(token0).transferFrom(msg.sender, address(this), uint256(amount0)), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransferFrom(token0, msg.sender, address(this), uint256(amount0)), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
-            require(IERC20(token1).transferFrom(msg.sender, address(this), uint256(amount1)), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransferFrom(token1, msg.sender, address(this), uint256(amount1)), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount0 < 0) {
-            require(IERC20(token0).transfer(recipient, uint256(-amount0)), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token0, recipient, uint256(-amount0)), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 < 0) {
-            require(IERC20(token1).transfer(recipient, uint256(-amount1)), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token1, recipient, uint256(-amount1)), "TigerSwap: TRANSFER_FAILED");
         }
 
         _writeObservation();
@@ -653,10 +654,10 @@ contract TigerSwapConcentrated {
         uint256 balance1Before = IERC20(token1).balanceOf(address(this));
 
         if (amount0 > 0) {
-            require(IERC20(token0).transfer(recipient, amount0), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token0, recipient, amount0), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
-            require(IERC20(token1).transfer(recipient, amount1), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token1, recipient, amount1), "TigerSwap: TRANSFER_FAILED");
         }
 
         uint256 fee0 = amount0 * uint256(fee) / FEE_DENOMINATOR;
@@ -704,11 +705,11 @@ contract TigerSwapConcentrated {
 
         if (amount0 > 0) {
             protocolFees0 -= amount0;
-            require(IERC20(token0).transfer(protocolFeeRecipient, amount0), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token0, protocolFeeRecipient, amount0), "TigerSwap: TRANSFER_FAILED");
         }
         if (amount1 > 0) {
             protocolFees1 -= amount1;
-            require(IERC20(token1).transfer(protocolFeeRecipient, amount1), "TigerSwap: TRANSFER_FAILED");
+            require(TigerSwapSafeERC20.safeTransfer(token1, protocolFeeRecipient, amount1), "TigerSwap: TRANSFER_FAILED");
         }
 
         return (amount0, amount1);
