@@ -175,10 +175,10 @@ contract LendingTest is Test {
 
         vm.startPrank(alice);
         lending.deposit(address(coll), 10e18);          // $20,000 collateral
-        lending.borrow(address(rusd), 15_000e18);       // $15,000 debt, health ~1.33
+        lending.borrow(address(rusd), 14_000e18);       // 70% factor => $14,000
         vm.stopPrank();
 
-        // COLL drops to $1,000 => collateral $10,000 < debt $15,000.
+        // COLL drops to $1,000 => collateral $10,000 < debt $14,000.
         oracle.submitPrice(address(coll), 1000e18);
 
         assertLt(lending.getAccountHealth(alice), WAD);
@@ -186,17 +186,41 @@ contract LendingTest is Test {
         uint256 liquidatorRusdBefore = rusd.balanceOf(liquidator);
         uint256 liquidatorCollBefore = coll.balanceOf(liquidator);
 
+        // The request exceeds half the debt, so the close factor caps it.
         vm.prank(liquidator);
         lending.liquidate(alice, address(rusd), address(coll), 7_500e18);
 
+        uint256 capped = 7_000e18;
         // The liquidator actually paid RUSD...
-        assertEq(rusd.balanceOf(liquidator), liquidatorRusdBefore - 7_500e18);
+        assertEq(rusd.balanceOf(liquidator), liquidatorRusdBefore - capped);
         // ...and received COLL plus the bonus.
         uint256 seized = coll.balanceOf(liquidator) - liquidatorCollBefore;
-        assertGt(seized, 7_500e18 * 1e18 / 1000e18); // > 7.5 COLL
+        assertGt(seized, capped * 1e18 / 1000e18);
 
         // Debt fell by the repaid amount, and the account improved.
-        assertEq(lending.getBorrowBalance(alice, address(rusd)), 7_500e18);
+        assertEq(lending.getBorrowBalance(alice, address(rusd)), 7_000e18);
+    }
+
+    /// Borrowing is capped by the collateral factor, which is stricter than the
+    /// liquidation threshold. Borrowing up to the threshold (but past the factor)
+    /// must be refused, otherwise a fresh loan is born liquidatable.
+    function testBorrowIsCappedByCollateralFactorNotThreshold() public {
+        vm.prank(bob);
+        lending.deposit(address(rusd), 500_000e18);
+
+        vm.startPrank(alice);
+        lending.deposit(address(coll), 10e18); // $20,000 collateral, 70% factor
+
+        // $15,000 is within the 75% liquidation threshold but above the 70%
+        // collateral factor, so it must be rejected.
+        vm.expectRevert(bytes("TigerSwap: INSUFFICIENT_COLLATERAL"));
+        lending.borrow(address(rusd), 15_000e18);
+
+        // $14,000 sits exactly at the collateral factor.
+        lending.borrow(address(rusd), 14_000e18);
+        vm.stopPrank();
+
+        assertEq(lending.getBorrowBalance(alice, address(rusd)), 14_000e18);
     }
 
     function testLiquidationOfHealthyAccountReverts() public {

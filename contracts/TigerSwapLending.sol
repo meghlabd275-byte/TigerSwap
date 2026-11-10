@@ -194,8 +194,8 @@ contract TigerSwapLending {
         accounts[msg.sender].deposits[token] -= shares;
         m.totalDeposits -= shares;
 
-        // A withdrawal must not push the account into liquidation.
-        require(_isHealthy(msg.sender), "TigerSwap: WITHDRAW_WOULD_LIQUIDATE");
+        // A withdrawal must not push the account below its borrow capacity.
+        require(_isBorrowHealthy(msg.sender), "TigerSwap: WITHDRAW_WOULD_LIQUIDATE");
 
         require(TigerSwapSafeERC20.safeTransfer(token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         emit Withdrawn(msg.sender, token, amount);
@@ -216,7 +216,10 @@ contract TigerSwapLending {
         accounts[msg.sender].borrows[token] += shares;
         m.totalBorrows += shares;
 
-        require(_isHealthy(msg.sender), "TigerSwap: INSUFFICIENT_COLLATERAL");
+        // Borrowing is capped by the collateral factor, which is stricter than
+        // the liquidation threshold, so a fresh loan always leaves headroom
+        // before it can be liquidated.
+        require(_isBorrowHealthy(msg.sender), "TigerSwap: INSUFFICIENT_COLLATERAL");
 
         require(TigerSwapSafeERC20.safeTransfer(token, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         emit Borrowed(msg.sender, token, amount);
@@ -506,9 +509,33 @@ contract TigerSwapLending {
         }
     }
 
+    /// @dev Health against the liquidation threshold, used by liquidation: the
+    ///      account is liquidatable when the threshold-weighted collateral no
+    ///      longer covers the debt.
     function _isHealthy(address user) internal view returns (bool) {
         (uint256 collateralValue, uint256 debtValue) = _accountValues(user);
         return collateralValue >= debtValue;
+    }
+
+    /// @dev Collateral value weighted by each market's collateral factor, which
+    ///      is what caps how much a user may borrow. It is deliberately
+    ///      stricter than the liquidation-threshold value so a new loan is
+    ///      never born liquidatable.
+    function _borrowCapacity(address user) internal view returns (uint256 borrowPower) {
+        uint256 len = _tokens.length;
+        for (uint256 i = 0; i < len; i++) {
+            address token = _tokens[i];
+            uint256 depositShares = accounts[user].deposits[token];
+            if (depositShares == 0) continue;
+            Market storage m = markets[token];
+            uint256 amount = _amountForShares(_projectedDepositIndex(m), depositShares);
+            borrowPower += amount * _price(token) / WAD * m.collateralFactor / WAD;
+        }
+    }
+
+    function _isBorrowHealthy(address user) internal view returns (bool) {
+        (, uint256 debtValue) = _accountValues(user);
+        return _borrowCapacity(user) >= debtValue;
     }
 
     function _price(address token) internal view returns (uint256) {
