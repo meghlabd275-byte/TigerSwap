@@ -232,7 +232,7 @@ contract TigerSwapMemeLaunchpadTest is Test {
         // Bob has no allowance over Alice's tokens, so the token transfer
         // fails before the curve is ever touched.
         vm.prank(bob);
-        vm.expectRevert("TigerSwap: ALLOWANCE");
+        vm.expectRevert("TigerSwap: TRANSFER_FAILED");
         pad.sell(id, bought, 0);
     }
 

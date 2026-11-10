@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapMemeToken
@@ -246,8 +247,8 @@ contract TigerSwapMemeLaunchpad {
         require(tokensOut > 0, "TigerSwap: ZERO_OUTPUT");
         require(tokensOut >= minTokensOut, "TigerSwap: SLIPPAGE");
 
-        require(quoteToken.transferFrom(msg.sender, address(this), quoteIn), "TigerSwap: TRANSFER_FAILED");
-        require(TigerSwapMemeToken(l.token).transfer(msg.sender, tokensOut), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(quoteToken), msg.sender, address(this), quoteIn), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(l.token, msg.sender, tokensOut), "TigerSwap: TRANSFER_FAILED");
 
         l.realQuote += netQuote;
         l.tokensSold += tokensOut;
@@ -287,8 +288,8 @@ contract TigerSwapMemeLaunchpad {
         require(quoteOut >= minQuoteOut, "TigerSwap: SLIPPAGE");
         require(quoteOut <= l.realQuote, "TigerSwap: INSUFFICIENT_RESERVE");
 
-        require(TigerSwapMemeToken(l.token).transferFrom(msg.sender, address(this), tokenIn), "TigerSwap: TRANSFER_FAILED");
-        require(quoteToken.transfer(msg.sender, quoteOut), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransferFrom(l.token, msg.sender, address(this), tokenIn), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(address(quoteToken), msg.sender, quoteOut), "TigerSwap: TRANSFER_FAILED");
 
         l.realQuote -= quoteOut;
         l.tokensSold -= tokenIn;
@@ -313,7 +314,7 @@ contract TigerSwapMemeLaunchpad {
         amount = l.creatorFees;
         require(amount > 0, "TigerSwap: NOTHING_TO_CLAIM");
         l.creatorFees = 0;
-        require(quoteToken.transfer(msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+        require(TigerSwapSafeERC20.safeTransfer(address(quoteToken), msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
         emit CreatorFeesClaimed(launchId, msg.sender, amount);
     }
 

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "./TigerSwapInterfaces.sol";
+import "./TigerSwapSafeERC20.sol";
 
 /**
  * @title TigerSwapLocker
@@ -127,7 +128,7 @@ contract TigerSwapLocker {
         totalLocked += _amount;
         totalWeighted += (_amount * boostBps) / MIN_BOOST_BPS;
 
-        require(lpToken.transferFrom(msg.sender, address(this), _amount), "transferFrom failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(lpToken), msg.sender, address(this), _amount), "transferFrom failed");
         emit Locked(msg.sender, lockId, _amount, block.timestamp + duration, boostBps);
     }
 
@@ -159,7 +160,7 @@ contract TigerSwapLocker {
         uint256 weighted = (l.amount * l.boostBps) / MIN_BOOST_BPS;
         l.rewardDebt = (weighted * accRewardPerShare) / ACC_PRECISION;
 
-        require(rewardToken.transfer(msg.sender, reward), "reward transfer failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(rewardToken), msg.sender, reward), "reward transfer failed");
         emit RewardsClaimed(msg.sender, _lockId, reward);
         return reward;
     }
@@ -180,7 +181,7 @@ contract TigerSwapLocker {
         totalLocked -= amount;
         totalWeighted -= (amount * l.boostBps) / MIN_BOOST_BPS;
 
-        require(lpToken.transfer(msg.sender, amount), "withdraw failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(lpToken), msg.sender, amount), "withdraw failed");
         emit Withdrawn(msg.sender, _lockId, amount);
         return amount;
     }
@@ -194,7 +195,7 @@ contract TigerSwapLocker {
 
         // Pull the rewards in first so the contract always holds enough to pay
         // every claim.
-        require(rewardToken.transferFrom(msg.sender, address(this), _amount), "reward funding failed");
+        require(TigerSwapSafeERC20.safeTransferFrom(address(rewardToken), msg.sender, address(this), _amount), "reward funding failed");
 
         // Rewards are distributed proportionally to boost-weighted liquidity.
         accRewardPerShare += (_amount * ACC_PRECISION) / totalWeighted;

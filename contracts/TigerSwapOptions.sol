@@ -392,7 +392,7 @@ contract TigerSwapOptions {
         s.collateral -= _amount;
         totalLpShares[_seriesId] = totalShares - burn;
         lpShares[_seriesId][msg.sender] -= burn;
-        require(collateralToken.transfer(msg.sender, _amount), "transfer out failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(collateralToken), msg.sender, _amount), "transfer out failed");
 
         emit LpWithdrawn(_seriesId, msg.sender, _amount);
     }

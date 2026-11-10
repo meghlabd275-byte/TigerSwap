@@ -216,7 +216,7 @@ contract TigerSwapVoteEscrow {
 
         _checkpoint(msg.sender, old, LockedBalance(0, 0, 0));
 
-        require(token.transfer(msg.sender, amount), "transfer failed");
+        require(TigerSwapSafeERC20.safeTransfer(address(token), msg.sender, amount), "transfer failed");
         emit Withdrawn(msg.sender, amount);
     }
 
@@ -272,7 +272,7 @@ contract TigerSwapVoteEscrow {
         locked[_addr] = next;
 
         if (_amount > 0) {
-            require(token.transferFrom(msg.sender, address(this), _amount), "transferFrom failed");
+            require(TigerSwapSafeERC20.safeTransferFrom(address(token), msg.sender, address(this), _amount), "transferFrom failed");
         }
 
         _checkpoint(_addr, _old, next);
