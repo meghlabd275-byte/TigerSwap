@@ -188,9 +188,15 @@ contract TigerSwapGovernance {
         proposal.executed = true;
         
         for (uint256 i = 0; i < proposal.targets.length; i++) {
-            (bool success, ) = proposal.targets[i].call{value: proposal.values[i]}(
-                abi.encodePacked(abi.encodeWithSignature(proposal.signatures[i], proposal.calldatas[i]))
-            );
+            // `calldatas[i]` already holds the ABI-encoded arguments. The
+            // selector is prefixed to it directly; re-encoding the blob with
+            // `encodeWithSignature` would nest it as a single dynamic argument
+            // and every call would decode to garbage.
+            bytes memory callData = bytes(proposal.signatures[i]).length == 0
+                ? proposal.calldatas[i]
+                : abi.encodePacked(bytes4(keccak256(bytes(proposal.signatures[i]))), proposal.calldatas[i]);
+
+            (bool success, ) = proposal.targets[i].call{value: proposal.values[i]}(callData);
             require(success, "TigerSwap: CALL_FAILED");
         }
         

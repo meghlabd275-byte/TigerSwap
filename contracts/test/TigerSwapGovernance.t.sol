@@ -39,6 +39,38 @@ contract TigerSwapGovernanceTest is Test {
         vm.roll(block.number + (gov.votingDelay() / 12) + 1);
     }
 
+    /// A queued proposal must actually execute: the stored calldata is the
+    /// ABI-encoded argument blob, and the selector is prefixed to it. If the
+    /// blob were re-encoded as a single argument the call would revert or
+    /// decode to garbage, so this pins the real execution path.
+    function testExecutedProposalMovesFunds() public {
+        tgr.mint(address(gov), 100e18);
+
+        address[] memory targets = new address[](1);
+        targets[0] = address(tgr);
+        uint256[] memory values = new uint256[](1);
+        string[] memory signatures = new string[](1);
+        signatures[0] = "transfer(address,uint256)";
+        bytes[] memory calldatas = new bytes[](1);
+        calldatas[0] = abi.encode(bob, uint256(100e18));
+
+        vm.prank(alice);
+        uint256 id = gov.propose(targets, values, signatures, calldatas, "Pay bob");
+
+        vm.roll(block.number + (gov.votingDelay() / 12) + 1);
+        vm.prank(alice);
+        gov.castVote(id, true);
+
+        vm.roll(block.number + (gov.votingPeriod() / 12) + 1);
+        gov.queueProposal(id);
+
+        vm.warp(block.timestamp + gov.queuePeriod() + 1);
+        gov.executeProposal(id);
+
+        assertEq(tgr.balanceOf(bob), 1_000_000e18 + 100e18, "bob receives the funds");
+        assertEq(uint256(gov.state(id)), uint256(TigerSwapGovernance.ProposalState.Executed));
+    }
+
     function testProposalIsCreated() public {
         uint256 id = _activeProposal();
         assertEq(id, 0, "first proposal id");
