@@ -75,6 +75,18 @@ contract TigerSwapCopyTrading {
     /// @notice Follower => total escrowed across their open copy positions.
     mapping(address => mapping(address => uint256)) public escrowed;
 
+    /// @notice Settlement token => liquidity provided by counterparty LPs.
+    ///         Copy-trade profit is paid from this pool and losses flow into
+    ///         it, so a winning follower is never paid with another follower's
+    ///         deposit and the pool can never be over-drawn.
+    mapping(address => uint256) public poolLiquidity;
+    /// @notice Settlement token => provider => LP shares.
+    mapping(address => mapping(address => uint256)) public poolShares;
+    mapping(address => uint256) public totalPoolShares;
+    /// @notice Settlement token => liquidity reserved to back the maximum
+    ///         payout of open copy positions. LPs may not withdraw this.
+    mapping(address => uint256) public reservedLiquidity;
+
     uint256 public platformFee = 50; // 0.5%
     /// @notice Platform fees accrued and not yet withdrawn.
     uint256 public platformFeesStored;
@@ -91,6 +103,8 @@ contract TigerSwapCopyTrading {
     event CopyTradeClosed(bytes32 indexed copyId, address indexed follower, uint256 profit, uint256 loss);
     event FeesPaid(address indexed trader, address indexed follower, uint256 amount);
     event PlatformFeesWithdrawn(address indexed to, uint256 amount);
+    event LiquidityAdded(address indexed provider, uint256 amount, uint256 shares);
+    event LiquidityRemoved(address indexed provider, uint256 amount, uint256 shares);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     modifier onlyOwner() {
@@ -228,6 +242,47 @@ contract TigerSwapCopyTrading {
         emit Withdrawn(msg.sender, amount);
     }
 
+    // ============ Counterparty liquidity ============
+
+    /// @notice Provide settlement liquidity that backs follower profits.
+    function addLiquidity(uint256 amount) external nonReentrant returns (uint256 shares) {
+        require(amount > 0, "TigerSwap: ZERO_AMOUNT");
+
+        uint256 current = poolLiquidity[paymentToken];
+        uint256 supply = totalPoolShares[paymentToken];
+        shares = supply == 0 || current == 0 ? amount : amount * supply / current;
+
+        require(TigerSwapSafeERC20.safeTransferFrom(paymentToken, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+
+        poolLiquidity[paymentToken] = current + amount;
+        poolShares[paymentToken][msg.sender] += shares;
+        totalPoolShares[paymentToken] = supply + shares;
+
+        emit LiquidityAdded(msg.sender, amount, shares);
+    }
+
+    /// @notice Withdraw pool liquidity that is not committed to open positions.
+    function removeLiquidity(uint256 shares) external nonReentrant returns (uint256 amount) {
+        require(shares > 0, "TigerSwap: ZERO_AMOUNT");
+
+        uint256 supply = totalPoolShares[paymentToken];
+        require(shares <= poolShares[paymentToken][msg.sender], "TigerSwap: INSUFFICIENT_SHARES");
+        require(supply > 0, "TigerSwap: NO_LIQUIDITY");
+
+        uint256 current = poolLiquidity[paymentToken];
+        amount = shares * current / supply;
+        require(amount > 0, "TigerSwap: ZERO_AMOUNT");
+        require(amount <= _freePoolLiquidity(), "TigerSwap: LIQUIDITY_RESERVED");
+
+        poolShares[paymentToken][msg.sender] -= shares;
+        totalPoolShares[paymentToken] = supply - shares;
+        poolLiquidity[paymentToken] = current - amount;
+
+        require(TigerSwapSafeERC20.safeTransfer(paymentToken, msg.sender, amount), "TigerSwap: TRANSFER_FAILED");
+
+        emit LiquidityRemoved(msg.sender, amount, shares);
+    }
+
     /// @notice Follow a trader. Deposits `amount` and records the follow.
     function followTrader(address trader, uint256 amount) external nonReentrant {
         Trader storage traderInfo = traders[trader];
@@ -282,6 +337,9 @@ contract TigerSwapCopyTrading {
         require(msg.sender == follower || msg.sender == executor || msg.sender == owner, "TigerSwap: NOT_EXECUTOR");
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         require(amount <= _freeBalance(follower), "TigerSwap: INSUFFICIENT_BALANCE");
+        // The follower's gain is capped at the escrowed principal, so the pool
+        // must be able to cover that much for the life of the position.
+        require(_freePoolLiquidity() >= amount, "TigerSwap: INSUFFICIENT_POOL_LIQUIDITY");
 
         uint256 entryPrice = _oraclePrice();
 
@@ -302,6 +360,8 @@ contract TigerSwapCopyTrading {
         // Move the principal out of the free balance so it cannot be withdrawn
         // or spent on another position while this one is open.
         escrowed[follower][paymentToken] += amount;
+        // Commit the pool's worst-case payout for this position.
+        reservedLiquidity[paymentToken] += amount;
 
         allCopyPositions.push(copyId);
 
@@ -337,9 +397,13 @@ contract TigerSwapCopyTrading {
             }
         }
 
-        // A position cannot lose more than the principal committed to it.
+        // A position cannot lose more than the principal committed to it, and
+        // its gain is capped at the principal the pool reserved for it.
         if (loss > copyPos.amount) {
             loss = copyPos.amount;
+        }
+        if (profit > copyPos.amount) {
+            profit = copyPos.amount;
         }
 
         copyPos.isClosed = true;
@@ -350,11 +414,17 @@ contract TigerSwapCopyTrading {
         uint256 principal = copyPos.amount;
 
         escrowed[follower][paymentToken] -= principal;
+        _releaseReserve(principal);
 
         // `balances` is the follower's total holding and `escrowed` is the part
         // committed to open positions, so closing only settles the P&L: the
         // principal was never removed from the balance when it was escrowed.
+        // Profit is drawn from the funded pool; a loss flows back into it. The
+        // contract therefore never credits value it does not hold.
         if (profit > 0) {
+            require(poolLiquidity[paymentToken] >= profit, "TigerSwap: INSUFFICIENT_POOL_LIQUIDITY");
+            poolLiquidity[paymentToken] -= profit;
+
             Trader storage traderInfo = traders[trader];
             uint256 traderFee = profit * traderInfo.performanceFee / BPS_DENOMINATOR;
             uint256 platformFeeAmount = profit * platformFee / BPS_DENOMINATOR;
@@ -370,6 +440,7 @@ contract TigerSwapCopyTrading {
             emit FeesPaid(trader, follower, traderFee);
         } else {
             balances[follower][paymentToken] -= loss;
+            poolLiquidity[paymentToken] += loss;
         }
 
         emit CopyTradeClosed(copyId, follower, profit, loss);
@@ -435,6 +506,20 @@ contract TigerSwapCopyTrading {
         uint256 balance = balances[follower][paymentToken];
         uint256 committed = escrowed[follower][paymentToken];
         return balance > committed ? balance - committed : 0;
+    }
+
+    /// @dev Pool liquidity not committed to open positions, which an LP may
+    ///      withdraw and a new position may draw on.
+    function _freePoolLiquidity() private view returns (uint256) {
+        uint256 pool = poolLiquidity[paymentToken];
+        uint256 reserved = reservedLiquidity[paymentToken];
+        return pool > reserved ? pool - reserved : 0;
+    }
+
+    /// @dev Release the payout reserve held for one closing position.
+    function _releaseReserve(uint256 amount) private {
+        uint256 reserved = reservedLiquidity[paymentToken];
+        reservedLiquidity[paymentToken] = amount >= reserved ? 0 : reserved - amount;
     }
 
     function _oraclePrice() private view returns (uint256 price) {

@@ -18,6 +18,7 @@ contract TigerSwapCopyTradingTest is Test {
 
     uint256 constant PRICE = 60_000e18;
     uint256 constant DEPOSIT = 1_000e18;
+    uint256 constant POOL = 100_000_000e18;
 
     function setUp() public {
         rusd = new TestERC20("RUSD", "RUSD");
@@ -36,6 +37,12 @@ contract TigerSwapCopyTradingTest is Test {
 
         vm.prank(trader);
         copy.registerTrader("Tiger", 1000); // 10% performance fee
+
+        // Counterparty liquidity backs follower profits. Without it the
+        // contract would have to credit profits it does not hold.
+        rusd.mint(address(this), POOL);
+        rusd.approve(address(copy), type(uint256).max);
+        copy.addLiquidity(POOL);
     }
 
     function _deposit(address who, uint256 amount) internal {
@@ -63,7 +70,8 @@ contract TigerSwapCopyTradingTest is Test {
 
         assertEq(copy.balances(alice, address(rusd)), DEPOSIT, "balance credited");
         assertEq(copy.freeBalance(alice), DEPOSIT, "fully free");
-        assertEq(rusd.balanceOf(address(copy)), DEPOSIT, "held by the contract");
+        // The contract also holds the counterparty pool seeded in setUp.
+        assertEq(rusd.balanceOf(address(copy)), POOL + DEPOSIT, "deposit held by the contract");
     }
 
     function testWithdrawReturnsTheDeposit() public {
@@ -442,5 +450,68 @@ contract TigerSwapCopyTradingTest is Test {
 
         TigerSwapCopyTrading.Trader[] memory top = copy.getTopTraders(candidates, 2);
         assertEq(top[0].traderAddress, trader, "the profitable trader ranks first");
+    }
+
+    // ---- Counterparty pool solvency ---------------------------------------
+
+    /// Profit is paid from the funded pool, so the contract's token balance
+    /// always covers every balance it has credited.
+    function testProfitIsFundedByThePoolNotConjured() public {
+        uint256 poolBefore = copy.poolLiquidity(address(rusd));
+        bytes32 pos = _open(alice, DEPOSIT, true);
+        _setPrice(PRICE * 11 / 10);
+        vm.prank(alice);
+        copy.closeCopyTrade(pos);
+
+        // The pool paid out exactly the gross profit.
+        assertEq(copy.poolLiquidity(address(rusd)), poolBefore - 100e18, "pool paid the profit");
+
+        uint256 owed = copy.balances(alice, address(rusd)) + copy.balances(trader, address(rusd))
+            + copy.platformFeesStored() + copy.poolLiquidity(address(rusd));
+        assertEq(rusd.balanceOf(address(copy)), owed, "every held token is owed to someone");
+    }
+
+    /// A follower cannot open a position the pool cannot back.
+    function testOpenRejectedWhenPoolCannotCoverPayout() public {
+        // Drain the pool by removing almost all liquidity.
+        uint256 shares = copy.poolShares(address(rusd), address(this));
+        copy.removeLiquidity(shares);
+
+        vm.prank(alice);
+        copy.followTrader(trader, DEPOSIT);
+        vm.prank(alice);
+        vm.expectRevert("TigerSwap: INSUFFICIENT_POOL_LIQUIDITY");
+        copy.openCopyTrade(alice, trader, bytes32("orig"), DEPOSIT, true);
+    }
+
+    /// An LP cannot withdraw the liquidity backing an open position.
+    function testLpCannotWithdrawLiquidityBackingOpenPosition() public {
+        _open(alice, DEPOSIT, true);
+        assertGt(copy.reservedLiquidity(address(rusd)), 0, "payout reserved while open");
+
+        uint256 shares = copy.poolShares(address(rusd), address(this));
+        vm.expectRevert("TigerSwap: LIQUIDITY_RESERVED");
+        copy.removeLiquidity(shares);
+    }
+
+    /// Closing releases the reserve so the LP can withdraw again.
+    function testReserveReleasedWhenPositionCloses() public {
+        bytes32 pos = _open(alice, DEPOSIT, true);
+        assertGt(copy.reservedLiquidity(address(rusd)), 0, "reserved while open");
+
+        vm.prank(alice);
+        copy.closeCopyTrade(pos);
+        assertEq(copy.reservedLiquidity(address(rusd)), 0, "reserve released on close");
+    }
+
+    /// A follower's loss flows into the pool, funding future profits.
+    function testLossIsAddedToThePool() public {
+        uint256 poolBefore = copy.poolLiquidity(address(rusd));
+        bytes32 pos = _open(alice, DEPOSIT, true);
+        _setPrice(PRICE * 9 / 10);
+        vm.prank(alice);
+        copy.closeCopyTrade(pos);
+
+        assertEq(copy.poolLiquidity(address(rusd)), poolBefore + 100e18, "pool absorbed the loss");
     }
 }
