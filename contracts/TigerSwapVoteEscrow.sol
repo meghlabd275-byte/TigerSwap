@@ -50,6 +50,8 @@ contract TigerSwapVoteEscrow {
     // Weights frozen per epoch (epoch = timestamp / WEEK) for bribe accounting.
     mapping(address => mapping(uint256 => uint256)) public epochGaugeWeight; // gauge => epoch => weight
     mapping(address => mapping(address => mapping(uint256 => uint256))) public epochUserWeight; // user => gauge => epoch
+    mapping(address => address[]) private userGaugeList; // user => gauges voted on
+    mapping(address => mapping(address => bool)) private userGaugeSeen;
 
     // ---- Bribe market ------------------------------------------------------
     mapping(address => mapping(uint256 => address[])) private bribeTokenList;
@@ -216,6 +218,15 @@ contract TigerSwapVoteEscrow {
 
         _checkpoint(msg.sender, old, LockedBalance(0, 0, 0));
 
+        // Voting power goes to zero with the lock, so the caller's live gauge
+        // weights must be released too. Leaving them would strand a phantom
+        // total that blocks every later vote (the power check would always
+        // fail) and keep a gauge's live weight inflated with no tokens behind
+        // it. The per-epoch snapshots are deliberately left alone: they are the
+        // frozen record a bribe for an epoch the caller actually voted in is
+        // paid from.
+        _clearVotes(msg.sender);
+
         require(TigerSwapSafeERC20.safeTransfer(address(token), msg.sender, amount), "transfer failed");
         emit Withdrawn(msg.sender, amount);
     }
@@ -353,6 +364,21 @@ contract TigerSwapVoteEscrow {
         return gaugeList.length;
     }
 
+    /// @dev Release every live gauge vote the caller holds. Called when the
+    ///      lock that backed those votes is withdrawn.
+    function _clearVotes(address _user) private {
+        address[] storage gauges = userGaugeList[_user];
+        for (uint256 i = 0; i < gauges.length; i++) {
+            address gauge = gauges[i];
+            uint256 weight = userGaugeWeight[_user][gauge];
+            if (weight > 0) {
+                gaugeWeight[gauge] -= weight;
+                userGaugeWeight[_user][gauge] = 0;
+            }
+        }
+        userTotalWeight[_user] = 0;
+    }
+
     /// @notice Set this caller's vote weight for a gauge.
     function vote(address _gauge, uint256 _weight) external {
         require(isGauge[_gauge], "not a gauge");
@@ -365,6 +391,11 @@ contract TigerSwapVoteEscrow {
         userGaugeWeight[msg.sender][_gauge] = _weight;
         userTotalWeight[msg.sender] = newTotal;
         gaugeWeight[_gauge] = gaugeWeight[_gauge] - previous + _weight;
+
+        if (!userGaugeSeen[msg.sender][_gauge]) {
+            userGaugeSeen[msg.sender][_gauge] = true;
+            userGaugeList[msg.sender].push(_gauge);
+        }
 
         uint256 epoch = block.timestamp / WEEK;
         uint256 previousThisEpoch = epochUserWeight[msg.sender][_gauge][epoch];

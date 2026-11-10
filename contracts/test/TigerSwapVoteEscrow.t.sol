@@ -194,6 +194,33 @@ contract VoteEscrowTest is Test {
         assertEq(ve.balanceOf(alice), 0, "no voting power left");
     }
 
+    /// Withdrawing the lock zeroes voting power, so the caller's live gauge
+    /// weights must be released with it. Otherwise the phantom total blocks
+    /// every later vote and keeps the gauge's live weight inflated.
+    function testWithdrawReleasesGaugeVotes() public {
+        _lock(alice, 4000e18, MAXTIME);
+        uint256 power = ve.balanceOf(alice);
+
+        vm.startPrank(alice);
+        ve.vote(gaugeA, power);
+        assertEq(ve.gaugeWeight(gaugeA), power, "gauge weight set");
+        assertEq(ve.userTotalWeight(alice), power, "user total set");
+
+        (,, uint256 end) = ve.locked(alice);
+        vm.warp(end + 1);
+        ve.withdraw();
+        vm.stopPrank();
+
+        assertEq(ve.gaugeWeight(gaugeA), 0, "gauge weight released");
+        assertEq(ve.userTotalWeight(alice), 0, "user total released");
+
+        // A zero-balance holder can still cast a no-op vote rather than being
+        // permanently wedged by a phantom total.
+        vm.prank(alice);
+        ve.vote(gaugeA, 0);
+        assertEq(ve.userTotalWeight(alice), 0, "still zero");
+    }
+
     function testWithdrawBeforeExpiryReverts() public {
         _lock(alice, 1000e18, MAXTIME);
         vm.prank(alice);
