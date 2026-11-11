@@ -50,6 +50,7 @@ import type {
   OptionSeriesView,
   OtcOrder,
   PerpMarket,
+  PerpOrder,
   PerpPosition,
   Pool,
   PairAnalytics,
@@ -297,6 +298,54 @@ export function useClosePerpPosition() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["perps", "positions"] });
       void queryClient.invalidateQueries({ queryKey: ["portfolio"] });
+    },
+  });
+}
+
+/** The authenticated caller's resting, filled and cancelled perpetual orders. */
+export function usePerpOrders(enabled = true): UseQueryResult<PerpOrder[], Error> {
+  return useQuery<PerpOrder[], Error>({
+    queryKey: ["perps", "orders"],
+    queryFn: () => endpoints.getPerpOrders(),
+    enabled: enabled && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/**
+ * Places a resting limit or stop perpetual order.
+ *
+ * The order rests server-side until the mark price meets its condition or its
+ * expiry passes, so the orders list is refetched on success.
+ */
+export function useCreatePerpOrder() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (params: {
+      pair: string;
+      side: 'long' | 'short';
+      order_type: 'limit' | 'stop';
+      size: string;
+      price?: number;
+      trigger_price?: number;
+      expires_in: number;
+    }) => endpoints.createPerpOrder(params),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["perps", "orders"] });
+    },
+  });
+}
+
+/** Cancels one of the caller's own pending perpetual orders. */
+export function useCancelPerpOrder() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (orderId: string) => endpoints.cancelPerpOrder(orderId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["perps", "orders"] });
     },
   });
 }

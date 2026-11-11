@@ -179,6 +179,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/margin/borrow", deps.marginEngine.BorrowMarginHandler)
 			protected.POST("/margin/repay", deps.marginEngine.RepayMarginHandler)
 			protected.POST("/perpetual/orders", deps.perpetualEngine.CreateOrderHandler)
+			protected.GET("/perpetual/orders", deps.perpetualEngine.GetOrdersHandler)
 			protected.DELETE("/perpetual/orders/:id", deps.perpetualEngine.CancelOrderHandler)
 
 			// Liquidity pool read routes

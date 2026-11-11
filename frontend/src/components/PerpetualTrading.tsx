@@ -24,29 +24,44 @@ import {
 } from 'lucide-react';
 
 import {
+  useCancelPerpOrder,
   useClosePerpPosition,
+  useCreatePerpOrder,
   useOpenPerpPosition,
   usePerpMarkets,
+  usePerpOrders,
   usePerpPositions,
 } from '@/hooks/useApi';
 import { isAuthenticated } from '@/lib/auth';
-import type { PerpMarket, PerpPosition } from '@/lib/types';
+import type { PerpMarket, PerpOrder, PerpPosition } from '@/lib/types';
 
 type PositionSide = 'long' | 'short';
+type OrderType = 'limit' | 'stop';
 
 const LEVERAGE_OPTIONS = [1, 2, 3, 5, 10, 20, 50] as const;
 
 export function PerpetualTrading() {
   const { data: markets, error, isPending } = usePerpMarkets();
   const positionsQuery = usePerpPositions();
+  const ordersQuery = usePerpOrders();
   const openPosition = useOpenPerpPosition();
   const closePosition = useClosePerpPosition();
+  const createOrder = useCreatePerpOrder();
+  const cancelOrder = useCancelPerpOrder();
 
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
   const [positionSide, setPositionSide] = useState<PositionSide>('long');
   const [leverage, setLeverage] = useState(10);
   const [amount, setAmount] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Resting limit/stop order form.
+  const [orderType, setOrderType] = useState<OrderType>('limit');
+  const [orderSize, setOrderSize] = useState('');
+  const [orderPrice, setOrderPrice] = useState('');
+  const [orderTrigger, setOrderTrigger] = useState('');
+  const [orderExpiry, setOrderExpiry] = useState('3600');
+  const [orderError, setOrderError] = useState<string | null>(null);
 
   const selectedMarket: PerpMarket | null = useMemo(() => {
     if (!markets || markets.length === 0) {
@@ -141,6 +156,83 @@ export function PerpetualTrading() {
       onError: (mutationError) => setFormError(mutationError.message),
     });
   };
+
+  const orderSizeValue = Number(orderSize);
+  const orderPriceValue = Number(orderPrice);
+  const orderTriggerValue = Number(orderTrigger);
+  const orderExpiryValue = Number(orderExpiry);
+  const orderPriceValid = orderType === 'limit' && Number.isFinite(orderPriceValue) && orderPriceValue > 0;
+  const orderTriggerValid =
+    orderType === 'stop' && Number.isFinite(orderTriggerValue) && orderTriggerValue > 0;
+  const canSubmitOrder =
+    isAuthenticated() &&
+    selectedMarket.isActive &&
+    Number.isFinite(orderSizeValue) &&
+    orderSizeValue > 0 &&
+    (orderPriceValid || orderTriggerValid) &&
+    Number.isFinite(orderExpiryValue) &&
+    orderExpiryValue > 0 &&
+    !createOrder.isPending;
+
+  const handlePlaceOrder = () => {
+    setOrderError(null);
+
+    if (!isAuthenticated()) {
+      setOrderError('Sign in to place orders.');
+      return;
+    }
+    if (!selectedMarket.isActive) {
+      setOrderError('This market is not currently tradable.');
+      return;
+    }
+    if (!Number.isFinite(orderSizeValue) || orderSizeValue <= 0) {
+      setOrderError('Enter an order size greater than zero.');
+      return;
+    }
+    if (orderType === 'limit' && !orderPriceValid) {
+      setOrderError('A limit order requires a price greater than zero.');
+      return;
+    }
+    if (orderType === 'stop' && !orderTriggerValid) {
+      setOrderError('A stop order requires a trigger price greater than zero.');
+      return;
+    }
+    if (!Number.isFinite(orderExpiryValue) || orderExpiryValue <= 0) {
+      setOrderError('Expiry must be a positive number of seconds.');
+      return;
+    }
+
+    createOrder.mutate(
+      {
+        pair: selectedMarket.symbol,
+        side: positionSide,
+        order_type: orderType,
+        size: orderSizeValue.toFixed(8),
+        ...(orderType === 'limit'
+          ? { price: orderPriceValue }
+          : { trigger_price: orderTriggerValue }),
+        expires_in: Math.trunc(orderExpiryValue),
+      },
+      {
+        onSuccess: () => {
+          setOrderSize('');
+          setOrderPrice('');
+          setOrderTrigger('');
+        },
+        onError: (mutationError) => setOrderError(mutationError.message),
+      },
+    );
+  };
+
+  const handleCancelOrder = (order: PerpOrder) => {
+    setOrderError(null);
+    cancelOrder.mutate(order.id, {
+      onError: (mutationError) => setOrderError(mutationError.message),
+    });
+  };
+
+  const orders = ordersQuery.data ?? [];
+  const restingOrders = orders.filter((order) => order.status === 'pending');
 
   const positions = positionsQuery.data ?? [];
 
@@ -296,6 +388,166 @@ export function PerpetualTrading() {
           `${positionSide === 'long' ? 'Open long' : 'Open short'} ${selectedMarket.symbol}`
         )}
       </button>
+
+      <div className="mt-6 pt-6 border-t border-white/10">
+        <h3 className="text-sm font-semibold text-white mb-4">Limit &amp; stop orders</h3>
+
+        <div className="flex space-x-2 mb-3">
+          <button
+            onClick={() => setOrderType('limit')}
+            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+              orderType === 'limit'
+                ? 'bg-tiger-orange text-white'
+                : 'bg-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Limit
+          </button>
+          <button
+            onClick={() => setOrderType('stop')}
+            className={`flex-1 py-2 rounded-lg text-sm font-medium transition-colors ${
+              orderType === 'stop'
+                ? 'bg-tiger-orange text-white'
+                : 'bg-white/5 text-gray-400 hover:text-white'
+            }`}
+          >
+            Stop
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label htmlFor="perp-order-size" className="text-gray-400 text-xs mb-1 block">
+              Size (notional)
+            </label>
+            <input
+              id="perp-order-size"
+              type="text"
+              inputMode="decimal"
+              value={orderSize}
+              onChange={(event) => setOrderSize(event.target.value)}
+              placeholder="0.00"
+              className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-tiger-orange"
+            />
+          </div>
+          {orderType === 'limit' ? (
+            <div>
+              <label htmlFor="perp-order-price" className="text-gray-400 text-xs mb-1 block">
+                Limit price
+              </label>
+              <input
+                id="perp-order-price"
+                type="text"
+                inputMode="decimal"
+                value={orderPrice}
+                onChange={(event) => setOrderPrice(event.target.value)}
+                placeholder={formatPrice(selectedMarket.markPrice)}
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-tiger-orange"
+              />
+            </div>
+          ) : (
+            <div>
+              <label htmlFor="perp-order-trigger" className="text-gray-400 text-xs mb-1 block">
+                Trigger price
+              </label>
+              <input
+                id="perp-order-trigger"
+                type="text"
+                inputMode="decimal"
+                value={orderTrigger}
+                onChange={(event) => setOrderTrigger(event.target.value)}
+                placeholder={formatPrice(selectedMarket.markPrice)}
+                className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-tiger-orange"
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="mb-3">
+          <label htmlFor="perp-order-expiry" className="text-gray-400 text-xs mb-1 block">
+            Expires in (seconds)
+          </label>
+          <input
+            id="perp-order-expiry"
+            type="text"
+            inputMode="numeric"
+            value={orderExpiry}
+            onChange={(event) => setOrderExpiry(event.target.value)}
+            className="w-full bg-white/10 border border-white/20 rounded-xl px-3 py-2 text-white text-sm focus:outline-none focus:border-tiger-orange"
+          />
+        </div>
+
+        {orderError && (
+          <p className="text-red-400 text-xs mb-3" role="alert">
+            {orderError}
+          </p>
+        )}
+
+        <button
+          onClick={handlePlaceOrder}
+          disabled={!canSubmitOrder}
+          className={`w-full py-3 rounded-xl font-semibold transition-colors ${
+            canSubmitOrder
+              ? 'bg-tiger-orange hover:bg-orange-600 text-white'
+              : 'bg-gray-700 text-gray-500 cursor-not-allowed'
+          }`}
+        >
+          {createOrder.isPending ? (
+            <span className="inline-flex items-center space-x-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>Placing…</span>
+            </span>
+          ) : (
+            `Place ${orderType} ${positionSide} on ${selectedMarket.symbol}`
+          )}
+        </button>
+
+        <div className="mt-4">
+          {ordersQuery.error && (
+            <p className="text-red-400 text-xs mb-3" role="alert">
+              {ordersQuery.error.message}
+            </p>
+          )}
+          {restingOrders.length === 0 ? (
+            <p className="text-gray-500 text-xs text-center py-3">No resting orders</p>
+          ) : (
+            <ul className="space-y-2">
+              {restingOrders.map((order) => (
+                <li key={order.id} className="bg-white/5 rounded-xl p-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center space-x-2">
+                      <span className="text-white text-xs font-semibold">{order.pair}</span>
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full ${
+                          order.side === 'long'
+                            ? 'bg-green-500/20 text-green-400'
+                            : 'bg-red-500/20 text-red-400'
+                        }`}
+                      >
+                        {order.side} {order.order_type}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => handleCancelOrder(order)}
+                      disabled={cancelOrder.isPending}
+                      title="Cancel order"
+                      className="text-gray-400 hover:text-white disabled:opacity-50"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-gray-400 text-xs">
+                    Size {order.size}
+                    {order.order_type === 'limit'
+                      ? ` @ ${order.price}`
+                      : ` trigger ${order.trigger_price}`}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
 
       <div className="mt-6 pt-6 border-t border-white/10">
         <h3 className="text-sm font-semibold text-white mb-4">Open positions</h3>

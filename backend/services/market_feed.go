@@ -91,6 +91,9 @@ func StartPositionMaintenance(ctx context.Context, perps *PerpetualEngine, copy 
 					if err := perps.UpdatePositions(ctx); err != nil {
 						log.Printf("position maintenance: perpetual update failed: %v", err)
 					}
+					if err := perps.MatchPendingOrders(ctx); err != nil {
+						log.Printf("position maintenance: order match failed: %v", err)
+					}
 				}
 				if copy != nil {
 					if err := copy.UpdateCopyPositions(ctx); err != nil {

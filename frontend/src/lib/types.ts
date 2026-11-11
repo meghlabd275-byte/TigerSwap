@@ -311,6 +311,43 @@ export const perpOpenResultValidator = object<PerpOpenResult>({
   position: perpPositionValidator,
 });
 
+/**
+ * A perpetual order owned by the authenticated caller, as returned by
+ * `/perpetual/orders`. A pending limit or stop order rests until the mark price
+ * meets its condition or its expiry passes.
+ */
+export interface PerpOrder {
+  id: string;
+  user_address: string;
+  pair: string;
+  side: 'long' | 'short';
+  order_type: string;
+  size: string;
+  price: number;
+  trigger_price: number;
+  status: string;
+  filled_size: string;
+  created_at: string;
+  expires_at: string;
+}
+
+export const perpOrderValidator = object<PerpOrder>({
+  id: string,
+  user_address: withDefault(string, ''),
+  pair: string,
+  side: oneOf(['long', 'short'] as const),
+  order_type: string,
+  size: string,
+  price: withDefault(number, 0),
+  trigger_price: withDefault(number, 0),
+  status: string,
+  filled_size: withDefault(string, '0'),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  expires_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const perpOrderListValidator = listingArray(perpOrderValidator);
+
 /** A margin account, as returned when one is opened. */
 export interface MarginAccount {
   id: string;

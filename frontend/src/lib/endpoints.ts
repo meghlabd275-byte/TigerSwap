@@ -60,6 +60,7 @@ import {
   OptionSeriesView,
   PerpMarket,
   PerpOpenResult,
+  PerpOrder,
   PerpPosition,
   PerpsListing,
   PerpsListingInput,
@@ -148,6 +149,8 @@ import {
   otcOrderValidator,
   perpMarketListValidator,
   perpOpenResultValidator,
+  perpOrderListValidator,
+  perpOrderValidator,
   protocolOverviewValidator,
   perpPositionListValidator,
   perpsListingListValidator,
@@ -435,6 +438,32 @@ export const endpoints = {
   /** Closes a perpetual position owned by the authenticated caller. */
   async closePerpPosition(positionId: string): Promise<void> {
     await api.post("/wallet/perpetual/close", { position_id: positionId });
+  },
+
+  /** The authenticated caller's resting, filled and cancelled perpetual orders. */
+  async getPerpOrders(): Promise<PerpOrder[]> {
+    const body = await api.get("/perpetual/orders");
+    const envelope = object<{ orders: PerpOrder[] }>({ orders: perpOrderListValidator })(body);
+    return envelope.orders;
+  },
+
+  /** Places a resting limit or stop order for the authenticated caller. */
+  async createPerpOrder(payload: {
+    pair: string;
+    side: 'long' | 'short';
+    order_type: 'limit' | 'stop';
+    size: string;
+    price?: number;
+    trigger_price?: number;
+    expires_in: number;
+  }): Promise<PerpOrder> {
+    const body = await api.post("/perpetual/orders", payload);
+    return perpOrderValidator(body);
+  },
+
+  /** Cancels one of the authenticated caller's own pending perpetual orders. */
+  async cancelPerpOrder(orderId: string): Promise<void> {
+    await api.delete(`/perpetual/orders/${encodeURIComponent(orderId)}`);
   },
 
   /** Opens a spot margin account for the authenticated caller. */

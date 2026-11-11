@@ -14,7 +14,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -464,27 +463,16 @@ func (s *WalletService) CreatePerpetualPosition(c *gin.Context) {
 		return
 	}
 
+	// The engine persists the position as part of opening it, so the row already
+	// exists; re-read it rather than inserting a second one with the same id.
 	positionID, err := uuid.Parse(position.ID)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to allocate position id"})
 		return
 	}
 
-	stored := models.PerpetualPosition{
-		ID:         positionID,
-		UserID:     userID,
-		Pair:       position.Pair,
-		Side:       position.Side,
-		Size:       position.Size,
-		Collateral: position.Collateral,
-		EntryPrice: strconv.FormatFloat(position.EntryPrice, 'f', -1, 64),
-		MarkPrice:  strconv.FormatFloat(position.MarkPrice, 'f', -1, 64),
-		Leverage:   position.Leverage,
-		Status:     position.Status,
-		PNL:        position.UnrealizedPNL,
-		OpenedAt:   position.OpenedAt,
-	}
-	if err := s.db.Create(&stored).Error; err != nil {
+	var stored models.PerpetualPosition
+	if err := s.db.First(&stored, "id = ?", positionID).Error; err != nil {
 		c.JSON(500, gin.H{"error": "Failed to persist position"})
 		return
 	}
@@ -528,7 +516,7 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 		return
 	}
 
-	closed, err := s.perpetuals.ClosePosition(c.Request.Context(), userID, positionID)
+	_, err := s.perpetuals.ClosePosition(c.Request.Context(), userID, positionID)
 	if err != nil {
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
@@ -538,13 +526,8 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 		return
 	}
 
-	now := time.Now()
-	stored.Status = "closed"
-	stored.PNL = closed.UnrealizedPNL
-	stored.ClosedAt = &now
-	stored.MarkPrice = strconv.FormatFloat(closed.MarkPrice, 'f', -1, 64)
-	if err := s.db.Save(&stored).Error; err != nil {
-		c.JSON(500, gin.H{"error": "Failed to persist close"})
+	if err := s.db.First(&stored, "id = ?", positionID).Error; err != nil {
+		c.JSON(500, gin.H{"error": "Failed to load closed position"})
 		return
 	}
 
@@ -553,7 +536,7 @@ func (s *WalletService) ClosePerpetualPosition(c *gin.Context) {
 		"position_id": stored.ID,
 		"status":      stored.Status,
 		"pnl":         stored.PNL,
-		"closed_at":   now,
+		"closed_at":   stored.ClosedAt,
 	})
 }
 
