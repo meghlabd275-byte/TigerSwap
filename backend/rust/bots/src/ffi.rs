@@ -220,6 +220,25 @@ pub unsafe extern "C" fn bot_liquidation(
     })
 }
 
+/// Mirrors a followed trader's signals through a copy bot.
+///
+/// # Safety
+/// `engine` must be a live handle; `signals` must be a valid C string.
+#[no_mangle]
+pub unsafe extern "C" fn bot_copy(
+    engine: *mut Engine,
+    id: u64,
+    signals: *const c_char,
+) -> *mut c_char {
+    with_engine(engine, |engine| {
+        let signals = parse_json(read_str(signals, "signals")?, "signals")?;
+        engine
+            .copy(id, &signals)
+            .map(|orders| Value::Array(orders.iter().map(order_to_json).collect()))
+            .map_err(|error| error.to_string())
+    })
+}
+
 /// Frees a string returned by any of the functions above. A null pointer is
 /// ignored.
 ///

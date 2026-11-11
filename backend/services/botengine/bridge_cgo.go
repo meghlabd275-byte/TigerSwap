@@ -26,6 +26,7 @@ char* bot_arbitrage(BotEngine* engine, unsigned long long id, const char* venues
 char* bot_sniper(BotEngine* engine, unsigned long long id, const char* listing);
 char* bot_rebalance(BotEngine* engine, unsigned long long id, const char* holdings);
 char* bot_liquidation(BotEngine* engine, unsigned long long id, const char* position);
+char* bot_copy(BotEngine* engine, unsigned long long id, const char* signals);
 void bot_free(char* text);
 */
 import "C"
@@ -163,6 +164,16 @@ func (e *cgoEngine) Liquidation(id uint64, position json.RawMessage) (*Liquidati
 		return nil, err
 	}
 	return &liquidation, nil
+}
+
+func (e *cgoEngine) Copy(id uint64, signals json.RawMessage) ([]Order, error) {
+	data, err := e.call(string(signals), func(handle *C.BotEngine, cInput *C.char) *C.char {
+		return C.bot_copy(handle, C.ulonglong(id), cInput)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return decodeOrders(data)
 }
 
 func (e *cgoEngine) Count() uint64 {

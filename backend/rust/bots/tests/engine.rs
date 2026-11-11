@@ -47,12 +47,15 @@ fn unknown_strategy_is_rejected() {
 }
 
 #[test]
-fn copy_strategy_is_not_run_by_the_engine() {
+fn copy_strategy_is_configured_by_the_engine() {
     let engine = Engine::new();
-    let error = engine
-        .upsert(1, "copy", &json!({"trader_address": "0x0", "scale_bps": 100}))
-        .unwrap_err();
-    assert!(error.to_string().contains("control plane"));
+    // The copy bot is now a first-class engine strategy: it validates its own
+    // configuration and mirrors signals through `copy`.
+    engine
+        .upsert(1, "copy", &json!({"scale_bps": 100}))
+        .expect("copy is a known strategy");
+    // A scale outside 1..=10000 is refused at construction.
+    assert!(engine.upsert(2, "copy", &json!({"scale_bps": 0})).is_err());
 }
 
 #[test]
@@ -271,4 +274,39 @@ fn ffi_orders_render_as_exact_decimal_strings() {
         // No float ever crosses the boundary.
         assert!(rendered["price"].as_str().unwrap().parse::<f64>().is_ok());
     }
+}
+
+#[test]
+fn copy_bot_is_configurable_and_mirrors_signals() {
+    let engine = Engine::new();
+    engine
+        .upsert(1, "copy", &json!({"scale_bps": 5000, "copy_perps": true}))
+        .unwrap();
+
+    let signals = json!([
+        {"symbol": "BTC/RUSD", "market": "spot", "side": "buy", "kind": "limit",
+         "price": "60000", "quantity": "2", "source_id": "t-1"},
+        {"symbol": "ETH/RUSD", "market": "perp", "side": "sell", "kind": "market",
+         "price": "0", "quantity": "4", "source_id": "t-2"}
+    ]);
+
+    let orders = engine.copy(1, &signals).unwrap();
+    assert_eq!(orders.len(), 2);
+    // The 50% ratio halves both signals.
+    assert_eq!(orders[0].quantity.to_string(), "1");
+    assert_eq!(orders[1].quantity.to_string(), "2");
+}
+
+#[test]
+fn copy_bot_rejects_a_malformed_signal() {
+    let engine = Engine::new();
+    engine
+        .upsert(1, "copy", &json!({"scale_bps": 10000}))
+        .unwrap();
+    // A signal with an unknown market is refused, not silently dropped.
+    let signals = json!([
+        {"symbol": "BTC/RUSD", "market": "futures", "side": "buy", "kind": "limit",
+         "price": "60000", "quantity": "1", "source_id": "t-1"}
+    ]);
+    assert!(engine.copy(1, &signals).is_err());
 }

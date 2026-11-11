@@ -238,6 +238,9 @@ func (e *recordingEngine) Rebalance(_ uint64, _ json.RawMessage) ([]botengine.Re
 func (e *recordingEngine) Liquidation(_ uint64, _ json.RawMessage) (*botengine.Liquidation, error) {
 	return nil, nil
 }
+func (e *recordingEngine) Copy(_ uint64, _ json.RawMessage) ([]botengine.Order, error) {
+	return nil, nil
+}
 func (e *recordingEngine) Count() uint64 { return 0 }
 func (e *recordingEngine) Close()        {}
 

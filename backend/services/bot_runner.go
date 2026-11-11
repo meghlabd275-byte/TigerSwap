@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"tigerswap/backend/models"
@@ -35,12 +37,29 @@ const botBookLevels = 20
 // to the strategy, and turns the orders the strategy returns into real resting
 // orders on the perpetual engine. Nothing here is simulated — a bot that cannot
 // price its market is skipped rather than fed a fabricated book.
+//
+// The snapshot-driven strategies (market maker, grid, DCA, TWAP) reason about a
+// single book. The remaining strategies (arbitrage, sniper, rebalance,
+// liquidation, copy) are driven by the sources below, each of which reads live
+// platform state: the AMM family pools, the listing tables, the caller's own
+// portfolio, the margin book and the followed trader's own orders.
 type BotRunner struct {
 	db       *gorm.DB
 	bots     *BotsService
 	perps    *PerpetualEngine
 	engine   botengine.Engine
 	interval time.Duration
+
+	// venues and listings are the real cross-venue and new-listing sources the
+	// arbitrage and sniper strategies read. margin and portfolio back the
+	// liquidation and rebalance strategies, and copy backs the copy strategy.
+	// Each is optional; a strategy whose source is not wired is skipped rather
+	// than run against invented data.
+	venues    botVenueSource
+	listings  botListingSource
+	margin    *MarginEngine
+	portfolio *PortfolioService
+	copy      botCopySource
 
 	// loaded records the configuration the engine currently holds per bot, so a
 	// bot is upserted once and a configuration change is picked up without
@@ -61,6 +80,21 @@ func NewBotRunner(db *gorm.DB, bots *BotsService, perps *PerpetualEngine, engine
 		loaded:   map[uint]string{},
 	}
 }
+
+// SetVenueSource attaches the cross-venue source the arbitrage strategy reads.
+func (r *BotRunner) SetVenueSource(source botVenueSource) { r.venues = source }
+
+// SetListingSource attaches the new-listing source the sniper strategy reads.
+func (r *BotRunner) SetListingSource(source botListingSource) { r.listings = source }
+
+// SetMarginEngine attaches the margin book the liquidation strategy acts on.
+func (r *BotRunner) SetMarginEngine(engine *MarginEngine) { r.margin = engine }
+
+// SetPortfolioService attaches the portfolio the rebalance strategy reads.
+func (r *BotRunner) SetPortfolioService(service *PortfolioService) { r.portfolio = service }
+
+// SetCopySource attaches the followed-trader order source the copy strategy reads.
+func (r *BotRunner) SetCopySource(source botCopySource) { r.copy = source }
 
 // SetInterval overrides the sweep cadence.
 func (r *BotRunner) SetInterval(interval time.Duration) {
@@ -129,7 +163,38 @@ func (r *BotRunner) Sweep(ctx context.Context) error {
 
 // runBot advances one bot. A failure is logged and the sweep continues: one
 // bot's misconfiguration must not stop every other bot from trading.
+//
+// The dispatch is by strategy. The snapshot-driven strategies reason about one
+// book; the others read their own real source (cross-venue prices, new
+// listings, the margin book, the caller's portfolio, the followed trader's
+// orders). A strategy whose source is not wired is skipped with a log rather
+// than run against invented data.
 func (r *BotRunner) runBot(ctx context.Context, bot models.BotInstance) {
+	if err := r.ensureLoaded(bot); err != nil {
+		log.Printf("bot runner: bot %d could not be configured: %v", bot.ID, err)
+		return
+	}
+
+	switch bot.Strategy {
+	case models.StrategyMarketMaker, models.StrategyGrid, models.StrategyDCA, models.StrategyTWAP:
+		r.runSnapshotBot(ctx, bot)
+	case models.StrategyArbitrage:
+		r.runArbitrageBot(ctx, bot)
+	case models.StrategySniper:
+		r.runSniperBot(ctx, bot)
+	case models.StrategyRebalance:
+		r.runRebalanceBot(ctx, bot)
+	case models.StrategyLiquidation:
+		r.runLiquidationBot(ctx, bot)
+	case models.StrategyCopy:
+		r.runCopyBot(ctx, bot)
+	default:
+		log.Printf("bot runner: bot %d has unknown strategy %q", bot.ID, bot.Strategy)
+	}
+}
+
+// runSnapshotBot feeds the bot a live book snapshot and places what it returns.
+func (r *BotRunner) runSnapshotBot(ctx context.Context, bot models.BotInstance) {
 	snapshot, err := r.perps.BookSnapshot(ctx, bot.Symbol, botBookLevels)
 	if err != nil {
 		// An unlisted symbol or an unavailable oracle is expected while a market
@@ -142,21 +207,174 @@ func (r *BotRunner) runBot(ctx context.Context, bot models.BotInstance) {
 		return
 	}
 
-	if err := r.ensureLoaded(bot); err != nil {
-		log.Printf("bot runner: bot %d could not be configured: %v", bot.ID, err)
-		return
-	}
-
 	orders, err := r.engine.Step(uint64(bot.ID), rawSnapshot)
 	if err != nil {
 		log.Printf("bot runner: bot %d step failed: %v", bot.ID, err)
 		return
 	}
+	r.placeAndRecord(ctx, bot, orders, snapshot.VWAP)
+}
+
+// runArbitrageBot reads the real cross-venue prices and places the two legs.
+func (r *BotRunner) runArbitrageBot(ctx context.Context, bot models.BotInstance) {
+	if r.venues == nil {
+		return
+	}
+	venues, err := r.venues.Venues(ctx, bot)
+	if err != nil {
+		log.Printf("bot runner: bot %d could not read venues: %v", bot.ID, err)
+		return
+	}
+	orders, err := r.engine.Arbitrage(uint64(bot.ID), venues)
+	if err != nil {
+		log.Printf("bot runner: bot %d arbitrage failed: %v", bot.ID, err)
+		return
+	}
+	r.placeAndRecord(ctx, bot, orders, "")
+}
+
+// runSniperBot evaluates the newest real listing and places the buy it returns.
+func (r *BotRunner) runSniperBot(ctx context.Context, bot models.BotInstance) {
+	if r.listings == nil {
+		return
+	}
+	listing, err := r.listings.Listing(ctx, bot)
+	if err != nil {
+		log.Printf("bot runner: bot %d could not read listing: %v", bot.ID, err)
+		return
+	}
+	order, err := r.engine.Sniper(uint64(bot.ID), listing)
+	if err != nil {
+		log.Printf("bot runner: bot %d sniper failed: %v", bot.ID, err)
+		return
+	}
+	if order == nil {
+		return
+	}
+	r.placeAndRecord(ctx, bot, []botengine.Order{*order}, "")
+}
+
+// runRebalanceBot reads the bot owner's real portfolio and places the legs that
+// restore it to the configured targets.
+func (r *BotRunner) runRebalanceBot(ctx context.Context, bot models.BotInstance) {
+	if r.portfolio == nil {
+		return
+	}
+	holdings, err := r.rebalanceHoldings(ctx, bot)
+	if err != nil {
+		log.Printf("bot runner: bot %d could not read portfolio: %v", bot.ID, err)
+		return
+	}
+	legs, err := r.engine.Rebalance(uint64(bot.ID), holdings)
+	if err != nil {
+		log.Printf("bot runner: bot %d rebalance failed: %v", bot.ID, err)
+		return
+	}
+	if len(legs) == 0 {
+		return
+	}
+	orders := make([]botengine.Order, 0, len(legs))
+	for _, leg := range legs {
+		orders = append(orders, botengine.Order{
+			Symbol:   leg.Symbol,
+			Side:     leg.Side,
+			Kind:     "market",
+			Quantity: leg.Amount,
+			Source:   "rebalance",
+		})
+	}
+	r.placeAndRecord(ctx, bot, orders, "")
+}
+
+// runLiquidationBot scans the real margin book and liquidates every account the
+// engine flags, paying the bonus the account's own listing defines.
+func (r *BotRunner) runLiquidationBot(ctx context.Context, bot models.BotInstance) {
+	if r.margin == nil {
+		return
+	}
+	candidates, err := r.margin.LiquidatableAccounts(ctx)
+	if err != nil {
+		log.Printf("bot runner: bot %d could not scan the margin book: %v", bot.ID, err)
+		return
+	}
+	placed := 0
+	for _, candidate := range candidates {
+		if placed >= bot.MaxOpenOrders {
+			break
+		}
+		position, err := r.liquidationPosition(ctx, bot, candidate)
+		if err != nil {
+			log.Printf("bot runner: bot %d could not assess account %s: %v", bot.ID, candidate.AccountID, err)
+			continue
+		}
+		decision, err := r.engine.Liquidation(uint64(bot.ID), position)
+		if err != nil {
+			log.Printf("bot runner: bot %d liquidation assessment failed: %v", bot.ID, err)
+			continue
+		}
+		if decision == nil {
+			continue
+		}
+		accountID, err := uuid.Parse(candidate.AccountID)
+		if err != nil {
+			log.Printf("bot runner: bot %d account id %q is not a uuid: %v", bot.ID, candidate.AccountID, err)
+			continue
+		}
+		result, err := r.margin.Liquidate(ctx, accountID)
+		if err != nil {
+			log.Printf("bot runner: bot %d could not liquidate account %s: %v", bot.ID, candidate.AccountID, err)
+			continue
+		}
+		record := models.BotOrder{
+			BotID:      bot.ID,
+			UserID:     bot.UserID,
+			Symbol:     bot.Symbol,
+			Side:       "sell",
+			OrderKind:  "market",
+			Price:      decision.HealthFactor,
+			Quantity:   decision.RepayAmount,
+			ReduceOnly: true,
+			Source:     "liquidation",
+			Status:     "filled",
+		}
+		if err := r.bots.recordBotOrders(bot, []models.BotOrder{record}); err != nil {
+			log.Printf("bot runner: bot %d liquidation record failed: %v", bot.ID, err)
+		}
+		placed++
+		_ = result
+	}
+}
+
+// runCopyBot mirrors the followed trader's real orders, scaled by the copy
+// ratio, into the follower's own book.
+func (r *BotRunner) runCopyBot(ctx context.Context, bot models.BotInstance) {
+	if r.copy == nil {
+		return
+	}
+	signals, err := r.copy.Signals(ctx, bot)
+	if err != nil {
+		log.Printf("bot runner: bot %d could not read trader signals: %v", bot.ID, err)
+		return
+	}
+	if len(signals) == 0 {
+		return
+	}
+	orders, err := r.engine.Copy(uint64(bot.ID), signals)
+	if err != nil {
+		log.Printf("bot runner: bot %d copy failed: %v", bot.ID, err)
+		return
+	}
+	r.placeAndRecord(ctx, bot, orders, "")
+}
+
+// placeAndRecord places the strategy's orders and records the accepted ones. It
+// is the single exit for every strategy that emits orders, so the risk limits
+// and the audit trail are applied identically to all of them.
+func (r *BotRunner) placeAndRecord(ctx context.Context, bot models.BotInstance, orders []botengine.Order, mark string) {
 	if len(orders) == 0 {
 		return
 	}
-
-	placed, err := r.placeOrders(ctx, bot, orders, snapshot.VWAP)
+	placed, err := r.placeOrders(ctx, bot, orders, mark)
 	if err != nil {
 		log.Printf("bot runner: bot %d could not place orders: %v", bot.ID, err)
 	}
@@ -208,14 +426,38 @@ func (r *BotRunner) placeOrders(ctx context.Context, bot models.BotInstance, ord
 		if working+int64(len(placed)) >= int64(bot.MaxOpenOrders) {
 			break
 		}
-		if order.Symbol != bot.Symbol {
+		// A single-symbol bot only ever trades its own symbol; a multi-symbol
+		// strategy (rebalance) trades the symbols its plan named. Either way the
+		// market must be listed, which is checked when the order is created.
+		if bot.Strategy != models.StrategyRebalance && order.Symbol != bot.Symbol {
 			return placed, fmt.Errorf("strategy returned an order for %s but the bot trades %s", order.Symbol, bot.Symbol)
 		}
-
-		price := order.Price
-		if order.Kind == "market" {
-			price = mark
+		if order.Symbol == "" {
+			return placed, errors.New("strategy returned an order with no symbol")
 		}
+
+		orderType := "limit"
+		if order.Kind == "market" {
+			orderType = "market"
+		}
+
+		// A limit order prices at its own price; a market order prices at the
+		// market's own oracle mark, read fresh so a multi-symbol plan is not
+		// stamped with the primary symbol's price.
+		price := order.Price
+		if orderType == "market" {
+			if mark != "" && order.Symbol == bot.Symbol {
+				price = mark
+			} else {
+				resolved, err := r.perps.getMarkPrice(ctx, order.Symbol)
+				if err != nil {
+					log.Printf("bot runner: bot %d market order for %s has no mark: %v", bot.ID, order.Symbol, err)
+					continue
+				}
+				price = strconv.FormatFloat(resolved, 'f', -1, 64)
+			}
+		}
+
 		notional, err := orderNotional(order.Quantity, price)
 		if err != nil {
 			log.Printf("bot runner: bot %d order could not be sized: %v", bot.ID, err)
@@ -230,10 +472,6 @@ func (r *BotRunner) placeOrders(ctx context.Context, bot models.BotInstance, ord
 		if order.Side == "sell" {
 			side = "short"
 		}
-		orderType := "limit"
-		if order.Kind == "market" {
-			orderType = "market"
-		}
 		sizeText := formatDecimal(notional, 8)
 		limitPrice := 0.0
 		if orderType == "limit" {
@@ -245,7 +483,7 @@ func (r *BotRunner) placeOrders(ctx context.Context, bot models.BotInstance, ord
 			limitPrice = parsed
 		}
 
-		perpetual, err := r.perps.CreateOrder(ctx, bot.UserID, bot.Symbol, side, orderType, sizeText, limitPrice, 0, botOrderTTL)
+		perpetual, err := r.perps.CreateOrder(ctx, bot.UserID, order.Symbol, side, orderType, sizeText, limitPrice, 0, botOrderTTL)
 		if err != nil {
 			log.Printf("bot runner: bot %d order was rejected: %v", bot.ID, err)
 			continue
@@ -258,7 +496,7 @@ func (r *BotRunner) placeOrders(ctx context.Context, bot models.BotInstance, ord
 		placed = append(placed, models.BotOrder{
 			BotID:      bot.ID,
 			UserID:     bot.UserID,
-			Symbol:     bot.Symbol,
+			Symbol:     order.Symbol,
 			Side:       order.Side,
 			OrderKind:  order.Kind,
 			Price:      price,

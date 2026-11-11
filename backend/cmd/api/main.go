@@ -274,6 +274,11 @@ func main() {
 		log.Printf("bot engine unavailable: %v", err)
 	}
 	botRunner := services.NewBotRunner(db, botsService, perpetualEngine, botEngine)
+	botRunner.SetVenueSource(services.NewPoolVenueSource(priceAggregator))
+	botRunner.SetListingSource(services.NewPerpListingSource(db, perpetualEngine))
+	botRunner.SetMarginEngine(marginEngine)
+	botRunner.SetPortfolioService(portfolioService)
+	botRunner.SetCopySource(services.NewPerpCopySource(perpetualEngine))
 	go botRunner.Run(realtimeCtx)
 
 	router := setupRouter(apiDeps{

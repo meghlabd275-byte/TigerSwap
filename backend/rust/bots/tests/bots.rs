@@ -887,3 +887,84 @@ fn clamp_bounds_are_enforced() {
     assert_eq!(fx("50").clamp(fx("1"), fx("10")).unwrap(), fx("10"));
     assert!(value.clamp(fx("10"), fx("1")).is_err());
 }
+
+// ---- copy bot ----
+
+fn copy_signal(symbol: &str, market: CopyMarket, side: Side, price: &str, quantity: &str) -> CopySignal {
+    CopySignal {
+        symbol: symbol.to_string(),
+        market,
+        side,
+        kind: OrderKind::Limit,
+        price: fx(price),
+        quantity: fx(quantity),
+        source_id: format!("{symbol}-{quantity}"),
+    }
+}
+
+#[test]
+fn copy_bot_scales_quantity_by_ratio() {
+    let bot = CopyBot::new(CopyConfig {
+        scale_bps: 5_000,
+        copy_perps: false,
+    })
+    .unwrap();
+    let signals = vec![copy_signal("BTC/RUSD", CopyMarket::Spot, Side::Buy, "60000", "2")];
+    let orders = bot.transform(&signals).unwrap();
+    assert_eq!(orders.len(), 1);
+    // A 50% ratio halves the two-unit signal.
+    assert_eq!(orders[0].quantity, fx("1"));
+    assert_eq!(orders[0].side, Side::Buy);
+    assert_eq!(orders[0].source, "copy");
+}
+
+#[test]
+fn copy_bot_skips_perps_when_disabled() {
+    let bot = CopyBot::new(CopyConfig {
+        scale_bps: 10_000,
+        copy_perps: false,
+    })
+    .unwrap();
+    let signals = vec![
+        copy_signal("BTC/RUSD", CopyMarket::Spot, Side::Buy, "60000", "1"),
+        copy_signal("ETH/RUSD", CopyMarket::Perp, Side::Sell, "3000", "1"),
+    ];
+    let orders = bot.transform(&signals).unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].symbol, "BTC/RUSD");
+}
+
+#[test]
+fn copy_bot_includes_perps_when_enabled() {
+    let bot = CopyBot::new(CopyConfig {
+        scale_bps: 10_000,
+        copy_perps: true,
+    })
+    .unwrap();
+    let signals = vec![copy_signal("ETH/RUSD", CopyMarket::Perp, Side::Sell, "3000", "1")];
+    let orders = bot.transform(&signals).unwrap();
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].symbol, "ETH/RUSD");
+    assert_eq!(orders[0].side, Side::Sell);
+}
+
+#[test]
+fn copy_bot_drops_signals_that_scale_to_zero() {
+    let bot = CopyBot::new(CopyConfig {
+        scale_bps: 1,
+        copy_perps: false,
+    })
+    .unwrap();
+    // 1e-16 * 1e-4 = 1e-20, below the 1e-18 scale, so it rounds to zero and
+    // must be dropped rather than sent as a zero-quantity dust order.
+    let signals = vec![copy_signal("BTC/RUSD", CopyMarket::Spot, Side::Buy, "60000", "0.0000000000000001")];
+    let orders = bot.transform(&signals).unwrap();
+    assert!(orders.is_empty());
+}
+
+#[test]
+fn copy_bot_rejects_out_of_range_scale() {
+    assert!(CopyBot::new(CopyConfig { scale_bps: 0, copy_perps: false }).is_err());
+    assert!(CopyBot::new(CopyConfig { scale_bps: 10_001, copy_perps: false }).is_err());
+    assert!(CopyBot::new(CopyConfig { scale_bps: 10_000, copy_perps: false }).is_ok());
+}

@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use serde_json::{json, Value};
 
 use crate::arbitrage::{ArbitrageBot, ArbitrageConfig, Venue};
+use crate::copy::{CopyBot, CopyConfig, CopySignal, Market};
 use crate::fixed::{BotError, BotResult, Fixed};
 use crate::grid::{GridBot, GridConfig};
 use crate::guard::{
@@ -37,6 +38,7 @@ enum BotEntry {
     Sniper(SniperBot),
     Rebalance(RebalanceBot),
     Liquidation(LiquidationBot),
+    Copy(CopyBot),
 }
 
 /// The engine holds one entry per running bot and serialises access to it.
@@ -204,6 +206,19 @@ impl Engine {
         };
         bot.evaluate(&borrow)
     }
+
+    /// Mirrors a followed trader's signals, scaled by the copy ratio.
+    pub fn copy(&self, id: u64, signals: &Value) -> BotResult<Vec<BotOrder>> {
+        let parsed = parse_copy_signals(signals)?;
+        let guard = self.bots.lock();
+        let entry = guard
+            .get(&id)
+            .ok_or(BotError::OutOfRange("bot is not configured"))?;
+        let BotEntry::Copy(bot) = entry else {
+            return Err(BotError::InvalidConfig("bot is not a copy bot"));
+        };
+        bot.transform(&parsed)
+    }
 }
 
 /// Builds a strategy instance from its configuration JSON.
@@ -250,17 +265,76 @@ fn build_entry(strategy: &str, config: &Value) -> BotResult<BotEntry> {
             buy_size: req_fixed(config, "buy_size")?,
         })?)),
         "rebalance" => Ok(BotEntry::Rebalance(RebalanceBot::new(RebalanceConfig {
-            drift_threshold_bps: req_i64(config, "drift_threshold_bps")?,
+            drift_threshold_bps: opt_i64(config, "drift_threshold_bps", 100),
         })?)),
         "liquidation" => Ok(BotEntry::Liquidation(LiquidationBot::new(LiquidationConfig {
             close_factor_bps: opt_i64(config, "close_factor_bps", 5_000),
             min_bonus_bps: opt_i64(config, "min_bonus_bps", 100),
         })?)),
-        "copy" => Err(BotError::InvalidConfig(
-            "the copy bot is executed by the control plane, not this engine",
-        )),
+        "copy" => Ok(BotEntry::Copy(CopyBot::new(CopyConfig {
+            scale_bps: req_i64(config, "scale_bps")?,
+            copy_perps: config
+                .get("copy_perps")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })?)),
         _ => Err(BotError::InvalidConfig("unknown strategy")),
     }
+}
+
+/// Parses the copy signals the control plane observed on a followed trader.
+fn parse_copy_signals(value: &Value) -> BotResult<Vec<CopySignal>> {
+    let array = value
+        .as_array()
+        .ok_or(BotError::InvalidConfig("signals must be an array"))?;
+    let mut parsed = Vec::with_capacity(array.len());
+    for signal in array {
+        let symbol = signal
+            .get("symbol")
+            .and_then(Value::as_str)
+            .ok_or(BotError::InvalidConfig("signal has no symbol"))?;
+        let market = match signal.get("market").and_then(Value::as_str) {
+            Some("spot") => Market::Spot,
+            Some("perp") => Market::Perp,
+            _ => return Err(BotError::InvalidConfig("signal market must be spot or perp")),
+        };
+        let side = match signal.get("side").and_then(Value::as_str) {
+            Some("buy") => Side::Buy,
+            Some("sell") => Side::Sell,
+            _ => return Err(BotError::InvalidConfig("signal side must be buy or sell")),
+        };
+        let kind = match signal.get("kind").and_then(Value::as_str) {
+            Some("limit") => OrderKind::Limit,
+            Some("market") => OrderKind::Market,
+            Some("post_only") => OrderKind::PostOnly,
+            _ => return Err(BotError::InvalidConfig("signal kind is not recognised")),
+        };
+        let price = signal
+            .get("price")
+            .and_then(Value::as_str)
+            .ok_or(BotError::InvalidConfig("signal has no price"))
+            .and_then(Fixed::parse)?;
+        let quantity = signal
+            .get("quantity")
+            .and_then(Value::as_str)
+            .ok_or(BotError::InvalidConfig("signal has no quantity"))
+            .and_then(Fixed::parse)?;
+        let source_id = signal
+            .get("source_id")
+            .and_then(Value::as_str)
+            .ok_or(BotError::InvalidConfig("signal has no source_id"))?
+            .to_string();
+        parsed.push(CopySignal {
+            symbol: symbol.to_string(),
+            market,
+            side,
+            kind,
+            price,
+            quantity,
+            source_id,
+        });
+    }
+    Ok(parsed)
 }
 
 fn parse_venues(value: &Value) -> BotResult<Vec<Venue>> {

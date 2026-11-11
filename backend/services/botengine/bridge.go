@@ -64,6 +64,8 @@ type Engine interface {
 	Rebalance(id uint64, holdings json.RawMessage) ([]RebalanceLeg, error)
 	// Liquidation evaluates a borrow position.
 	Liquidation(id uint64, position json.RawMessage) (*Liquidation, error)
+	// Copy mirrors a followed trader's signals, scaled by the copy ratio.
+	Copy(id uint64, signals json.RawMessage) ([]Order, error)
 	// Count is the number of configured bots.
 	Count() uint64
 	// Close releases the engine.
