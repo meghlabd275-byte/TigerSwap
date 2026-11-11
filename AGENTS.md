@@ -488,11 +488,29 @@ strategy.
   (`{"ok":true,"data":...}` / `{"ok":false,"error":"..."}`). A null return only
   ever means allocation failed. Prices and quantities are exact decimal strings,
   never floats.
-- `BotRunner.Run` sweeps every active bot on an interval. For each it builds a
-  snapshot from the perp engine's own resting orders plus the oracle mark
-  (`PerpetualEngine.BookSnapshot`), steps the engine, and turns the returned
-  orders into real resting orders via `PerpetualEngine.CreateOrder`. A bot with
-  no priceable market is skipped, never fed a fabricated book.
+- `BotRunner.Run` sweeps every active bot on an interval. The dispatch is by
+  strategy and each reads a real source; a strategy whose source is not wired is
+  skipped with a log, never run against invented data:
+  - snapshot strategies (market maker, grid, DCA, TWAP) build a snapshot from
+    the perp engine's own resting orders plus the oracle mark
+    (`PerpetualEngine.BookSnapshot`), step the engine, and turn the returned
+    orders into real resting orders via `PerpetualEngine.CreateOrder`.
+  - arbitrage (`NewPoolVenueSource`) builds one venue per AMM family from the
+    aggregator's real on-chain family quotes.
+  - sniper (`NewPerpListingSource`) reads the newest active perp listing and its
+    real resting depth.
+  - rebalance reads the owner's real portfolio valued at the live oracle
+    (`PortfolioService.Holdings`); an unpriced holding is reported as zero.
+  - liquidation (`SetMarginEngine`) reads each candidate account's real
+    collateral, debt and its own listing's threshold/bonus.
+  - copy (`NewPerpCopySource`) mirrors the followed trader's own working orders,
+    filtered to the bot's configured symbol.
+  A bot with no priceable market is skipped, never fed a fabricated book.
+- A single-symbol bot only trades its own symbol; a rebalance plan may trade any
+  listed symbol. A market order prices at its own market's oracle mark, read
+  fresh per symbol.
+- `validateStrategyConfig` in `services/bots_service.go` is the per-strategy
+  config schema; a rebalance `targets` set must total 10000 bps.
 - The runner enforces the operator's `max_order_size` and `max_open_orders`
   before placing anything; a paused or stopped bot is unloaded from the engine
   on the next sweep so it stops trading.
