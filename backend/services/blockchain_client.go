@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +27,17 @@ type BlockchainClient struct {
 	rpcURLs    map[int64]string
 	chainCache sync.Map // chainID -> chain config
 	mu         sync.RWMutex
+	// sendMu serialises transactions per (chain, sender) so two concurrent
+	// sends from the same hot wallet cannot read the same pending nonce and
+	// collide on-chain. Keyed by a short chain/signer string; created lazily.
+	sendMu sync.Map // string -> *sync.Mutex
+}
+
+// senderLock returns the mutex that serialises sends for one chain and signer.
+func (b *BlockchainClient) senderLock(chainID int64, signer string) *sync.Mutex {
+	key := strconv.FormatInt(chainID, 10) + ":" + strings.ToLower(signer)
+	actual, _ := b.sendMu.LoadOrStore(key, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // ChainConfig represents blockchain configuration
@@ -349,10 +361,6 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 	}
 
 	fromAddress := crypto.PubkeyToAddress(key.PublicKey)
-	nonce, err := client.PendingNonceAt(ctx, fromAddress)
-	if err != nil {
-		return "", fmt.Errorf("failed to get nonce: %v", err)
-	}
 
 	// Get gas price if not provided. A hardcoded fallback is not used: an
 	// underpriced transaction would sit unmined while the caller is told it was
@@ -380,20 +388,52 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 		value = amount
 	}
 
-	tx := types.NewTransaction(nonce, to, value, gasLimit, gasPrice, data)
+	signer := types.NewEIP155Signer(big.NewInt(chainID))
 
-	chainIDBig := big.NewInt(chainID)
-	signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainIDBig), key)
-	if err != nil {
-		return "", fmt.Errorf("failed to sign transaction: %v", err)
+	// Serialise nonce allocation per (chain, sender). Without this, two concurrent
+	// withdrawals from the same hot wallet read the same PendingNonceAt value and
+	// one transaction is rejected as a nonce collision, silently dropping a payout.
+	lock := b.senderLock(chainID, fromAddress.Hex())
+	lock.Lock()
+	defer lock.Unlock()
+
+	// The lock only orders sends inside this process. A second process holding the
+	// same signer, or a transaction that landed between our read and our send, still
+	// produces a nonce error; re-read the pending nonce and retry instead of failing
+	// the payout.
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		nonce, err := client.PendingNonceAt(ctx, fromAddress)
+		if err != nil {
+			return "", fmt.Errorf("failed to get nonce: %v", err)
+		}
+		tx := types.NewTransaction(nonce, to, value, gasLimit, gasPrice, data)
+		signedTx, err := types.SignTx(tx, signer, key)
+		if err != nil {
+			return "", fmt.Errorf("failed to sign transaction: %v", err)
+		}
+		if err := client.SendTransaction(ctx, signedTx); err != nil {
+			lastErr = err
+			if isNonceCollision(err) {
+				continue
+			}
+			return "", fmt.Errorf("failed to send transaction: %v", err)
+		}
+		return signedTx.Hash().Hex(), nil
 	}
+	return "", fmt.Errorf("failed to send transaction after %d attempts: %v", maxAttempts, lastErr)
+}
 
-	err = client.SendTransaction(ctx, signedTx)
-	if err != nil {
-		return "", fmt.Errorf("failed to send transaction: %v", err)
-	}
-
-	return signedTx.Hash().Hex(), nil
+// isNonceCollision reports whether an RPC error is a nonce race rather than a
+// permanent rejection: a nonce below the account's, or a transaction the node
+// already holds. Those are retryable after re-reading the pending nonce.
+func isNonceCollision(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "nonce too low") ||
+		strings.Contains(message, "nonce too high") ||
+		strings.Contains(message, "already known") ||
+		strings.Contains(message, "replacement transaction underpriced")
 }
 
 // GetTransactionReceipt returns the transaction receipt

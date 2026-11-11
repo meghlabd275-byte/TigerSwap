@@ -782,7 +782,12 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	key, err := s.platformKey()
 	if err != nil {
 		// Reverse the debit so the user is not charged for a failed withdrawal.
-		s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount)
+		// A failed reversal would strand the funds, so it is logged loudly; the
+		// debit already happened, so the caller is told the withdrawal failed
+		// regardless.
+		if creditErr := s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount); creditErr != nil {
+			log.Printf("CRITICAL: failed to reverse withdrawal debit for user %s: %v", userID, creditErr)
+		}
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
 		// logged for the operator and not returned to the caller.
