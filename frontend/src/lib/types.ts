@@ -126,16 +126,69 @@ export interface SwapQuote {
   priceImpact: number;
   route: string[];
   gasEstimate: number;
+  /** Present only when the router split the order across several routes. */
+  legs?: SwapQuoteLeg[];
+  /**
+   * The executable hop plan for a single multi-hop route. Present only when the
+   * winning route has more than one hop; a direct single-family quote omits it.
+   */
+  routeHops?: SwapRouteHop[];
 }
 
-export const swapQuoteValidator = object<SwapQuote>({
-  amountIn: string,
-  amountOut: string,
-  amountOutMin: string,
-  priceImpact: nonNegative,
-  route: array(string),
-  gasEstimate: nonNegative,
+/** One executable hop of a route: a token pair and the family to trade it on. */
+export interface SwapRouteHop {
+  tokenIn: string;
+  tokenOut: string;
+  family: string;
+  pool: string;
+}
+
+/**
+ * One leg of a split swap. The server sends it only when the router divided the
+ * input across independent routes to reduce price impact.
+ */
+export interface SwapQuoteLeg {
+  path: string[];
+  family: string;
+  pool: string;
+  amountIn: string;
+  amountOut: string;
+  /** The full executable path for the leg; a multi-hop leg has more than one. */
+  hops?: SwapRouteHop[];
+}
+
+export const swapRouteHopValidator = object<SwapRouteHop>({
+  tokenIn: address,
+  tokenOut: address,
+  family: string,
+  pool: address,
 });
+
+export const swapQuoteLegValidator = object<SwapQuoteLeg>(
+  {
+    path: array(address),
+    family: string,
+    pool: address,
+    amountIn: string,
+    amountOut: string,
+    hops: array(swapRouteHopValidator),
+  },
+  { optional: ["hops"] },
+);
+
+export const swapQuoteValidator = object<SwapQuote>(
+  {
+    amountIn: string,
+    amountOut: string,
+    amountOutMin: string,
+    priceImpact: nonNegative,
+    route: array(address),
+    gasEstimate: nonNegative,
+    legs: array(swapQuoteLegValidator),
+    routeHops: array(swapRouteHopValidator),
+  },
+  { optional: ["legs", "routeHops"] },
+);
 
 /** A recent trade from `/market/trades`. */
 export interface Trade {

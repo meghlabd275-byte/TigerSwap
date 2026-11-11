@@ -103,6 +103,12 @@ const SERVER_MARGIN_LIST = `{"count":1,"markets":[{"id":"2f373904-0de5-4eeb-a2b4
 
 const SERVER_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"2000000000000000000","amountOutMin":"1990000000000000000","priceImpact":0.12,"route":["0x1111111111111111111111111111111111111111","0x2222222222222222222222222222222222222222"],"gasEstimate":150000}`;
 
+// A split quote, produced by the router when it divides an order across two
+// independent pools. Captured from the same handler as SERVER_QUOTE.
+const SERVER_SPLIT_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"2010000000000000000","amountOutMin":"1999950000000000000","priceImpact":0.09,"route":["0x1111111111111111111111111111111111111111","0x2222222222222222222222222222222222222222"],"gasEstimate":200000,"legs":[{"path":["0x1111111111111111111111111111111111111111","0x2222222222222222222222222222222222222222"],"family":"tigerswap_v2","pool":"0x3333333333333333333333333333333333333333","amountIn":"500000000000000000","amountOut":"1005000000000000000","hops":[{"tokenIn":"0x1111111111111111111111111111111111111111","tokenOut":"0x2222222222222222222222222222222222222222","family":"tigerswap_v2","pool":"0x3333333333333333333333333333333333333333"}]},{"path":["0x1111111111111111111111111111111111111111","0x2222222222222222222222222222222222222222"],"family":"tigerswap_stable","pool":"0x4444444444444444444444444444444444444444","amountIn":"500000000000000000","amountOut":"1005000000000000000","hops":[{"tokenIn":"0x1111111111111111111111111111111111111111","tokenOut":"0x2222222222222222222222222222222222222222","family":"tigerswap_stable","pool":"0x4444444444444444444444444444444444444444"}]}]}`;
+
+const SERVER_MULTIHOP_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"2050000000000000000","amountOutMin":"2039750000000000000","priceImpact":0.05,"route":["0x1111111111111111111111111111111111111111","0x5555555555555555555555555555555555555555","0x2222222222222222222222222222222222222222"],"gasEstimate":250000,"routeHops":[{"tokenIn":"0x1111111111111111111111111111111111111111","tokenOut":"0x5555555555555555555555555555555555555555","family":"tigerswap_v2","pool":"0x6666666666666666666666666666666666666666"},{"tokenIn":"0x5555555555555555555555555555555555555555","tokenOut":"0x2222222222222222222222222222222222222222","family":"tigerswap_stable","pool":"0x7777777777777777777777777777777777777777"}]}`;
+
 // The bots, OTC and TWAMM payloads below were captured by running the real
 // handlers against an in-memory database in
 // `backend/services/contract_capture_test.go` and copying the logged JSON.
@@ -254,6 +260,30 @@ test("live /swap/quote payload satisfies swapQuoteValidator", () => {
   assert.equal(quote.amountOutMin, "1990000000000000000");
   assert.equal(quote.priceImpact, 0.12);
   assert.equal(quote.gasEstimate, 150000);
+  assert.equal(quote.legs, undefined);
+});
+
+test("live split /swap/quote payload satisfies swapQuoteValidator", () => {
+  const quote = parse(swapQuoteValidator, SERVER_SPLIT_QUOTE, "quote");
+  assert.equal(quote.route.length, 2);
+  assert.ok(quote.legs);
+  assert.equal(quote.legs.length, 2);
+  assert.equal(quote.legs[0].family, "tigerswap_v2");
+  assert.equal(quote.legs[0].amountIn, "500000000000000000");
+  assert.equal(quote.legs[1].family, "tigerswap_stable");
+  assert.ok(quote.legs[1].hops);
+  assert.equal(quote.legs[1].hops.length, 1);
+  assert.equal(quote.legs[1].hops[0].family, "tigerswap_stable");
+});
+
+test("live multi-hop /swap/quote payload satisfies swapQuoteValidator", () => {
+  const quote = parse(swapQuoteValidator, SERVER_MULTIHOP_QUOTE, "quote");
+  assert.equal(quote.route.length, 3);
+  assert.equal(quote.legs, undefined);
+  assert.ok(quote.routeHops);
+  assert.equal(quote.routeHops.length, 2);
+  assert.equal(quote.routeHops[0].family, "tigerswap_v2");
+  assert.equal(quote.routeHops[1].family, "tigerswap_stable");
 });
 
 test("live /bots payload satisfies botListValidator", () => {

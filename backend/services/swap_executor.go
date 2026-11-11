@@ -358,6 +358,224 @@ func (s *SwapExecutor) BuildSwap(ctx context.Context, chainID int64, fromToken, 
 	return router.Hex(), "0x" + hex.EncodeToString(data), "0", gasLimit, nil
 }
 
+// BuildMultihopSwap builds an unsigned multi-hop router call for a route whose
+// hops the caller has already chosen. Each hop carries its own family, so a route
+// that spans the xyK, stable and weighted families executes as one atomic
+// transaction. The per-hop minimum is the slippage-bounded expected output of
+// that hop, so an intermediate hop cannot be sandwiched.
+func (s *SwapExecutor) BuildMultihopSwap(ctx context.Context, chainID int64, hops []tigerswap.MultihopHop, amountIn, amountOutMin *big.Int, minOutPerHop []*big.Int, recipient string, slippageBps uint32) (string, string, uint64, error) {
+	if slippageBps > 5_000 {
+		return "", "", 0, errors.New("slippage above 50% is not permitted")
+	}
+	if len(hops) == 0 {
+		return "", "", 0, errors.New("route has no hops")
+	}
+	if amountIn == nil || amountIn.Sign() <= 0 {
+		return "", "", 0, errors.New("amountIn must be positive")
+	}
+	if !common.IsHexAddress(recipient) {
+		return "", "", 0, errors.New("invalid recipient address")
+	}
+
+	client, err := s.newClient(chainID, s.signer)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer client.Close()
+
+	to := common.HexToAddress(recipient)
+	deadline := big.NewInt(time.Now().Add(20 * time.Minute).Unix())
+	router, data, err := client.BuildMultihopCalldata(hops, amountIn, amountOutMin, minOutPerHop, to, deadline)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	gasLimit, err := client.RPC().EstimateGas(ctx, ethereum.CallMsg{From: to, To: &router, Data: data})
+	if err != nil {
+		return "", "", 0, fmt.Errorf("estimate gas: %w", err)
+	}
+	return router.Hex(), "0x" + hex.EncodeToString(data), gasLimit, nil
+}
+
+// BuildSplitSwap builds an unsigned split-order router call. The caller supplies
+// the legs the router chose; their inputs must sum to amountIn.
+func (s *SwapExecutor) BuildSplitSwap(ctx context.Context, chainID int64, amountIn, amountOutMin *big.Int, legs []tigerswap.SplitLeg, recipient string, slippageBps uint32) (string, string, uint64, error) {
+	if slippageBps > 5_000 {
+		return "", "", 0, errors.New("slippage above 50% is not permitted")
+	}
+	if len(legs) == 0 {
+		return "", "", 0, errors.New("split has no legs")
+	}
+	if amountIn == nil || amountIn.Sign() <= 0 {
+		return "", "", 0, errors.New("amountIn must be positive")
+	}
+	if !common.IsHexAddress(recipient) {
+		return "", "", 0, errors.New("invalid recipient address")
+	}
+
+	client, err := s.newClient(chainID, s.signer)
+	if err != nil {
+		return "", "", 0, err
+	}
+	defer client.Close()
+
+	to := common.HexToAddress(recipient)
+	deadline := big.NewInt(time.Now().Add(20 * time.Minute).Unix())
+	router, data, err := client.BuildSplitCalldata(amountIn, amountOutMin, legs, to, deadline)
+	if err != nil {
+		return "", "", 0, err
+	}
+
+	gasLimit, err := client.RPC().EstimateGas(ctx, ethereum.CallMsg{From: to, To: &router, Data: data})
+	if err != nil {
+		return "", "", 0, fmt.Errorf("estimate gas: %w", err)
+	}
+	return router.Hex(), "0x" + hex.EncodeToString(data), gasLimit, nil
+}
+
+// BuildSwapPlan quotes a swap through TigerSwap's own aggregator and returns an
+// unsigned router call that executes exactly the winning plan. A multi-hop route
+// is encoded as a single atomic multi-hop call and a split order as a single
+// split call, so the quote the caller saw is the transaction they sign. Only a
+// direct single-family quote falls back to the two-token call.
+func (s *SwapExecutor) BuildSwapPlan(ctx context.Context, chainID int64, fromToken, toToken, amountIn, recipient string, slippageBps uint32) (string, string, string, uint64, error) {
+	if slippageBps == 0 {
+		slippageBps = DefaultSlippageBps
+	}
+	if slippageBps > 5_000 {
+		return "", "", "", 0, errors.New("slippage above 50% is not permitted")
+	}
+	amount, ok := new(big.Int).SetString(amountIn, 10)
+	if !ok || amount.Sign() <= 0 {
+		return "", "", "", 0, fmt.Errorf("invalid amount %q", amountIn)
+	}
+	if !common.IsHexAddress(fromToken) || !common.IsHexAddress(toToken) {
+		return "", "", "", 0, errors.New("invalid token address")
+	}
+	if !common.IsHexAddress(recipient) {
+		return "", "", "", 0, errors.New("invalid recipient address")
+	}
+	if s.priceAgg == nil {
+		return "", "", "", 0, errors.New("price aggregator not configured")
+	}
+
+	quote, err := s.priceAgg.GetAggregatedQuote(ctx, chainID, fromToken, toToken, amountIn, nil)
+	if err != nil {
+		return "", "", "", 0, err
+	}
+	best, ok := new(big.Int).SetString(quote.AmountOut, 10)
+	if !ok {
+		return "", "", "", 0, errors.New("quote produced an invalid amount")
+	}
+	amountOutMin := applySlippage(best, slippageBps)
+
+	if len(quote.Legs) > 0 {
+		legs, err := s.splitLegsFromWire(quote.Legs)
+		if err != nil {
+			return "", "", "", 0, err
+		}
+		router, data, gas, err := s.BuildSplitSwap(ctx, chainID, amount, amountOutMin, legs, recipient, slippageBps)
+		if err != nil {
+			return "", "", "", 0, err
+		}
+		return router, data, "0", gas, nil
+	}
+
+	if len(quote.RouteHops) > 1 {
+		hops, err := s.hopsFromWire(quote.RouteHops)
+		if err != nil {
+			return "", "", "", 0, err
+		}
+		client, err := s.newClient(chainID, s.signer)
+		if err != nil {
+			return "", "", "", 0, err
+		}
+		mins := s.hopMins(ctx, client, hops, amount, slippageBps)
+		client.Close()
+		router, data, gas, err := s.BuildMultihopSwap(ctx, chainID, hops, amount, amountOutMin, mins, recipient, slippageBps)
+		if err != nil {
+			return "", "", "", 0, err
+		}
+		return router, data, "0", gas, nil
+	}
+
+	// Direct single-family swap.
+	return s.BuildSwap(ctx, chainID, fromToken, toToken, amountIn, recipient, slippageBps)
+}
+
+// hopsFromWire converts wire hops into router hops, rejecting an unknown family.
+func (s *SwapExecutor) hopsFromWire(dtos []routeHopDTO) ([]tigerswap.MultihopHop, error) {
+	hops := make([]tigerswap.MultihopHop, 0, len(dtos))
+	for i, dto := range dtos {
+		if !common.IsHexAddress(dto.TokenIn) || !common.IsHexAddress(dto.TokenOut) {
+			return nil, fmt.Errorf("hop %d has an invalid token address", i)
+		}
+		family, err := familyFromName(dto.Family)
+		if err != nil {
+			return nil, fmt.Errorf("hop %d: %w", i, err)
+		}
+		hops = append(hops, tigerswap.MultihopHop{
+			TokenIn:  common.HexToAddress(dto.TokenIn),
+			TokenOut: common.HexToAddress(dto.TokenOut),
+			Family:   family,
+		})
+	}
+	return hops, nil
+}
+
+// splitLegsFromWire converts wire split legs into router legs.
+func (s *SwapExecutor) splitLegsFromWire(dtos []routeLegDTO) ([]tigerswap.SplitLeg, error) {
+	legs := make([]tigerswap.SplitLeg, 0, len(dtos))
+	for i, dto := range dtos {
+		var hops []tigerswap.MultihopHop
+		var err error
+		if len(dto.Hops) > 0 {
+			hops, err = s.hopsFromWire(dto.Hops)
+			if err != nil {
+				return nil, fmt.Errorf("leg %d: %w", i, err)
+			}
+		} else {
+			if len(dto.Path) < 2 {
+				return nil, fmt.Errorf("leg %d has no path", i)
+			}
+			family, ferr := familyFromName(dto.Family)
+			if ferr != nil {
+				return nil, fmt.Errorf("leg %d: %w", i, ferr)
+			}
+			hops = []tigerswap.MultihopHop{{
+				TokenIn:  common.HexToAddress(dto.Path[0]),
+				TokenOut: common.HexToAddress(dto.Path[len(dto.Path)-1]),
+				Family:   family,
+			}}
+		}
+		amount, ok := new(big.Int).SetString(dto.AmountIn, 10)
+		if !ok || amount.Sign() <= 0 {
+			return nil, fmt.Errorf("leg %d has an invalid amount", i)
+		}
+		legs = append(legs, tigerswap.SplitLeg{Hops: hops, AmountIn: amount})
+	}
+	return legs, nil
+}
+
+// hopMins computes a slippage-bounded minimum for every hop so an intermediate
+// hop cannot be sandwiched. A hop that cannot be priced gets a zero bound, which
+// never blocks a valid hop; the whole-path minimum still protects the caller.
+func (s *SwapExecutor) hopMins(ctx context.Context, client *tigerswap.Client, hops []tigerswap.MultihopHop, amountIn *big.Int, slippageBps uint32) []*big.Int {
+	mins := make([]*big.Int, len(hops))
+	current := new(big.Int).Set(amountIn)
+	for i, hop := range hops {
+		path := []common.Address{hop.TokenIn, hop.TokenOut}
+		out, err := client.QuoteFamily(ctx, hop.Family, path, current, tigerFamilyFees[hop.Family])
+		if err != nil || out == nil || out.Sign() <= 0 {
+			mins[i] = big.NewInt(0)
+			continue
+		}
+		mins[i] = applySlippage(out, slippageBps)
+		current = out
+	}
+	return mins
+}
+
 // ensureAllowance approves the TigerSwap router if the current allowance is low.
 func (s *SwapExecutor) ensureAllowance(ctx context.Context, client *tigerswap.Client, key *ecdsa.PrivateKey, chainID int64, token string, amount *big.Int) error {
 	deployment, ok := s.deployments[chainID]

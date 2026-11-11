@@ -9,6 +9,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -912,7 +913,93 @@ public final class TigerSwapClient {
         }
     }
 
-    /** A swap quote. Amounts are decimal strings to preserve precision. */
+    /** One executable hop: a token pair and the pool family to trade it on. */
+    public static final class SwapRouteHop {
+        public final String tokenIn;
+        public final String tokenOut;
+        public final String family;
+        public final String pool;
+
+        private SwapRouteHop(String tokenIn, String tokenOut, String family, String pool) {
+            this.tokenIn = tokenIn;
+            this.tokenOut = tokenOut;
+            this.family = family;
+            this.pool = pool;
+        }
+
+        static SwapRouteHop fromJson(Map<String, Object> object) {
+            return new SwapRouteHop(
+                    Json.requiredString(object, "tokenIn"),
+                    Json.requiredString(object, "tokenOut"),
+                    Json.requiredString(object, "family"),
+                    Json.requiredString(object, "pool"));
+        }
+
+        static List<SwapRouteHop> listFrom(Object value, String field) {
+            if (value == null) {
+                return Collections.emptyList();
+            }
+            List<Object> raw = Json.asArray(value, field);
+            List<SwapRouteHop> hops = new ArrayList<>(raw.size());
+            for (Object entry : raw) {
+                hops.add(fromJson(Json.asObject(entry, field + " entry")));
+            }
+            return hops;
+        }
+    }
+
+    /** One leg of a split order: a route and the input it carries. */
+    public static final class SwapQuoteLeg {
+        public final List<String> path;
+        public final String family;
+        public final String pool;
+        public final String amountIn;
+        public final String amountOut;
+        public final List<SwapRouteHop> hops;
+
+        private SwapQuoteLeg(List<String> path, String family, String pool,
+                             String amountIn, String amountOut, List<SwapRouteHop> hops) {
+            this.path = path;
+            this.family = family;
+            this.pool = pool;
+            this.amountIn = amountIn;
+            this.amountOut = amountOut;
+            this.hops = hops;
+        }
+
+        static SwapQuoteLeg fromJson(Map<String, Object> object) {
+            List<Object> rawPath = Json.asArray(Json.field(object, "path"), "path");
+            List<String> path = new ArrayList<>(rawPath.size());
+            for (Object entry : rawPath) {
+                path.add(Json.asString(entry, "path entry"));
+            }
+            return new SwapQuoteLeg(
+                    path,
+                    Json.requiredString(object, "family"),
+                    Json.requiredString(object, "pool"),
+                    Json.requiredString(object, "amountIn"),
+                    Json.requiredString(object, "amountOut"),
+                    SwapRouteHop.listFrom(Json.field(object, "hops"), "hops"));
+        }
+
+        static List<SwapQuoteLeg> listFrom(Object value, String field) {
+            if (value == null) {
+                return Collections.emptyList();
+            }
+            List<Object> raw = Json.asArray(value, field);
+            List<SwapQuoteLeg> legs = new ArrayList<>(raw.size());
+            for (Object entry : raw) {
+                legs.add(fromJson(Json.asObject(entry, field + " entry")));
+            }
+            return legs;
+        }
+    }
+
+    /**
+     * A swap quote. Amounts are decimal strings to preserve precision. RouteHops
+     * is the executable plan for a single multi-hop route and legs is the plan
+     * for a split order; a direct single-family quote carries neither.
+     */
     public static final class SwapQuote {
         public final String amountIn;
         public final String amountOut;
@@ -920,15 +1007,20 @@ public final class TigerSwapClient {
         public final double priceImpact;
         public final List<String> route;
         public final long gasEstimate;
+        public final List<SwapRouteHop> routeHops;
+        public final List<SwapQuoteLeg> legs;
 
         private SwapQuote(String amountIn, String amountOut, String amountOutMin,
-                          double priceImpact, List<String> route, long gasEstimate) {
+                          double priceImpact, List<String> route, long gasEstimate,
+                          List<SwapRouteHop> routeHops, List<SwapQuoteLeg> legs) {
             this.amountIn = amountIn;
             this.amountOut = amountOut;
             this.amountOutMin = amountOutMin;
             this.priceImpact = priceImpact;
             this.route = route;
             this.gasEstimate = gasEstimate;
+            this.routeHops = routeHops;
+            this.legs = legs;
         }
 
         static SwapQuote fromJson(Map<String, Object> object) {
@@ -946,7 +1038,9 @@ public final class TigerSwapClient {
                     Json.requiredString(object, "amountOutMin"),
                     Json.requiredDouble(object, "priceImpact"),
                     route,
-                    Json.requiredLong(object, "gasEstimate"));
+                    Json.requiredLong(object, "gasEstimate"),
+                    SwapRouteHop.listFrom(Json.field(object, "routeHops"), "routeHops"),
+                    SwapQuoteLeg.listFrom(Json.field(object, "legs"), "legs"));
         }
     }
 

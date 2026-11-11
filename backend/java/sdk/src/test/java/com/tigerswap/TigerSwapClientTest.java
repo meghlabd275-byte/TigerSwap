@@ -156,7 +156,9 @@ public final class TigerSwapClientTest {
 
     private static void quotePostsAStructuredBody() throws Exception {
         String body = "{\"amountIn\":\"1000\",\"amountOut\":\"999\",\"amountOutMin\":\"994\","
-                + "\"priceImpact\":0.01,\"route\":[\"RUSD\",\"TGR\"],\"gasEstimate\":180000}";
+                + "\"priceImpact\":0.01,\"route\":[\"RUSD\",\"TGR\"],\"gasEstimate\":180000,"
+                + "\"routeHops\":[{\"tokenIn\":\"0xaaa\",\"tokenOut\":\"0xbbb\","
+                + "\"family\":\"tigerswap_v2\",\"pool\":\"0xpool\"}]}";
         try (StubServer server = new StubServer()) {
             server.respond(200, body);
             TigerSwapClient client = new TigerSwapClient(server.baseURL(), "");
@@ -166,6 +168,10 @@ public final class TigerSwapClientTest {
             check("quote amount out", "999".equals(quote.amountOut));
             check("quote route", quote.route.equals(List.of("RUSD", "TGR")));
             check("quote gas", quote.gasEstimate == 180000);
+            check("quote routeHops decoded", quote.routeHops.size() == 1);
+            check("quote routeHops family",
+                    "tigerswap_v2".equals(quote.routeHops.get(0).family));
+            check("quote legs empty when absent", quote.legs.isEmpty());
             check("method is POST", "POST".equals(server.lastMethod()));
             check("path is quote", "/api/v1/swap/quote".equals(server.lastPath()));
 

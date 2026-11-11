@@ -109,7 +109,10 @@ func TestGetQuoteSendsAndDecodesContractFields(t *testing.T) {
                         "amountOutMin":"1990000000000000000",
                         "priceImpact":0.12,
                         "route":["0x1","0x2"],
-                        "gasEstimate":150000
+                        "gasEstimate":150000,
+                        "routeHops":[
+                                {"tokenIn":"0x1","tokenOut":"0x2","family":"tigerswap_v2","pool":"0xp1"}
+                        ]
                 }`))
 	}))
 	defer server.Close()
@@ -126,6 +129,12 @@ func TestGetQuoteSendsAndDecodesContractFields(t *testing.T) {
 	}
 	if len(quote.Route) != 2 {
 		t.Errorf("quote route = %v", quote.Route)
+	}
+	if len(quote.RouteHops) != 1 || quote.RouteHops[0].Family != "tigerswap_v2" {
+		t.Errorf("quote routeHops = %+v", quote.RouteHops)
+	}
+	if len(quote.Legs) != 0 {
+		t.Errorf("quote legs should be empty when absent: %+v", quote.Legs)
 	}
 }
 

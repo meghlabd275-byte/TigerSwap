@@ -41,7 +41,9 @@ const poolABIJSON = `[
 ]`
 
 const routerABIJSON = `[
- {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
+ {"inputs":[{"internalType":"address","name":"tokenIn","type":"address"},{"internalType":"address","name":"tokenOut","type":"address"},{"internalType":"uint8","name":"family","type":"uint8"},{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokens","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[]","name":"tokens","type":"address[]"},{"internalType":"uint8[]","name":"families","type":"uint8[]"},{"internalType":"uint256[]","name":"minOutPerHop","type":"uint256[]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokensMultihop","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},
+ {"inputs":[{"internalType":"uint256","name":"amountIn","type":"uint256"},{"internalType":"uint256","name":"amountOutMin","type":"uint256"},{"internalType":"address[][]","name":"tokens","type":"address[][]"},{"internalType":"uint8[][]","name":"families","type":"uint8[][]"},{"internalType":"uint256[]","name":"amountInPerLeg","type":"uint256[]"},{"internalType":"uint256[][]","name":"minOutPerHop","type":"uint256[][]"},{"internalType":"address","name":"to","type":"address"},{"internalType":"uint256","name":"deadline","type":"uint256"}],"name":"swapExactTokensForTokensSplit","outputs":[{"internalType":"uint256","name":"amountOut","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}
 ]`
 
 // oracleABIJSON is TigerSwap's own median-of-N price oracle. Prices are
@@ -403,9 +405,6 @@ func (c *Client) quoteV3(ctx context.Context, tokenIn, tokenOut common.Address, 
 
 // Swap signs and broadcasts a swap on the TigerSwap router.
 func (c *Client) Swap(ctx context.Context, family amm.Family, path []common.Address, amountIn, amountOutMin *big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
-	if c.signer == nil {
-		return nil, errors.New("TigerSwap signer key is not configured")
-	}
 	if len(path) < 2 {
 		return nil, errors.New("path must have at least 2 tokens")
 	}
@@ -415,32 +414,7 @@ func (c *Client) Swap(ctx context.Context, family amm.Family, path []common.Addr
 	if err != nil {
 		return nil, err
 	}
-
-	from := crypto.PubkeyToAddress(c.signer.PublicKey)
-	nonce, err := c.client.PendingNonceAt(ctx, from)
-	if err != nil {
-		return nil, fmt.Errorf("pending nonce: %w", err)
-	}
-	gasPrice, err := c.client.SuggestGasPrice(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("suggest gas price: %w", err)
-	}
-	gasLimit, err := c.client.EstimateGas(ctx, ethereum.CallMsg{
-		From: from, To: &c.deployment.Router, Data: data, Value: big.NewInt(0),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("estimate gas: %w", err)
-	}
-
-	tx := types.NewTransaction(nonce, c.deployment.Router, big.NewInt(0), gasLimit, gasPrice, data)
-	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(c.deployment.ChainID)), c.signer)
-	if err != nil {
-		return nil, fmt.Errorf("sign tx: %w", err)
-	}
-	if err := c.client.SendTransaction(ctx, signed); err != nil {
-		return nil, fmt.Errorf("send tx: %w", err)
-	}
-	return signed, nil
+	return c.sendRouterCall(ctx, data)
 }
 
 // BuildSwapCalldata returns the router target and calldata for an unsigned
@@ -459,6 +433,148 @@ func (c *Client) BuildSwapCalldata(family amm.Family, path []common.Address, amo
 
 // RouterAddress returns the configured TigerSwap router for the chain.
 func (c *Client) RouterAddress() common.Address { return c.deployment.Router }
+
+// MultihopHop is one hop of a multi-token route: a token pair and the family it
+// trades through. The token path is the concatenation of each hop's (In, Out),
+// so consecutive hops must share an endpoint.
+type MultihopHop struct {
+	TokenIn  common.Address
+	TokenOut common.Address
+	Family   amm.Family
+}
+
+// tokenPath flattens the hops into the router's token array.
+func tokenPath(hops []MultihopHop) []common.Address {
+	path := make([]common.Address, 0, len(hops)+1)
+	for i, hop := range hops {
+		if i == 0 {
+			path = append(path, hop.TokenIn)
+		}
+		path = append(path, hop.TokenOut)
+	}
+	return path
+}
+
+// BuildMultihopCalldata returns the router target and calldata for an unsigned
+// multi-hop swap. minOutPerHop must have one entry per hop; a nil entry is
+// treated as zero, which leaves that hop unbounded.
+func (c *Client) BuildMultihopCalldata(hops []MultihopHop, amountIn, amountOutMin *big.Int, minOutPerHop []*big.Int, to common.Address, deadline *big.Int) (common.Address, []byte, error) {
+	if len(hops) == 0 {
+		return common.Address{}, nil, errors.New("route has no hops")
+	}
+	tokens := tokenPath(hops)
+	families := make([]uint8, len(hops))
+	mins := make([]*big.Int, len(hops))
+	for i, hop := range hops {
+		families[i] = FamilyCode(hop.Family)
+		if i < len(minOutPerHop) && minOutPerHop[i] != nil {
+			mins[i] = minOutPerHop[i]
+		} else {
+			mins[i] = big.NewInt(0)
+		}
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokensMultihop", amountIn, amountOutMin, tokens, families, mins, to, deadline)
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	return c.deployment.Router, data, nil
+}
+
+// SplitLeg is one leg of a split order: a full path and the input it carries.
+type SplitLeg struct {
+	Hops     []MultihopHop
+	AmountIn *big.Int
+	MinOut   []*big.Int
+}
+
+// BuildSplitCalldata returns the router target and calldata for an unsigned
+// split swap. The summed leg inputs must equal amountIn.
+func (c *Client) BuildSplitCalldata(amountIn, amountOutMin *big.Int, legs []SplitLeg, to common.Address, deadline *big.Int) (common.Address, []byte, error) {
+	if len(legs) == 0 {
+		return common.Address{}, nil, errors.New("split has no legs")
+	}
+	tokens := make([][]common.Address, len(legs))
+	families := make([][]uint8, len(legs))
+	amounts := make([]*big.Int, len(legs))
+	mins := make([][]*big.Int, len(legs))
+	for l, leg := range legs {
+		if len(leg.Hops) == 0 {
+			return common.Address{}, nil, fmt.Errorf("leg %d has no hops", l)
+		}
+		tokens[l] = tokenPath(leg.Hops)
+		fams := make([]uint8, len(leg.Hops))
+		legMins := make([]*big.Int, len(leg.Hops))
+		for i, hop := range leg.Hops {
+			fams[i] = FamilyCode(hop.Family)
+			if i < len(leg.MinOut) && leg.MinOut[i] != nil {
+				legMins[i] = leg.MinOut[i]
+			} else {
+				legMins[i] = big.NewInt(0)
+			}
+		}
+		families[l] = fams
+		mins[l] = legMins
+		if leg.AmountIn != nil {
+			amounts[l] = leg.AmountIn
+		} else {
+			amounts[l] = big.NewInt(0)
+		}
+	}
+	data, err := routerABI.Pack("swapExactTokensForTokensSplit", amountIn, amountOutMin, tokens, families, amounts, mins, to, deadline)
+	if err != nil {
+		return common.Address{}, nil, err
+	}
+	return c.deployment.Router, data, nil
+}
+
+// SwapMultihop signs and broadcasts a multi-hop swap on the TigerSwap router.
+func (c *Client) SwapMultihop(ctx context.Context, hops []MultihopHop, amountIn, amountOutMin *big.Int, minOutPerHop []*big.Int, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	_, data, err := c.BuildMultihopCalldata(hops, amountIn, amountOutMin, minOutPerHop, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return c.sendRouterCall(ctx, data)
+}
+
+// SwapSplit signs and broadcasts a split order on the TigerSwap router.
+func (c *Client) SwapSplit(ctx context.Context, amountIn, amountOutMin *big.Int, legs []SplitLeg, to common.Address, deadline *big.Int) (*types.Transaction, error) {
+	_, data, err := c.BuildSplitCalldata(amountIn, amountOutMin, legs, to, deadline)
+	if err != nil {
+		return nil, err
+	}
+	return c.sendRouterCall(ctx, data)
+}
+
+// sendRouterCall signs and broadcasts a pre-built router call.
+func (c *Client) sendRouterCall(ctx context.Context, data []byte) (*types.Transaction, error) {
+	if c.signer == nil {
+		return nil, errors.New("TigerSwap signer key is not configured")
+	}
+	from := crypto.PubkeyToAddress(c.signer.PublicKey)
+	nonce, err := c.client.PendingNonceAt(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("pending nonce: %w", err)
+	}
+	gasPrice, err := c.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("suggest gas price: %w", err)
+	}
+	gasLimit, err := c.client.EstimateGas(ctx, ethereum.CallMsg{
+		From: from, To: &c.deployment.Router, Data: data, Value: big.NewInt(0),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("estimate gas: %w", err)
+	}
+	tx := types.NewTransaction(nonce, c.deployment.Router, big.NewInt(0), gasLimit, gasPrice, data)
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(c.deployment.ChainID)), c.signer)
+	if err != nil {
+		return nil, fmt.Errorf("sign tx: %w", err)
+	}
+	if err := c.client.SendTransaction(ctx, signed); err != nil {
+		return nil, fmt.Errorf("send tx: %w", err)
+	}
+	return signed, nil
+}
 
 // TokenPriceWAD reads a token's raw WAD-scaled (1e18) price from TigerSwap's own
 // on-chain oracle. Callers that need an exact value should use this rather than

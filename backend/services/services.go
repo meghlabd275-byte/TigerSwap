@@ -220,6 +220,8 @@ func (s *SwapService) GetQuote(c *gin.Context) {
 		PriceImpact:  quote.PriceImpact,
 		Route:        route,
 		GasEstimate:  int64(quote.GasEstimate),
+		Legs:         quote.Legs,
+		RouteHops:    quote.RouteHops,
 	})
 }
 
@@ -251,7 +253,7 @@ func (s *SwapService) BuildTransaction(c *gin.Context) {
 		chainID = 1
 	}
 
-	to, data, value, gasLimit, err := globalSwapExecutor.BuildSwap(
+	to, data, value, gasLimit, err := globalSwapExecutor.BuildSwapPlan(
 		c.Request.Context(), chainID, req.TokenIn, req.TokenOut, req.AmountIn, req.Recipient, req.SlippageBps,
 	)
 	if err != nil {

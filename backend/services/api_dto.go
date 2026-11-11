@@ -142,6 +142,13 @@ type swapQuoteDTO struct {
 	PriceImpact  float64  `json:"priceImpact"`
 	Route        []string `json:"route"`
 	GasEstimate  int64    `json:"gasEstimate"`
+	// Legs is present only when the router split the order across several
+	// independent routes. A single-route quote omits it.
+	Legs []routeLegDTO `json:"legs,omitempty"`
+	// RouteHops is the executable plan for a single multi-hop route. It is
+	// omitted for a direct single-family quote and for a split order (which
+	// carries its plan in Legs).
+	RouteHops []routeHopDTO `json:"routeHops,omitempty"`
 }
 
 // buildTxDTO is the `/swap/build` body, ready for the caller's wallet to sign.

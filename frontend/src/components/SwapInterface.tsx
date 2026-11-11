@@ -316,6 +316,21 @@ export function SwapInterface() {
               <span className="text-gray-400">Route</span>
               <span className="text-white">{quote.route.join(' → ')}</span>
             </div>
+            {quote.legs && quote.legs.length > 0 ? (
+              <div className="flex justify-between">
+                <span className="text-gray-400">Split order</span>
+                <span className="text-white">
+                  {quote.legs.length} routes · {quote.legs.map((leg) => leg.family).join(', ')}
+                </span>
+              </div>
+            ) : quote.routeHops && quote.routeHops.length > 1 ? (
+              <div className="flex justify-between">
+                <span className="text-gray-400">Hops</span>
+                <span className="text-white">
+                  {quote.routeHops.length} · {quote.routeHops.map((hop) => hop.family).join(' → ')}
+                </span>
+              </div>
+            ) : null}
             <div className="flex justify-between">
               <span className="text-gray-400">Estimated gas</span>
               <span className="text-white">{quote.gasEstimate.toLocaleString()}</span>

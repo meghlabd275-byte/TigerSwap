@@ -24,6 +24,16 @@ contract TigerSwapRouter {
         _;
     }
 
+    /// @dev Guards the paths that hold tokens between hops, so a malicious pool or
+    ///      token cannot reenter while the router is mid-swap.
+    bool private _locked;
+    modifier lock() {
+        require(!_locked, "TigerSwap: REENTRANT");
+        _locked = true;
+        _;
+        _locked = false;
+    }
+
     constructor(address _factory, address _WETH) {
         factory = _factory;
         WETH = _WETH;
@@ -204,6 +214,205 @@ contract TigerSwapRouter {
         path = new address[](2);
         path[0] = tokenIn;
         path[1] = tokenOut;
+    }
+
+    /**
+     * @notice Swap an exact input along a multi-token path, one pool family per
+     *         hop, atomically in a single transaction.
+     * @dev A path step is (tokenIn, tokenOut, family). Intermediate output is
+     *      held by this router between hops, because the stable and weighted
+     *      families pay their own `msg.sender` and cannot forward to a pool
+     *      directly. Every hop is slippage-checked against its own minimum, and
+     *      the final minimum also bounds the whole path, so a bad hop reverts
+     *      the entire swap instead of leaving a half-filled order.
+     * @param amountIn Exact input amount
+     * @param amountOutMin Minimum final output for the whole path
+     * @param tokens Token path; length must equal steps.length + 1
+     * @param families Family id per hop: 0 xyK, 1 concentrated, 2 stable, 3 weighted
+     * @param minOutPerHop Minimum output for each hop, so an intermediate hop
+     *                     cannot be sandwiched
+     * @param to Recipient of the final output
+     * @param deadline Deadline timestamp
+     * @return amountOut Final output amount
+     */
+    function swapExactTokensForTokensMultihop(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata tokens,
+        uint8[] calldata families,
+        uint256[] calldata minOutPerHop,
+        address to,
+        uint256 deadline
+    ) external ensure(deadline) lock returns (uint256 amountOut) {
+        require(amountIn > 0, "TigerSwap: INSUFFICIENT_INPUT_AMOUNT");
+        require(to != address(0), "TigerSwap: ZERO_ADDRESS");
+
+        amountOut = _executePath(tokens, families, amountIn, minOutPerHop, to);
+
+        require(amountOut >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
+        emit Swap(msg.sender, tokens[0], tokens[tokens.length - 1], amountIn, amountOut);
+        return amountOut;
+    }
+
+    /**
+     * @notice Swap an exact input split across several independent paths in a
+     *         single transaction.
+     * @dev The router's smart order router divides a large order across pools so
+     *      no single pool takes the whole price impact. Each leg is a full path
+     *      (tokens[l], families[l], minOutPerHop[l]) and the legs must be pool
+     *      disjoint, which the off-chain router guarantees. Every leg is
+     *      slippage-checked on its own, and the summed output must clear
+     *      amountOutMin, so a leg that fills worse than quoted reverts the whole
+     *      swap rather than leaving a partial fill.
+     * @param amountIn Total exact input; must equal the sum of amountInPerLeg
+     * @param amountOutMin Minimum total output across all legs
+     * @param tokens Token path per leg
+     * @param families Family id per hop, per leg
+     * @param amountInPerLeg Input for each leg
+     * @param minOutPerHop Minimum output per hop, per leg
+     * @param to Recipient of the summed output
+     * @param deadline Deadline timestamp
+     * @return amountOut Summed output across all legs
+     */
+    function swapExactTokensForTokensSplit(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[][] calldata tokens,
+        uint8[][] calldata families,
+        uint256[] calldata amountInPerLeg,
+        uint256[][] calldata minOutPerHop,
+        address to,
+        uint256 deadline
+    ) external ensure(deadline) lock returns (uint256 amountOut) {
+        require(to != address(0), "TigerSwap: ZERO_ADDRESS");
+        uint256 legs = tokens.length;
+        require(legs >= 1, "TigerSwap: NO_LEGS");
+        require(
+            families.length == legs && amountInPerLeg.length == legs && minOutPerHop.length == legs,
+            "TigerSwap: LEG_LENGTH_MISMATCH"
+        );
+
+        uint256 totalIn;
+        for (uint256 l = 0; l < legs; l++) {
+            require(tokens[l].length >= 2, "TigerSwap: INVALID_PATH");
+            require(families[l].length == tokens[l].length - 1, "TigerSwap: PATH_LENGTH_MISMATCH");
+            require(minOutPerHop[l].length == families[l].length, "TigerSwap: PATH_LENGTH_MISMATCH");
+            totalIn += amountInPerLeg[l];
+        }
+        require(totalIn == amountIn, "TigerSwap: INPUT_MISMATCH");
+
+        uint256 totalOut;
+        for (uint256 l = 0; l < legs; l++) {
+            totalOut += _executePath(tokens[l], families[l], amountInPerLeg[l], minOutPerHop[l], to);
+        }
+
+        require(totalOut >= amountOutMin, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
+        emit Swap(msg.sender, tokens[0][0], tokens[0][tokens[0].length - 1], amountIn, totalOut);
+        return totalOut;
+    }
+
+    /**
+     * @dev Pull `amountIn` of the path's first token from the caller and trade it
+     *      along `tokens`/`families`, one pool per hop, delivering the final
+     *      output to `to`. Each hop's own `minOutPerHop` bound is enforced.
+     */
+    function _executePath(
+        address[] memory tokens,
+        uint8[] memory families,
+        uint256 amountIn,
+        uint256[] memory minOutPerHop,
+        address to
+    ) private returns (uint256 amountOut) {
+        require(amountIn > 0, "TigerSwap: INSUFFICIENT_INPUT_AMOUNT");
+        require(tokens.length >= 2, "TigerSwap: INVALID_PATH");
+        require(families.length == tokens.length - 1, "TigerSwap: PATH_LENGTH_MISMATCH");
+        require(minOutPerHop.length == families.length, "TigerSwap: PATH_LENGTH_MISMATCH");
+
+        // Pull the full leg input from the caller up front.
+        TigerSwapSafeERC20.safeTransferFrom(tokens[0], msg.sender, address(this), amountIn);
+
+        uint256 current = amountIn;
+        for (uint256 i = 0; i < families.length; i++) {
+            address tokenIn = tokens[i];
+            address tokenOut = tokens[i + 1];
+            require(tokenIn != tokenOut, "TigerSwap: IDENTICAL_ADDRESSES");
+
+            address pool = ITigerSwapFactory(factory).getPoolForFamily(tokenIn, tokenOut, families[i]);
+            require(pool != address(0), "TigerSwap: POOL_NOT_FOUND");
+
+            // The last hop pays the caller's recipient directly; an intermediate
+            // hop is held here so the next hop can spend it.
+            address hopRecipient = i == families.length - 1 ? to : address(this);
+
+            current = _swapViaPool(pool, families[i], tokenIn, tokenOut, current, minOutPerHop[i], hopRecipient);
+            require(current >= minOutPerHop[i], "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
+        }
+        return current;
+    }
+
+    /**
+     * @dev Execute one hop through a family pool, moving `amountIn` of `tokenIn`
+     *      from this router into the pool first, and delivering the output to
+     *      `recipient`.
+     *
+     *      The xyK family reads its input as the pool's balance delta and pays
+     *      its `to` argument directly, so the router sends the tokens in and the
+     *      pool pays the recipient. The concentrated family also pays its own
+     *      `recipient` argument. The stable and weighted families always pay
+     *      their own `msg.sender`, so when the recipient is not this router the
+     *      router receives the output and forwards it.
+     *
+     *      The stable, weighted and concentrated families pull from `msg.sender`
+     *      with `transferFrom`, so the router approves exactly `amountIn` and
+     *      clears the allowance after, so no standing approval survives the hop.
+     */
+    function _swapViaPool(
+        address pool,
+        uint8 family,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minOut,
+        address recipient
+    ) private returns (uint256 amountOut) {
+        if (family == 0) {
+            uint256[] memory amounts = getAmountsOut(amountIn, _pairPath(tokenIn, tokenOut));
+            amountOut = amounts[1];
+            TigerSwapSafeERC20.safeTransfer(tokenIn, pool, amountIn);
+            (address token0,) = sortTokens(tokenIn, tokenOut);
+            (uint256 amount0Out, uint256 amount1Out) =
+                tokenIn == token0 ? (uint256(0), amountOut) : (amountOut, uint256(0));
+            ITigerSwapPool(pool).swap(amount0Out, amount1Out, recipient, new bytes(0));
+        } else if (family == 1) {
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, amountIn);
+            bool zeroForOne = tokenIn == ITigerSwapConcentratedPool(pool).token0();
+            (int256 amount0, int256 amount1) =
+                ITigerSwapConcentratedPool(pool).swap(recipient, zeroForOne, int256(amountIn), 0);
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, 0);
+            int256 delta = zeroForOne ? amount1 : amount0;
+            require(delta < 0, "TigerSwap: V3_NO_OUTPUT");
+            amountOut = uint256(-delta);
+        } else if (family == 2) {
+            (int128 i, int128 j) = _stableIndices(pool, tokenIn, tokenOut);
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, amountIn);
+            amountOut = ITigerSwapStablePool(pool).exchange(i, j, amountIn, minOut);
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, 0);
+            if (recipient != address(this)) {
+                TigerSwapSafeERC20.safeTransfer(tokenOut, recipient, amountOut);
+            }
+        } else if (family == 3) {
+            (uint256 i, uint256 j) = _weightedIndices(pool, tokenIn, tokenOut);
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, amountIn);
+            amountOut = ITigerSwapWeightedPool(pool).swap(i, j, amountIn, minOut);
+            TigerSwapSafeERC20.safeApprove(tokenIn, pool, 0);
+            if (recipient != address(this)) {
+                TigerSwapSafeERC20.safeTransfer(tokenOut, recipient, amountOut);
+            }
+        } else {
+            revert("TigerSwap: UNSUPPORTED_FAMILY");
+        }
+        require(amountOut >= minOut, "TigerSwap: INSUFFICIENT_OUTPUT_AMOUNT");
+        return amountOut;
     }
 
     function _stableIndices(address pool, address tokenIn, address tokenOut)

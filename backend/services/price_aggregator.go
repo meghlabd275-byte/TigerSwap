@@ -20,6 +20,7 @@ import (
 
 	"tigerswap/backend/config"
 	"tigerswap/backend/go/amm"
+	"tigerswap/backend/go/router"
 	"tigerswap/backend/go/tigerswap"
 )
 
@@ -60,6 +61,76 @@ type AggregatedQuote struct {
 	BestSource   string            `json:"best_source"`
 	BlockNumber  uint64            `json:"block_number"`
 	ValidUntil   time.Time         `json:"valid_until"`
+	// Legs is non-empty only when the router split the order across several
+	// independent routes. Each leg is one route and the input it carries.
+	Legs []routeLegDTO `json:"legs,omitempty"`
+	// RouteHops is the executable plan for the winning single route. It is
+	// empty when the order was split (use Legs) or when only a direct family
+	// quote is available.
+	RouteHops []routeHopDTO `json:"route_hops,omitempty"`
+}
+
+// routeHopDTO is one executable hop of a route: the token pair and the family
+// the swap must target on-chain. It carries everything the router contract needs
+// to execute the hop, so a quote is a plan and not just a number.
+type routeHopDTO struct {
+	TokenIn  string `json:"tokenIn"`
+	TokenOut string `json:"tokenOut"`
+	Family   string `json:"family"`
+	Pool     string `json:"pool"`
+}
+
+// routeLegDTO is one part of a split order on the wire. Amounts stay decimal
+// strings so integer base units survive JSON without precision loss.
+type routeLegDTO struct {
+	Path      []string `json:"path"`
+	Family    string   `json:"family"`
+	Pool      string   `json:"pool"`
+	AmountIn  string   `json:"amountIn"`
+	AmountOut string   `json:"amountOut"`
+	// Hops is the full executable path for the leg; a multi-hop leg has more
+	// than one entry, and the last entry's family/pool match the flat fields.
+	Hops []routeHopDTO `json:"hops,omitempty"`
+}
+
+// hopsFromRoute converts a router route into wire hops.
+func hopsFromRoute(route *router.Route) []routeHopDTO {
+	if route == nil || len(route.Hops) == 0 {
+		return nil
+	}
+	hops := make([]routeHopDTO, 0, len(route.Hops))
+	for _, hop := range route.Hops {
+		hops = append(hops, routeHopDTO{
+			TokenIn:  hop.From,
+			TokenOut: hop.To,
+			Family:   hop.Family,
+			Pool:     hop.Pool,
+		})
+	}
+	return hops
+}
+
+// routeLegsFromSplit converts router split legs into wire DTOs.
+func routeLegsFromSplit(legs []router.SplitLeg) []routeLegDTO {
+	if len(legs) == 0 {
+		return nil
+	}
+	out := make([]routeLegDTO, 0, len(legs))
+	for _, leg := range legs {
+		if leg.Route == nil || len(leg.Route.Hops) == 0 {
+			continue
+		}
+		last := leg.Route.Hops[len(leg.Route.Hops)-1]
+		out = append(out, routeLegDTO{
+			Path:      leg.Route.TokenPath(),
+			Family:    last.Family,
+			Pool:      last.Pool,
+			AmountIn:  leg.AmountIn.String(),
+			AmountOut: leg.AmountOut.String(),
+			Hops:      hopsFromRoute(leg.Route),
+		})
+	}
+	return out
 }
 
 // RouteInfo represents a swap route
@@ -278,6 +349,30 @@ func (p *PriceAggregator) GetAggregatedQuote(ctx context.Context, chainID int64,
 		sourceQuotes[string(q.family)] = q.out.String()
 	}
 
+	// Prefer a multi-hop route only when it genuinely beats the best direct
+	// family. The router reads live pool state, so a path that wins here is a
+	// real improvement, and a direct route that is already optimal is kept.
+	// An explicit source filter is a caller asking for direct families only.
+	bestOut := best.out
+	bestRoute := []string{fromToken, toToken}
+	bestSource := string(best.family)
+	var routeLegs []routeLegDTO
+	var routeHops []routeHopDTO
+	if len(sources) == 0 {
+		if hop, ok := p.bestMultiHopQuote(ctx, chainID, fromToken, toToken, amountIn, best.out); ok {
+			bestOut = hop.amountOut
+			bestSource = hop.source
+			if len(hop.path) > 0 {
+				bestRoute = hop.path
+			}
+			routeLegs = routeLegsFromSplit(hop.legs)
+			if len(hop.legs) == 0 {
+				routeHops = hop.hops
+			}
+			sourceQuotes[hop.source] = hop.amountOut.String()
+		}
+	}
+
 	// Price impact from the oracle's own USD prices, when both tokens are known
 	// on this chain. Each side is scaled by its own token's decimals: using a
 	// fixed 18 would misvalue a 6-decimal token like USDC by 1e12 and report a
@@ -292,7 +387,7 @@ func (p *PriceAggregator) GetAggregatedQuote(ctx context.Context, chainID int64,
 		priceTo, toErr := p.PriceOnChain(ctx, chainID, toSym)
 		if fromErr == nil && toErr == nil && priceFrom.USD > 0 && priceTo.USD > 0 {
 			inputValue := weiToFloat(amountIn, fromDecimals) * priceFrom.USD
-			outputValue := weiToFloat(best.out, toDecimals) * priceTo.USD
+			outputValue := weiToFloat(bestOut, toDecimals) * priceTo.USD
 			if inputValue > 0 {
 				priceImpact = ((inputValue - outputValue) / inputValue) * 100
 			}
@@ -308,20 +403,28 @@ func (p *PriceAggregator) GetAggregatedQuote(ctx context.Context, chainID int64,
 		return nil, fmt.Errorf("fetch gas price: %w", err)
 	}
 
+	gasEstimate := p.estimateGas(chainID, fromToken, toToken)
+	if len(bestRoute) > 2 {
+		// A multi-hop route pays the swap cost once per hop.
+		gasEstimate += uint64(len(bestRoute)-2) * 50000
+	}
+
 	return &AggregatedQuote{
 		FromToken:    fromToken,
 		ToToken:      toToken,
 		AmountIn:     amountIn.String(),
-		AmountOut:    best.out.String(),
-		AmountOutMin: amm.ApplySlippage(best.out, 0.5).String(),
+		AmountOut:    bestOut.String(),
+		AmountOutMin: amm.ApplySlippage(bestOut, 0.5).String(),
 		PriceImpact:  priceImpact,
-		GasEstimate:  p.estimateGas(chainID, fromToken, toToken),
+		GasEstimate:  gasEstimate,
 		GasPrice:     gasPrice,
-		Route:        []string{fromToken, toToken},
+		Route:        bestRoute,
 		SourceQuotes: sourceQuotes,
-		BestSource:   string(best.family),
+		BestSource:   bestSource,
 		BlockNumber:  blockNumber,
 		ValidUntil:   time.Now().Add(30 * time.Second),
+		Legs:         routeLegs,
+		RouteHops:    routeHops,
 	}, nil
 }
 

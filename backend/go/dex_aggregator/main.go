@@ -738,6 +738,36 @@ func (h *Handler) GetMultiHopQuote(c *gin.Context) {
 	c.JSON(http.StatusOK, quote)
 }
 
+// GetBestQuote handles best-path quote requests. It searches TigerSwap's own
+// pool graph for the best route and may split the order across independent
+// routes when that yields more output.
+func (h *Handler) GetBestQuote(c *gin.Context) {
+	var req struct {
+		ChainID   int64   `json:"chain_id" binding:"required"`
+		FromToken string  `json:"from_token" binding:"required"`
+		ToToken   string  `json:"to_token" binding:"required"`
+		AmountIn  string  `json:"amount_in" binding:"required"`
+		Slippage  float64 `json:"slippage"`
+		MaxHops   int     `json:"max_hops"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httperr.BadRequest(c, err)
+		return
+	}
+	amountIn, ok := new(big.Int).SetString(req.AmountIn, 10)
+	if !ok || amountIn.Sign() <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid amount_in"})
+		return
+	}
+
+	quote, err := h.aggregator.GetBestQuote(c.Request.Context(), req.ChainID, req.FromToken, req.ToToken, amountIn, req.Slippage, req.MaxHops)
+	if err != nil {
+		httperr.BadGateway(c, "quote unavailable", err)
+		return
+	}
+	c.JSON(http.StatusOK, quote)
+}
+
 // GetFamilies returns the TigerSwap pool families for a chain.
 func (h *Handler) GetFamilies(c *gin.Context) {
 	chainID, err := strconv.ParseInt(c.Query("chainId"), 10, 64)
@@ -760,6 +790,7 @@ func main() {
 	r := gin.Default()
 	r.POST("/api/v1/quote", handler.GetQuote)
 	r.POST("/api/v1/quote/multihop", handler.GetMultiHopQuote)
+	r.POST("/api/v1/quote/best", handler.GetBestQuote)
 	r.GET("/api/v1/families", handler.GetFamilies)
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "service": "tigeraggregator"})

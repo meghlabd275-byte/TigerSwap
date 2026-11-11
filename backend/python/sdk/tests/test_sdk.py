@@ -326,3 +326,72 @@ def test_wallet_rejects_an_invalid_private_key():
 
     with pytest.raises(Exception):
         Wallet("0xnotakey", FakeWeb3())
+
+
+# --------------------------------------------------------------------------
+# multi-hop routing
+# --------------------------------------------------------------------------
+
+
+def test_min_out_per_hop_bounds_every_hop():
+    from tigerswap_sdk.swap import min_out_per_hop
+
+    # getAmountsOut returns one more entry than hops; the bounds apply to the
+    # outputs, i.e. every entry after the input.
+    bounds = min_out_per_hop([1000, 990, 970], 50)
+    assert bounds == [985, 965]
+
+
+def test_min_out_per_hop_rejects_out_of_range_slippage():
+    from tigerswap_sdk.swap import min_out_per_hop
+
+    with pytest.raises(ValueError):
+        min_out_per_hop([1000, 990], 600)
+
+
+def test_min_out_per_hop_requires_at_least_one_hop():
+    from tigerswap_sdk.swap import min_out_per_hop
+
+    with pytest.raises(ValueError):
+        min_out_per_hop([1000], 50)
+
+
+def test_validate_hops_accepts_a_connected_route_case_insensitively():
+    from tigerswap_sdk.swap import SwapRouteHop, validate_hops
+
+    validate_hops([
+        SwapRouteHop("0xA", "0xB", 0, "0x1"),
+        SwapRouteHop("0xb", "0xC", 2, "0x2"),
+    ])
+
+
+def test_validate_hops_rejects_a_single_hop():
+    from tigerswap_sdk.swap import SwapRouteHop, validate_hops
+
+    with pytest.raises(ValueError):
+        validate_hops([SwapRouteHop("0xA", "0xB", 0, "0x1")])
+
+
+def test_validate_hops_rejects_a_disconnected_route():
+    from tigerswap_sdk.swap import SwapRouteHop, validate_hops
+
+    with pytest.raises(ValueError):
+        validate_hops([
+            SwapRouteHop("0xA", "0xB", 0, "0x1"),
+            SwapRouteHop("0xC", "0xD", 0, "0x2"),
+        ])
+
+
+def test_router_abi_exposes_the_multihop_and_split_entrypoints():
+    from tigerswap_sdk.contracts import ROUTER_ABI
+
+    names = {entry["name"] for entry in ROUTER_ABI}
+    assert "swapExactTokensForTokensMultihop" in names
+    assert "swapExactTokensForTokensSplit" in names
+
+
+def test_factory_abi_exposes_get_pool_for_family():
+    from tigerswap_sdk.contracts import FACTORY_ABI
+
+    names = {entry["name"] for entry in FACTORY_ABI}
+    assert "getPoolForFamily" in names

@@ -49,14 +49,37 @@ type Chain struct {
 	IsActive     bool    `json:"isActive"`
 }
 
-// SwapQuote represents a swap quote
+// SwapQuote represents a swap quote. RouteHops is the executable hop plan for a
+// single multi-hop route and Legs is the plan for a split order; a direct
+// single-family quote carries neither.
 type SwapQuote struct {
-	AmountIn     string   `json:"amountIn"`
-	AmountOut    string   `json:"amountOut"`
-	AmountOutMin string   `json:"amountOutMin"`
-	PriceImpact  float64  `json:"priceImpact"`
-	Route        []string `json:"route"`
-	GasEstimate  uint64   `json:"gasEstimate"`
+	AmountIn     string         `json:"amountIn"`
+	AmountOut    string         `json:"amountOut"`
+	AmountOutMin string         `json:"amountOutMin"`
+	PriceImpact  float64        `json:"priceImpact"`
+	Route        []string       `json:"route"`
+	GasEstimate  uint64         `json:"gasEstimate"`
+	RouteHops    []SwapRouteHop `json:"routeHops,omitempty"`
+	Legs         []SwapQuoteLeg `json:"legs,omitempty"`
+}
+
+// SwapRouteHop is one executable hop: a token pair and the pool family to trade
+// it on. It is everything the router needs to execute the hop on-chain.
+type SwapRouteHop struct {
+	TokenIn  string `json:"tokenIn"`
+	TokenOut string `json:"tokenOut"`
+	Family   string `json:"family"`
+	Pool     string `json:"pool"`
+}
+
+// SwapQuoteLeg is one leg of a split order: a route and the input it carries.
+type SwapQuoteLeg struct {
+	Path      []string       `json:"path"`
+	Family    string         `json:"family"`
+	Pool      string         `json:"pool"`
+	AmountIn  string         `json:"amountIn"`
+	AmountOut string         `json:"amountOut"`
+	Hops      []SwapRouteHop `json:"hops,omitempty"`
 }
 
 // Pool represents a liquidity pool
