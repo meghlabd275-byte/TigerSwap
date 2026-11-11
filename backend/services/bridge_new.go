@@ -3,6 +3,8 @@ package services
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/big"
@@ -60,6 +62,19 @@ type BridgeTransfer struct {
 	CreatedAt      time.Time  `json:"created_at"`
 	ConfirmedAt    *time.Time `json:"confirmed_at"`
 	DeliveredAt    *time.Time `json:"delivered_at"`
+}
+
+// newBridgeNonce returns a random 64-bit nonce for a bridge transfer. The
+// nonce is part of the on-chain messageId, so a value that repeats would make
+// the contract reject the second transfer with MESSAGE_EXISTS. The wall-clock
+// nanosecond collides when two transfers are created in the same tick, so the
+// nonce is drawn from the system CSPRNG instead.
+func newBridgeNonce() (uint64, error) {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0, fmt.Errorf("generate bridge nonce: %w", err)
+	}
+	return binary.BigEndian.Uint64(buf[:]), nil
 }
 
 // BridgeConfig represents a self-hosted relayer route configuration.
@@ -215,7 +230,10 @@ func (s *BridgeService) InitiateTransfer(ctx context.Context, srcChain, dstChain
 		return nil, fmt.Errorf("invalid amount %q", amount)
 	}
 
-	nonce := uint64(time.Now().UnixNano())
+	nonce, err := newBridgeNonce()
+	if err != nil {
+		return nil, err
+	}
 	transfer := &BridgeTransfer{
 		ID:             "bridge_" + uuid.New().String(),
 		SrcChain:       srcChain,
