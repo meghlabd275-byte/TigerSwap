@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"testing"
-	"time"
 )
 
 // TestCloseCopyPositionRejectsOtherAccounts pins the ownership check on the
@@ -12,27 +11,23 @@ import (
 // must not mutate one either, because the first draft of the handler closed the
 // position and only then compared the owner.
 func TestCloseCopyPositionRejectsOtherAccounts(t *testing.T) {
-	engine := NewCopyTradingEngine(nil, nil)
-	engine.copyPositions["pos-1"] = &CopyPosition{
-		ID:              "pos-1",
-		FollowerAddress: "0xAlice",
-		Status:          "open",
-	}
+	engine, db := newCopyTestEngine(t)
+	positionID := seedCopyPosition(t, db, "0xAlice", "open")
 
-	if _, err := engine.CloseCopyPosition("pos-1", "0xBob"); !errors.Is(err, errCopyPositionForbidden) {
+	if _, err := engine.CloseCopyPosition(positionID, "0xBob"); !errors.Is(err, errCopyPositionForbidden) {
 		t.Fatalf("expected a forbidden error closing another account's position, got %v", err)
 	}
-	if got := engine.copyPositions["pos-1"].Status; got != "open" {
+	if got := loadCopyPositionStatus(t, db); got != "open" {
 		t.Fatalf("a rejected close must leave the position open, got %q", got)
 	}
 
-	if _, err := engine.CloseCopyPosition("pos-1", ""); !errors.Is(err, errCopyPositionForbidden) {
+	if _, err := engine.CloseCopyPosition(positionID, ""); !errors.Is(err, errCopyPositionForbidden) {
 		t.Fatalf("expected a forbidden error for an empty caller, got %v", err)
 	}
 
 	// The owner closes it, and the address comparison is case-insensitive
 	// because the follower address is stored as supplied.
-	position, err := engine.CloseCopyPosition("pos-1", "0xalice")
+	position, err := engine.CloseCopyPosition(positionID, "0xalice")
 	if err != nil {
 		t.Fatalf("owner close failed: %v", err)
 	}
@@ -40,7 +35,7 @@ func TestCloseCopyPositionRejectsOtherAccounts(t *testing.T) {
 		t.Fatalf("owner close did not settle the position: %+v", position)
 	}
 
-	if _, err := engine.CloseCopyPosition("pos-1", "0xAlice"); !errors.Is(err, errCopyPositionClosed) {
+	if _, err := engine.CloseCopyPosition(positionID, "0xAlice"); !errors.Is(err, errCopyPositionClosed) {
 		t.Fatalf("expected a closed error on a second close, got %v", err)
 	}
 }
@@ -49,13 +44,7 @@ func TestCloseCopyPositionRejectsOtherAccounts(t *testing.T) {
 // forbidden one so the handler answers 404 rather than leaking that the id
 // exists under a different owner.
 func TestCloseCopyPositionMissingIsNotFound(t *testing.T) {
-	engine := NewCopyTradingEngine(nil, nil)
-	engine.copyPositions["pos-1"] = &CopyPosition{
-		ID:              "pos-1",
-		FollowerAddress: "0xAlice",
-		Status:          "open",
-		OpenedAt:        time.Now(),
-	}
+	engine, _ := newCopyTestEngine(t)
 
 	if _, err := engine.CloseCopyPosition("nope", "0xAlice"); !errors.Is(err, errCopyPositionNotFound) {
 		t.Fatalf("expected not-found for an unknown id, got %v", err)

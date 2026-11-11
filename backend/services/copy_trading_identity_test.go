@@ -15,7 +15,7 @@ import (
 func newCopyIdentityEngine(t *testing.T) (*CopyTradingEngine, *models.User) {
 	t.Helper()
 	db := newWalletTestDB(t)
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -49,10 +49,15 @@ func TestStartFollowingKeysFollowerByWallet(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	if _, ok := engine.configs[user.WalletAddress]; !ok {
-		t.Fatalf("config must be keyed by wallet %q, keys: %v", user.WalletAddress, engine.configs)
+	var follow models.CopyFollow
+	if err := engine.db.Where("follower_address = ?", user.WalletAddress).First(&follow).Error; err != nil {
+		t.Fatalf("config must be keyed by wallet %q: %v", user.WalletAddress, err)
 	}
-	if _, ok := engine.configs[user.ID.String()]; ok {
+	var byUUID int64
+	if err := engine.db.Model(&models.CopyFollow{}).Where("follower_address = ?", user.ID.String()).Count(&byUUID).Error; err != nil {
+		t.Fatalf("count by uuid: %v", err)
+	}
+	if byUUID != 0 {
 		t.Fatal("config must not be keyed by the account UUID")
 	}
 
@@ -68,7 +73,7 @@ func TestStartFollowingKeysFollowerByWallet(t *testing.T) {
 // never reproduce.
 func TestStartFollowingRejectsAccountWithoutWallet(t *testing.T) {
 	db := newWalletTestDB(t)
-	if err := db.AutoMigrate(&models.User{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	user := models.User{Email: "nowallet@example.com", Username: "nowallet"}
@@ -86,8 +91,12 @@ func TestStartFollowingRejectsAccountWithoutWallet(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for an account with no wallet, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if len(engine.configs) != 0 {
-		t.Fatalf("no config must be stored, got %v", engine.configs)
+	var followCount int64
+	if err := engine.db.Model(&models.CopyFollow{}).Count(&followCount).Error; err != nil {
+		t.Fatalf("count follows: %v", err)
+	}
+	if followCount != 0 {
+		t.Fatalf("no config must be stored, got %d follows", followCount)
 	}
 }
 

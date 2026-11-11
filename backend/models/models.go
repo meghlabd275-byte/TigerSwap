@@ -283,6 +283,24 @@ func (p *PerpetualPosition) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
+// PerpetualOrder is a resting or filled perp/futures order. Orders used to live
+// only in the engine's process memory, so every pending order was silently
+// dropped on restart and could never be filled or cancelled.
+type PerpetualOrder struct {
+	ID           string    `gorm:"primary_key;size:80" json:"id"`
+	UserID       string    `gorm:"index;size:100" json:"user_id"`
+	Pair         string    `gorm:"index;size:40" json:"pair"`
+	Side         string    `gorm:"size:10" json:"side"`
+	OrderType    string    `gorm:"size:20" json:"order_type"`
+	Size         string    `gorm:"size:50" json:"size"`
+	Price        string    `gorm:"size:50" json:"price"`
+	TriggerPrice string    `gorm:"size:50" json:"trigger_price"`
+	Status       string    `gorm:"size:20;index" json:"status"`
+	FilledSize   string    `gorm:"size:50" json:"filled_size"`
+	CreatedAt    time.Time `json:"created_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+}
+
 // CopyTrade represents a copy trade relationship. FollowerID is the
 // authenticated account that owns the relationship; FollowerAddress is the
 // on-chain wallet the copied order executes from.
@@ -304,6 +322,99 @@ func (c *CopyTrade) BeforeCreate(tx *gorm.DB) error {
 		c.ID = uuid.New()
 	}
 	return nil
+}
+
+// CopyTrader is a trader a follower may copy. It is persisted so the leaderboard
+// and a trader's profile survive a restart.
+type CopyTrader struct {
+	Address        string    `gorm:"primary_key;size:42" json:"address"`
+	Name           string    `gorm:"size:64" json:"name"`
+	Avatar         string    `gorm:"size:400" json:"avatar"`
+	WinRate        float64   `json:"win_rate"`
+	TotalProfit    string    `gorm:"size:78;default:'0'" json:"total_profit"`
+	WeeklyProfit   float64   `json:"weekly_profit"`
+	MonthlyProfit  float64   `json:"monthly_profit"`
+	TotalTrades    int       `json:"total_trades"`
+	Followers      int       `json:"followers"`
+	TotalVolume    string    `gorm:"size:78;default:'0'" json:"total_volume"`
+	AvgHoldingTime string    `gorm:"size:40" json:"avg_holding_time"`
+	IsVerified     bool      `json:"is_verified"`
+	IsPro          bool      `json:"is_pro"`
+	RiskScore      string    `gorm:"size:20" json:"risk_score"`
+	Strategies     string    `gorm:"type:text" json:"strategies"`
+	LastActive     time.Time `json:"last_active"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// CopyFollow is a follower's subscription to a trader, including the copy
+// configuration that scales and risk-manages every copied position. A follower
+// may follow at most one trader at a time, so the follower address is unique.
+type CopyFollow struct {
+	ID              uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	FollowerAddress string    `gorm:"uniqueIndex;size:42;not null" json:"follower_address"`
+	TraderAddress   string    `gorm:"index;size:42;not null" json:"trader_address"`
+	CopyRatio       float64   `json:"copy_ratio"`
+	AutoClose       bool      `json:"auto_close"`
+	StopLoss        float64   `json:"stop_loss"`
+	TakeProfit      float64   `json:"take_profit"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+func (f *CopyFollow) BeforeCreate(tx *gorm.DB) error {
+	if f.ID == uuid.Nil {
+		f.ID = uuid.New()
+	}
+	return nil
+}
+
+// CopyPositionRecord is a copied position owned by a follower. EntryPrice and
+// CurrentPrice are stored as decimal strings so the PnL arithmetic stays exact.
+type CopyPositionRecord struct {
+	ID               uuid.UUID  `gorm:"type:uuid;primary_key" json:"id"`
+	FollowerAddress  string     `gorm:"index;size:42;not null" json:"follower_address"`
+	TraderAddress    string     `gorm:"size:42" json:"trader_address"`
+	OriginalPosition string     `gorm:"size:80" json:"original_position"`
+	Pair             string     `gorm:"size:40" json:"pair"`
+	Side             string     `gorm:"size:10" json:"side"`
+	Size             string     `gorm:"size:78" json:"size"`
+	EntryPrice       string     `gorm:"size:78" json:"entry_price"`
+	CurrentPrice     string     `gorm:"size:78" json:"current_price"`
+	Leverage         int        `json:"leverage"`
+	PNL              string     `gorm:"size:78;default:'0'" json:"pnl"`
+	Status           string     `gorm:"size:20;index" json:"status"`
+	OpenedAt         time.Time  `json:"opened_at"`
+	ClosedAt         *time.Time `json:"closed_at"`
+	CopiedAt         time.Time  `json:"copied_at"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
+}
+
+func (p *CopyPositionRecord) BeforeCreate(tx *gorm.DB) error {
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
+	return nil
+}
+
+// FeeRecordModel is a persisted collected fee. Fee records used to live only in
+// the fee collector's process memory, so every record and the whole revenue
+// report were erased on restart.
+type FeeRecordModel struct {
+	ID            string    `gorm:"primary_key;size:80" json:"id"`
+	Type          string    `gorm:"index;size:20" json:"type"`
+	Amount        string    `gorm:"size:78" json:"amount"`
+	AmountUSD     float64   `json:"amount_usd"`
+	Token         string    `gorm:"size:42" json:"token"`
+	ChainID       int64     `json:"chain_id"`
+	UserAddress   string    `gorm:"size:42" json:"user_address"`
+	TxHash        string    `gorm:"size:80" json:"tx_hash"`
+	FeeCharged    float64   `json:"fee_charged"`
+	FeeChargedUSD float64   `json:"fee_charged_usd"`
+	Timestamp     time.Time `gorm:"index" json:"timestamp"`
+	Status        string    `gorm:"index;size:20" json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // LaunchpadProject represents an IDO/IEO launchpad project
@@ -337,6 +448,32 @@ type LaunchpadProject struct {
 func (p *LaunchpadProject) BeforeCreate(tx *gorm.DB) error {
 	if p.ID == uuid.Nil {
 		p.ID = uuid.New()
+	}
+	return nil
+}
+
+// LaunchpadAllocation is one participant's commitment in a launchpad project.
+// A wallet holds at most one allocation per project, so the pair is unique; a
+// repeat participation tops up the existing row rather than creating a second
+// one that could be claimed twice.
+type LaunchpadAllocation struct {
+	ID          uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	ProjectID   uuid.UUID `gorm:"index:idx_launchpad_allocation,unique;not null" json:"project_id"`
+	UserAddress string    `gorm:"index:idx_launchpad_allocation,unique;size:42;not null" json:"user_address"`
+
+	AllocatedAmount string     `gorm:"size:78;default:'0'" json:"allocated_amount"`
+	ClaimedAmount   string     `gorm:"size:78;default:'0'" json:"claimed_amount"`
+	ClaimedAt       *time.Time `json:"claimed_at"`
+	Tier            string     `gorm:"size:20" json:"tier"`
+	Status          string     `gorm:"size:20;index;default:'pending'" json:"status"`
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func (a *LaunchpadAllocation) BeforeCreate(tx *gorm.DB) error {
+	if a.ID == uuid.Nil {
+		a.ID = uuid.New()
 	}
 	return nil
 }

@@ -7,12 +7,13 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"tigerswap/backend/models"
 )
@@ -20,15 +21,15 @@ import (
 // Sentinel for a missing launchpad project.
 var errLaunchpadProjectNotFound = errors.New("launchpad project not found")
 
-// LaunchpadService handles IEO/IDO/Launchpad functionality
+// LaunchpadService handles IEO/IDO/Launchpad functionality. Projects and
+// allocations live in the database so a raise survives a restart; keeping them
+// in process memory would silently erase every project and commitment the
+// moment the API restarts.
 type LaunchpadService struct {
-	blockchain  *BlockchainClient
-	priceAgg    *PriceAggregator
-	db          *gorm.DB
-	mu          sync.RWMutex
-	projects    map[string]*LaunchpadProject // projectID -> project
-	allocations map[string][]*Allocation     // projectID -> allocations
-	tiers       map[string]*TierConfig
+	blockchain *BlockchainClient
+	priceAgg   *PriceAggregator
+	db         *gorm.DB
+	tiers      map[string]*TierConfig
 }
 
 // LaunchpadProject represents a launchpad project
@@ -41,8 +42,9 @@ type LaunchpadProject struct {
 	TokenName     string    `json:"token_name"`
 	TokenDecimals int       `json:"token_decimals"`
 	TotalSupply   string    `json:"total_supply"`
-	TokenPrice    string    `json:"token_price"`   // Price in payment token
-	PaymentToken  string    `json:"payment_token"` // USDT, USDC, etc.
+	TokenPrice    string    `json:"token_price"`     // Price in payment token
+	PricePerToken string    `json:"price_per_token"` // Same value, the name the listing validators read
+	PaymentToken  string    `json:"payment_token"`   // USDT, USDC, etc.
 	MinPurchase   string    `json:"min_purchase"`
 	MaxPurchase   string    `json:"max_purchase"`
 	SoftCap       string    `json:"soft_cap"`
@@ -95,11 +97,9 @@ type VestingSchedule struct {
 
 func NewLaunchpadService(db *gorm.DB, blockchain *BlockchainClient, priceAgg *PriceAggregator) *LaunchpadService {
 	return &LaunchpadService{
-		blockchain:  blockchain,
-		priceAgg:    priceAgg,
-		db:          db,
-		projects:    make(map[string]*LaunchpadProject),
-		allocations: make(map[string][]*Allocation),
+		blockchain: blockchain,
+		priceAgg:   priceAgg,
+		db:         db,
 		tiers: map[string]*TierConfig{
 			"diamond": {
 				Name:          "Diamond",
@@ -135,23 +135,33 @@ func NewLaunchpadService(db *gorm.DB, blockchain *BlockchainClient, priceAgg *Pr
 	}
 }
 
-// CreateProject creates a new launchpad project
+// CreateProject creates a new launchpad project and persists it.
 func (s *LaunchpadService) CreateProject(ctx context.Context, creator, name, description, tokenAddress, tokenSymbol, tokenName, totalSupply, tokenPrice, paymentToken, minPurchase, maxPurchase, softCap, hardCap string, startTime, endTime time.Time, websiteURL, whitepaperURL, logoURL string) (*LaunchpadProject, error) {
-	// Validate
+	if s.db == nil {
+		return nil, fmt.Errorf("launchpad store is not configured")
+	}
 	if endTime.Before(startTime) {
 		return nil, fmt.Errorf("end time must be after start time")
 	}
+	// The monetary fields are validated at the boundary so a project can never be
+	// persisted with an amount the raise arithmetic cannot parse.
+	for label, raw := range map[string]string{
+		"token_price": tokenPrice, "min_purchase": minPurchase, "max_purchase": maxPurchase,
+		"soft_cap": softCap, "hard_cap": hardCap,
+	} {
+		if _, err := parseDecimal(raw); err != nil {
+			return nil, fmt.Errorf("%s is invalid: %w", label, err)
+		}
+	}
 
-	project := &LaunchpadProject{
-		ID:            fmt.Sprintf("proj_%d", time.Now().UnixNano()),
+	row := models.LaunchpadProject{
 		Name:          name,
 		Description:   description,
 		TokenAddress:  tokenAddress,
 		TokenSymbol:   tokenSymbol,
 		TokenName:     tokenName,
-		TokenDecimals: 18,
 		TotalSupply:   totalSupply,
-		TokenPrice:    tokenPrice,
+		PricePerToken: tokenPrice,
 		PaymentToken:  paymentToken,
 		MinPurchase:   minPurchase,
 		MaxPurchase:   maxPurchase,
@@ -168,55 +178,53 @@ func (s *LaunchpadService) CreateProject(ctx context.Context, creator, name, des
 		CreatedBy:     creator,
 		CreatedAt:     time.Now(),
 	}
-
-	s.mu.Lock()
-	s.projects[project.ID] = project
-	s.allocations[project.ID] = []*Allocation{}
-	s.mu.Unlock()
-
-	return project, nil
+	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
+		return nil, fmt.Errorf("persist launchpad project: %w", err)
+	}
+	return launchpadProjectFromModel(&row), nil
 }
 
-// UpdateProjectStatus updates project status
+// UpdateProjectStatus moves a project between lifecycle states and persists the
+// change, so an admin action survives a restart.
 func (s *LaunchpadService) UpdateProjectStatus(projectID, status string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	project, exists := s.projects[projectID]
-	if !exists {
+	if s.db == nil {
+		return fmt.Errorf("launchpad store is not configured")
+	}
+	if !validLaunchpadStatuses[status] {
+		return fmt.Errorf("unsupported launchpad status %q", status)
+	}
+	id, err := uuid.Parse(strings.TrimSpace(projectID))
+	if err != nil {
 		return errLaunchpadProjectNotFound
 	}
-
-	project.Status = status
+	res := s.db.Model(&models.LaunchpadProject{}).Where("id = ?", id).Update("status", status)
+	if res.Error != nil {
+		return fmt.Errorf("update project status: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return errLaunchpadProjectNotFound
+	}
 	return nil
 }
 
-// Participate allows a user to participate in a launchpad
+// Participate records a participant's commitment. The project row and the
+// participant's allocation row are both re-read under a FOR UPDATE lock inside
+// one transaction, so two concurrent commitments cannot overshoot the hard cap
+// or a participant's maximum purchase, and the raised total always matches the
+// sum of the allocations.
 func (s *LaunchpadService) Participate(ctx context.Context, userAddress, projectID, amount string) (*Allocation, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	project, exists := s.projects[projectID]
-	if !exists {
+	if s.db == nil {
+		return nil, fmt.Errorf("launchpad store is not configured")
+	}
+	projectUUID, err := uuid.Parse(strings.TrimSpace(projectID))
+	if err != nil {
 		return nil, errLaunchpadProjectNotFound
 	}
-
-	// Check if project is active
-	if project.Status != "active" {
-		return nil, fmt.Errorf("project is not active")
+	address := strings.ToLower(strings.TrimSpace(userAddress))
+	if address == "" {
+		return nil, fmt.Errorf("participant address is required")
 	}
 
-	// Check timing
-	now := time.Now()
-	if now.Before(project.StartTime) {
-		return nil, fmt.Errorf("project has not started yet")
-	}
-	if now.After(project.EndTime) {
-		return nil, fmt.Errorf("project has ended")
-	}
-
-	// Check min/max purchase with exact decimal arithmetic. A malformed amount
-	// must be rejected rather than coerced to zero by a permissive parse.
 	amountValue, err := parseDecimal(amount)
 	if err != nil {
 		return nil, fmt.Errorf("invalid amount: %w", err)
@@ -225,153 +233,306 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 		return nil, fmt.Errorf("amount must be positive")
 	}
 
-	minPurchase, err := parseDecimal(project.MinPurchase)
+	// The participant's tier comes from their veTGR power, a read on the same
+	// connection the transaction uses; resolve it before opening the transaction
+	// so it never deadlocks against the held connection.
+	tier := s.determineTier(address)
+
+	var stored models.LaunchpadAllocation
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var project models.LaunchpadProject
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&project, "id = ?", projectUUID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errLaunchpadProjectNotFound
+			}
+			return err
+		}
+
+		if project.Status != "active" {
+			return fmt.Errorf("project is not active")
+		}
+		now := time.Now()
+		if now.Before(project.StartTime) {
+			return fmt.Errorf("project has not started yet")
+		}
+		if now.After(project.EndTime) {
+			return fmt.Errorf("project has ended")
+		}
+
+		minPurchase, err := parseDecimal(project.MinPurchase)
+		if err != nil {
+			return fmt.Errorf("project minimum purchase is invalid: %w", err)
+		}
+		maxPurchase, err := parseDecimal(project.MaxPurchase)
+		if err != nil {
+			return fmt.Errorf("project maximum purchase is invalid: %w", err)
+		}
+		if amountValue.Cmp(minPurchase) < 0 {
+			return fmt.Errorf("amount below minimum purchase")
+		}
+
+		// A participant's total commitment may not exceed the maximum purchase.
+		var existing models.LaunchpadAllocation
+		hasExisting := true
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("project_id = ? AND user_address = ?", project.ID, address).
+			First(&existing).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				hasExisting = false
+			} else {
+				return err
+			}
+		}
+
+		running := new(big.Rat)
+		if hasExisting {
+			parsed, err := parseDecimal(existing.AllocatedAmount)
+			if err != nil {
+				return fmt.Errorf("stored allocation is invalid: %w", err)
+			}
+			running = parsed
+		}
+		if new(big.Rat).Add(running, amountValue).Cmp(maxPurchase) > 0 {
+			return fmt.Errorf("amount exceeds maximum purchase")
+		}
+
+		if hasExisting {
+			newAllocated := formatDecimal(new(big.Rat).Add(running, amountValue), 8)
+			if err := tx.Model(&models.LaunchpadAllocation{}).Where("id = ?", existing.ID).
+				Updates(map[string]interface{}{
+					"allocated_amount": newAllocated,
+					"tier":             tier,
+				}).Error; err != nil {
+				return err
+			}
+			existing.AllocatedAmount = newAllocated
+			existing.Tier = tier
+			stored = existing
+		} else {
+			stored = models.LaunchpadAllocation{
+				ProjectID:       project.ID,
+				UserAddress:     address,
+				AllocatedAmount: formatDecimal(amountValue, 8),
+				ClaimedAmount:   "0",
+				Tier:            tier,
+				Status:          "pending",
+				CreatedAt:       now,
+			}
+			if err := tx.Create(&stored).Error; err != nil {
+				return err
+			}
+		}
+
+		// Advance the project's raised total by the same amount, reading it inside
+		// the lock so the counters stay consistent with the allocations.
+		raised, err := parseDecimal(project.RaisedAmount)
+		if err != nil {
+			return fmt.Errorf("project raised amount is invalid: %w", err)
+		}
+		newRaised := new(big.Rat).Add(raised, amountValue)
+		hardCap, err := parseDecimal(project.HardCap)
+		if err != nil {
+			return fmt.Errorf("project hard cap is invalid: %w", err)
+		}
+
+		// participants counts distinct wallets, so it advances only for a first-time
+		// participant, not on a top-up.
+		participants := project.Participants
+		if !hasExisting {
+			participants++
+		}
+		updates := map[string]interface{}{
+			"raised_amount": formatDecimal(newRaised, 8),
+			"participants":  participants,
+		}
+		if newRaised.Cmp(hardCap) >= 0 {
+			updates["status"] = "completed"
+		}
+		if err := tx.Model(&models.LaunchpadProject{}).Where("id = ?", project.ID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("project minimum purchase is invalid: %w", err)
+		return nil, err
 	}
-	maxPurchase, err := parseDecimal(project.MaxPurchase)
-	if err != nil {
-		return nil, fmt.Errorf("project maximum purchase is invalid: %w", err)
-	}
-
-	if amountValue.Cmp(minPurchase) < 0 {
-		return nil, fmt.Errorf("amount below minimum purchase")
-	}
-	if amountValue.Cmp(maxPurchase) > 0 {
-		return nil, fmt.Errorf("amount exceeds maximum purchase")
-	}
-
-	// Determine tier from the participant's veTGR voting power.
-	tier := s.determineTier(userAddress)
-
-	allocation := &Allocation{
-		UserAddress:     userAddress,
-		ProjectID:       projectID,
-		AllocatedAmount: amount,
-		ClaimedAmount:   "0",
-		Tier:            tier,
-		Status:          "pending",
-	}
-
-	s.allocations[projectID] = append(s.allocations[projectID], allocation)
-
-	// Update the raised amount exactly; the stored value is a decimal string.
-	raised, err := parseDecimal(project.RaisedAmount)
-	if err != nil {
-		return nil, fmt.Errorf("project raised amount is invalid: %w", err)
-	}
-	newRaised := new(big.Rat).Add(raised, amountValue)
-	project.RaisedAmount = formatDecimal(newRaised, 8)
-	project.Participants++
-
-	// Close the raise once the hard cap is met.
-	hardCap, err := parseDecimal(project.HardCap)
-	if err != nil {
-		return nil, fmt.Errorf("project hard cap is invalid: %w", err)
-	}
-	if newRaised.Cmp(hardCap) >= 0 {
-		project.Status = "completed"
-	}
-
-	return allocation, nil
+	return launchpadAllocationFromModel(&stored), nil
 }
 
-// ClaimTokens allows user to claim purchased tokens
+// ClaimTokens computes and records the claimable token amount for a
+// participant. The allocation row is re-read under lock and marked claimed
+// before the amount is returned, so a claim cannot be settled twice.
 func (s *LaunchpadService) ClaimTokens(userAddress, projectID string) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	project, exists := s.projects[projectID]
-	if !exists {
+	if s.db == nil {
+		return "", fmt.Errorf("launchpad store is not configured")
+	}
+	projectUUID, err := uuid.Parse(strings.TrimSpace(projectID))
+	if err != nil {
 		return "", errLaunchpadProjectNotFound
 	}
+	address := strings.ToLower(strings.TrimSpace(userAddress))
 
-	// Find allocation
-	var allocation *Allocation
-	for _, alloc := range s.allocations[projectID] {
-		if alloc.UserAddress == userAddress {
-			allocation = alloc
-			break
+	var claimed string
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var project models.LaunchpadProject
+		if err := tx.First(&project, "id = ?", projectUUID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errLaunchpadProjectNotFound
+			}
+			return err
 		}
-	}
+		if time.Now().Before(project.EndTime) {
+			return fmt.Errorf("claim not available yet")
+		}
 
-	if allocation == nil {
-		return "", fmt.Errorf("no allocation found")
-	}
+		var allocation models.LaunchpadAllocation
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("project_id = ? AND user_address = ?", project.ID, address).
+			First(&allocation).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return fmt.Errorf("no allocation found")
+			}
+			return err
+		}
+		if allocation.Status == "claimed" {
+			return fmt.Errorf("tokens already claimed")
+		}
 
-	if allocation.Status == "claimed" {
-		return "", fmt.Errorf("tokens already claimed")
-	}
-
-	// Check if claimable (after project ends)
-	if time.Now().Before(project.EndTime) {
-		return "", fmt.Errorf("claim not available yet")
-	}
-
-	// Calculate the token amount exactly. A zero or malformed price must be
-	// rejected rather than producing an infinite or NaN amount.
-	price, err := parseDecimal(project.TokenPrice)
+		price, err := parseDecimal(project.PricePerToken)
+		if err != nil {
+			return fmt.Errorf("project token price is invalid: %w", err)
+		}
+		if price.Sign() <= 0 {
+			return fmt.Errorf("project token price must be positive")
+		}
+		paymentAmount, err := parseDecimal(allocation.AllocatedAmount)
+		if err != nil {
+			return fmt.Errorf("allocation amount is invalid: %w", err)
+		}
+		tokenAmount := new(big.Rat).Quo(paymentAmount, price)
+		claimed = formatDecimal(tokenAmount, 8)
+		now := time.Now()
+		if err := tx.Model(&models.LaunchpadAllocation{}).Where("id = ?", allocation.ID).
+			Updates(map[string]interface{}{
+				"claimed_amount": claimed,
+				"claimed_at":     now,
+				"status":         "claimed",
+			}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return "", fmt.Errorf("project token price is invalid: %w", err)
+		return "", err
 	}
-	if price.Sign() <= 0 {
-		return "", fmt.Errorf("project token price must be positive")
-	}
-
-	paymentAmount, err := parseDecimal(allocation.AllocatedAmount)
-	if err != nil {
-		return "", fmt.Errorf("allocation amount is invalid: %w", err)
-	}
-
-	tokenAmount := new(big.Rat).Quo(paymentAmount, price)
-	allocation.ClaimedAmount = formatDecimal(tokenAmount, 8)
-	now := time.Now()
-	allocation.ClaimedAt = &now
-	allocation.Status = "claimed"
-
-	return allocation.ClaimedAmount, nil
+	return claimed, nil
 }
 
-// GetProject returns project details
+// GetProject returns a project by id.
 func (s *LaunchpadService) GetProject(projectID string) (*LaunchpadProject, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	project, exists := s.projects[projectID]
-	if !exists {
+	if s.db == nil {
+		return nil, fmt.Errorf("launchpad store is not configured")
+	}
+	id, err := uuid.Parse(strings.TrimSpace(projectID))
+	if err != nil {
 		return nil, errLaunchpadProjectNotFound
 	}
-
-	return project, nil
+	var row models.LaunchpadProject
+	if err := s.db.First(&row, "id = ?", id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errLaunchpadProjectNotFound
+		}
+		return nil, err
+	}
+	return launchpadProjectFromModel(&row), nil
 }
 
-// GetProjects returns all projects with optional status filter
+// GetProjects returns every project, optionally filtered by status.
 func (s *LaunchpadService) GetProjects(status string) []*LaunchpadProject {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	var result []*LaunchpadProject
-	for _, project := range s.projects {
-		if status == "" || project.Status == status {
-			result = append(result, project)
-		}
+	if s.db == nil {
+		return nil
 	}
-
-	return result
+	query := s.db.Model(&models.LaunchpadProject{}).Order("created_at DESC")
+	if status != "" {
+		query = query.Where("status = ?", status)
+	}
+	var rows []models.LaunchpadProject
+	if err := query.Find(&rows).Error; err != nil {
+		return nil
+	}
+	out := make([]*LaunchpadProject, 0, len(rows))
+	for i := range rows {
+		out = append(out, launchpadProjectFromModel(&rows[i]))
+	}
+	return out
 }
 
-// GetUserAllocation returns user's allocation for a project
+// GetUserAllocation returns a participant's allocation in a project.
 func (s *LaunchpadService) GetUserAllocation(userAddress, projectID string) (*Allocation, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	for _, allocation := range s.allocations[projectID] {
-		if allocation.UserAddress == userAddress {
-			return allocation, nil
-		}
+	if s.db == nil {
+		return nil, fmt.Errorf("launchpad store is not configured")
 	}
+	projectUUID, err := uuid.Parse(strings.TrimSpace(projectID))
+	if err != nil {
+		return nil, errLaunchpadProjectNotFound
+	}
+	var row models.LaunchpadAllocation
+	if err := s.db.Where("project_id = ? AND user_address = ?", projectUUID, strings.ToLower(strings.TrimSpace(userAddress))).
+		First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("no allocation found")
+		}
+		return nil, err
+	}
+	return launchpadAllocationFromModel(&row), nil
+}
 
-	return nil, fmt.Errorf("no allocation found")
+// launchpadProjectFromModel converts a persisted project into the wire shape.
+// The price is exposed under both its legacy `token_price` name and the
+// `price_per_token` name the listing validators read, so the same object serves
+// the public list and the create response.
+func launchpadProjectFromModel(m *models.LaunchpadProject) *LaunchpadProject {
+	return &LaunchpadProject{
+		ID:            m.ID.String(),
+		Name:          m.Name,
+		Description:   m.Description,
+		TokenAddress:  m.TokenAddress,
+		TokenSymbol:   m.TokenSymbol,
+		TokenName:     m.TokenName,
+		TokenDecimals: 18,
+		TotalSupply:   m.TotalSupply,
+		TokenPrice:    m.PricePerToken,
+		PricePerToken: m.PricePerToken,
+		PaymentToken:  m.PaymentToken,
+		MinPurchase:   m.MinPurchase,
+		MaxPurchase:   m.MaxPurchase,
+		SoftCap:       m.SoftCap,
+		HardCap:       m.HardCap,
+		StartTime:     m.StartTime,
+		EndTime:       m.EndTime,
+		Status:        m.Status,
+		RaisedAmount:  m.RaisedAmount,
+		Participants:  m.Participants,
+		WebsiteURL:    m.WebsiteURL,
+		WhitepaperURL: m.WhitepaperURL,
+		LogoURL:       m.LogoURL,
+		CreatedBy:     m.CreatedBy,
+		CreatedAt:     m.CreatedAt,
+	}
+}
+
+func launchpadAllocationFromModel(m *models.LaunchpadAllocation) *Allocation {
+	return &Allocation{
+		UserAddress:     m.UserAddress,
+		ProjectID:       m.ProjectID.String(),
+		AllocatedAmount: m.AllocatedAmount,
+		ClaimedAmount:   m.ClaimedAmount,
+		ClaimedAt:       m.ClaimedAt,
+		Tier:            m.Tier,
+		Status:          m.Status,
+	}
 }
 
 // parseDecimal converts a base-10 decimal string to an exact rational. It

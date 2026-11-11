@@ -13,7 +13,7 @@ import (
 )
 
 func TestCopyTraderResponseWireFormat(t *testing.T) {
-	engine := NewCopyTradingEngine(nil, nil)
+	engine, _ := newCopyTestEngine(t)
 
 	status, body := callHandler(t, engine.RegisterTraderHandler, "1", http.MethodPost, "/copy-trading/traders",
 		`{"address":"0x1111111111111111111111111111111111111111","name":"Alpha Whale","avatar":"https://example.com/a.png"}`,

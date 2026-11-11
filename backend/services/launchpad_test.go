@@ -93,12 +93,14 @@ func TestCreateProjectHandlerRejectsMalformedTimes(t *testing.T) {
 	}
 }
 
-func newTestLaunchpad() *LaunchpadService {
-	return NewLaunchpadService(nil, nil, nil)
+func newTestLaunchpad(t *testing.T) *LaunchpadService {
+	t.Helper()
+	svc, _ := newLaunchpadWithDB(t)
+	return svc
 }
 
 func TestCreateProjectRejectsInvertedWindow(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(time.Hour)
 	end := time.Now()
 
@@ -113,7 +115,7 @@ func TestCreateProjectRejectsInvertedWindow(t *testing.T) {
 }
 
 func TestCreateProjectStartsUpcomingAndIsListed(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(time.Hour)
 	end := start.Add(48 * time.Hour)
 
@@ -142,14 +144,14 @@ func TestCreateProjectStartsUpcomingAndIsListed(t *testing.T) {
 }
 
 func TestUpdateProjectStatusRejectsUnknownProject(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	if err := svc.UpdateProjectStatus("missing", "active"); err == nil {
 		t.Fatal("expected an error when updating an unknown project")
 	}
 }
 
 func TestParticipateRequiresActiveProject(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(-time.Hour)
 	end := start.Add(48 * time.Hour)
 
@@ -190,10 +192,61 @@ func TestValidLaunchpadStatusesIsClosedSet(t *testing.T) {
 func newLaunchpadWithDB(t *testing.T) (*LaunchpadService, *gorm.DB) {
 	t.Helper()
 	db := newListingTestDB(t)
-	if err := db.AutoMigrate(&models.User{}, &models.VeLock{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.VeLock{}, &models.LaunchpadProject{}, &models.LaunchpadAllocation{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return NewLaunchpadService(db, nil, nil), db
+}
+
+// endProject moves a project's end time into the past directly in the store, so
+// a test can exercise the post-raise claim path without waiting out the window.
+func endProject(t *testing.T, svc *LaunchpadService, projectID string) {
+	t.Helper()
+	if err := svc.db.Model(&models.LaunchpadProject{}).Where("id = ?", projectID).
+		Update("end_time", time.Now().Add(-time.Second)).Error; err != nil {
+		t.Fatalf("end project: %v", err)
+	}
+}
+
+// Projects and allocations must survive a restart. The service used to keep both
+// in process memory, so every project and commitment vanished the moment the API
+// restarted; a second service instance on the same database must still see them.
+func TestLaunchpadStateSurvivesRestart(t *testing.T) {
+	svc, db := newLaunchpadWithDB(t)
+	start := time.Now().Add(-time.Hour)
+	project, err := svc.CreateProject(
+		context.Background(), "creator-1", "Tiger Raise", "", "0xabc", "TGR", "Tiger",
+		"1000000", "0.5", "USDC", "1", "10000", "50000", "250000",
+		start, start.Add(48*time.Hour), "", "", "",
+	)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "250"); err != nil {
+		t.Fatalf("participate: %v", err)
+	}
+
+	// A fresh instance over the same database is what a restart looks like.
+	restarted := NewLaunchpadService(db, nil, nil)
+
+	reloaded, err := restarted.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+	if reloaded.RaisedAmount != "250.00000000" || reloaded.Participants != 1 {
+		t.Fatalf("project state lost on restart: raised=%q participants=%d", reloaded.RaisedAmount, reloaded.Participants)
+	}
+
+	allocation, err := restarted.GetUserAllocation("0xuser", project.ID)
+	if err != nil {
+		t.Fatalf("reload allocation: %v", err)
+	}
+	if allocation.AllocatedAmount != "250.00000000" {
+		t.Fatalf("allocation state lost on restart: %q", allocation.AllocatedAmount)
+	}
 }
 
 // seedVoter creates a user with a wallet address and a veTGR lock of `amount`.
@@ -267,7 +320,7 @@ func TestDetermineTierFollowsDecayedPower(t *testing.T) {
 // A malformed amount used to be coerced to zero by fmt.Sscanf, which produced a
 // misleading "below minimum purchase" error.
 func TestParticipateRejectsMalformedAmount(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(-time.Hour)
 	project, err := svc.CreateProject(
 		context.Background(), "creator-1", "Tiger Raise", "", "0xabc", "TGR", "Tiger",
@@ -290,7 +343,7 @@ func TestParticipateRejectsMalformedAmount(t *testing.T) {
 
 // Raised amounts must accumulate exactly; float rounding used to drift.
 func TestParticipateAccumulatesRaisedExactly(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(-time.Hour)
 	project, err := svc.CreateProject(
 		context.Background(), "creator-1", "Tiger Raise", "", "0xabc", "TGR", "Tiger",
@@ -309,17 +362,23 @@ func TestParticipateAccumulatesRaisedExactly(t *testing.T) {
 			t.Fatalf("participate: %v", err)
 		}
 	}
-	if project.RaisedAmount != "0.30000000" {
-		t.Fatalf("expected exact raised amount 0.30000000, got %q", project.RaisedAmount)
+	// The counters are read back from the store: three commitments from one wallet
+	// accumulate to 0.3 exactly and count as a single participant.
+	stored, err := svc.GetProject(project.ID)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
 	}
-	if project.Participants != 3 {
-		t.Fatalf("expected 3 participants, got %d", project.Participants)
+	if stored.RaisedAmount != "0.30000000" {
+		t.Fatalf("expected exact raised amount 0.30000000, got %q", stored.RaisedAmount)
+	}
+	if stored.Participants != 1 {
+		t.Fatalf("expected 1 distinct participant, got %d", stored.Participants)
 	}
 }
 
 // A zero token price used to divide by zero and yield an infinite claim.
 func TestClaimRejectsZeroPrice(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(-time.Hour)
 	project, err := svc.CreateProject(
 		context.Background(), "creator-1", "Tiger Raise", "", "0xabc", "TGR", "Tiger",
@@ -337,7 +396,7 @@ func TestClaimRejectsZeroPrice(t *testing.T) {
 	}
 
 	// Move the project end into the past so claiming is allowed.
-	project.EndTime = time.Now().Add(-time.Second)
+	endProject(t, svc, project.ID)
 
 	if _, err := svc.ClaimTokens("0xuser", project.ID); err == nil {
 		t.Fatal("a zero token price must not produce a claim")
@@ -346,7 +405,7 @@ func TestClaimRejectsZeroPrice(t *testing.T) {
 
 // The exact claim amount must be the payment divided by the price.
 func TestClaimComputesExactAmount(t *testing.T) {
-	svc := newTestLaunchpad()
+	svc := newTestLaunchpad(t)
 	start := time.Now().Add(-time.Hour)
 	project, err := svc.CreateProject(
 		context.Background(), "creator-1", "Tiger Raise", "", "0xabc", "TGR", "Tiger",
@@ -362,7 +421,7 @@ func TestClaimComputesExactAmount(t *testing.T) {
 	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "1000"); err != nil {
 		t.Fatalf("participate: %v", err)
 	}
-	project.EndTime = time.Now().Add(-time.Second)
+	endProject(t, svc, project.ID)
 
 	claimed, err := svc.ClaimTokens("0xuser", project.ID)
 	if err != nil {

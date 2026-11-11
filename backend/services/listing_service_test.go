@@ -38,7 +38,7 @@ func newListingTestDB(t *testing.T) *gorm.DB {
 	sqlDB.SetMaxOpenConns(1)
 	t.Cleanup(func() { sqlDB.Close() })
 
-	if err := db.AutoMigrate(&models.FuturesMarket{}, &models.PerpsMarket{}, &models.MarginMarket{}, &models.AdminLog{}); err != nil {
+	if err := db.AutoMigrate(&models.FuturesMarket{}, &models.PerpsMarket{}, &models.MarginMarket{}, &models.AdminLog{}, &models.PerpetualPosition{}, &models.PerpetualOrder{}); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}
 	return db

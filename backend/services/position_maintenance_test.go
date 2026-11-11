@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"tigerswap/backend/models"
 )
 
 // newMarkedPerpEngine builds an engine with one listed market and the given
@@ -116,17 +118,26 @@ func TestUpdatePositionsKeepsMarkOnPriceFailure(t *testing.T) {
 // TestUpdateCopyPositionsMarksOpenPositions proves an open copy position is
 // re-marked and its PnL recomputed from the live price.
 func TestUpdateCopyPositionsMarksOpenPositions(t *testing.T) {
-	engine := NewCopyTradingEngine(nil, &stubPriceAggregator{prices: map[string]float64{"BTC": 110}})
-	engine.copyPositions["cp1"] = &CopyPosition{
-		ID:           "cp1",
-		Pair:         "BTC/RUSD",
-		Side:         "long",
-		Size:         "10000",
-		EntryPrice:   100,
-		CurrentPrice: 100,
-		PNL:          "0",
-		Status:       "open",
+	db := newListingTestDB(t)
+	if err := db.AutoMigrate(&models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}); err != nil {
+		t.Fatalf("migrate copy trading: %v", err)
 	}
+	engine := NewCopyTradingEngine(nil, &stubPriceAggregator{prices: map[string]float64{"BTC": 110}}).SetDB(db)
+	seeded := models.CopyPositionRecord{
+		FollowerAddress: "0xabc",
+		Pair:            "BTC/RUSD",
+		Side:            "long",
+		Size:            "10000",
+		EntryPrice:      "100.00000000",
+		CurrentPrice:    "100.00000000",
+		PNL:             "0",
+		Status:          "open",
+		OpenedAt:        time.Now(),
+	}
+	if err := db.Create(&seeded).Error; err != nil {
+		t.Fatalf("seed copy position: %v", err)
+	}
+	cpID := seeded.ID.String()
 
 	done := make(chan error, 1)
 	go func() { done <- engine.UpdateCopyPositions(context.Background()) }()
@@ -140,7 +151,7 @@ func TestUpdateCopyPositionsMarksOpenPositions(t *testing.T) {
 		t.Fatal("UpdateCopyPositions did not return; it likely deadlocked on the engine lock")
 	}
 
-	position := engine.copyPositions["cp1"]
+	position := reloadCopyPosition(t, engine, cpID)
 	if position.CurrentPrice != 110 {
 		t.Fatalf("current price = %v, want 110", position.CurrentPrice)
 	}

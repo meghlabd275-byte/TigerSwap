@@ -4,18 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"tigerswap/backend/models"
 )
@@ -31,34 +32,19 @@ var (
 	errNoWalletBound         = errors.New("no wallet is bound to this account")
 )
 
-// CopyTradingEngine handles real copy trading
+// CopyTradingEngine handles real copy trading. Traders, follow relationships and
+// copied positions are held in the database: keeping them in process memory
+// would erase the leaderboard and every open copy the moment the API restarts.
 type CopyTradingEngine struct {
 	blockchain *BlockchainClient
 	priceAgg   priceSource
-	mu         sync.RWMutex
 
-	// Trader registry
-	traders map[string]*Trader // address -> trader info
-
-	// Follow relationships
-	followers map[string][]string // trader -> []follower
-	following map[string]string   // follower -> trader
-
-	// Copy positions
-	copyPositions map[string]*CopyPosition // positionID -> position
-	orders        map[string]*CopyOrder
-
-	// Per-follower copy configuration, keyed by follower address. The ratio
-	// scales every copied size and the stop/take levels are enforced when a
-	// position is re-marked, so the values the follower supplied actually take
-	// effect instead of being silently discarded.
-	configs map[string]CopyConfig
-
-	// db resolves the authenticated account to its bound wallet address. The
-	// engine keys a follower by that address, so the HTTP handlers and the
-	// wallet copy-trade path agree on one identity domain; keying one by the
-	// account UUID and the other by the address would make a followed trader
-	// impossible to copy from the wallet route.
+	// db resolves the authenticated account to its bound wallet address and is
+	// the store for traders, follows and copied positions. The engine keys a
+	// follower by wallet address, so the HTTP handlers and the wallet copy-trade
+	// path agree on one identity domain; keying one by the account UUID and the
+	// other by the address would make a followed trader impossible to copy from
+	// the wallet route.
 	db *gorm.DB
 }
 
@@ -127,14 +113,8 @@ type CopyConfig struct {
 
 func NewCopyTradingEngine(blockchain *BlockchainClient, priceAgg priceSource) *CopyTradingEngine {
 	return &CopyTradingEngine{
-		blockchain:    blockchain,
-		priceAgg:      priceAgg,
-		traders:       make(map[string]*Trader),
-		followers:     make(map[string][]string),
-		following:     make(map[string]string),
-		copyPositions: make(map[string]*CopyPosition),
-		orders:        make(map[string]*CopyOrder),
-		configs:       make(map[string]CopyConfig),
+		blockchain: blockchain,
+		priceAgg:   priceAgg,
 	}
 }
 
@@ -172,160 +152,184 @@ func (e *CopyTradingEngine) resolveFollowerAddress(c *gin.Context) (string, erro
 	return strings.ToLower(address), nil
 }
 
-// RegisterTrader registers a new trader
+// RegisterTrader registers a trader, persisting the profile so the leaderboard
+// survives a restart. Re-registering an address refreshes the profile fields
+// while preserving the statistics accumulated so far.
 func (e *CopyTradingEngine) RegisterTrader(address, name, avatar string) *Trader {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
+	address = strings.ToLower(strings.TrimSpace(address))
+	now := time.Now()
 	trader := &Trader{
-		Address:       address,
-		Name:          name,
-		Avatar:        avatar,
-		WinRate:       0,
-		TotalProfit:   "0",
-		WeeklyProfit:  0,
-		MonthlyProfit: 0,
-		TotalTrades:   0,
-		Followers:     0,
-		TotalVolume:   "0",
-		IsVerified:    false,
-		IsPro:         false,
-		RiskScore:     "medium",
-		LastActive:    time.Now(),
+		Address:     address,
+		Name:        name,
+		Avatar:      avatar,
+		TotalProfit: "0",
+		TotalVolume: "0",
+		RiskScore:   "medium",
+		LastActive:  now,
+	}
+	if e.db == nil {
+		return trader
 	}
 
-	e.traders[address] = trader
+	var existing models.CopyTrader
+	err := e.db.Where("address = ?", address).First(&existing).Error
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		row := copyTraderToModel(trader)
+		if err := e.db.Create(&row).Error; err != nil {
+			log.Printf("copy trading: persist trader %s: %v", address, err)
+		}
+	case err != nil:
+		log.Printf("copy trading: load trader %s: %v", address, err)
+	default:
+		if err := e.db.Model(&models.CopyTrader{}).Where("address = ?", address).
+			Updates(map[string]interface{}{"name": name, "avatar": avatar, "last_active": now}).Error; err != nil {
+			log.Printf("copy trading: update trader %s: %v", address, err)
+		}
+		trader.Followers = existing.Followers
+	}
 	return trader
 }
 
-// GetTrader returns trader info
+// GetTrader returns a trader's profile.
 func (e *CopyTradingEngine) GetTrader(address string) (*Trader, error) {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	trader, exists := e.traders[address]
-	if !exists {
-		return nil, fmt.Errorf("trader not found")
+	if e.db == nil {
+		return nil, errTraderNotFound
 	}
-
-	return trader, nil
+	var row models.CopyTrader
+	if err := e.db.Where("address = ?", strings.ToLower(strings.TrimSpace(address))).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, errTraderNotFound
+		}
+		return nil, err
+	}
+	return copyTraderFromModel(&row), nil
 }
 
-// GetTopTraders returns top traders
+// GetTopTraders returns the leaderboard ordered by weekly profit then trade
+// count, read from the store so a restart cannot empty it.
 func (e *CopyTradingEngine) GetTopTraders(limit int) []*Trader {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	traders := make([]*Trader, 0, len(e.traders))
-	for _, trader := range e.traders {
-		traders = append(traders, trader)
+	if e.db == nil {
+		return nil
 	}
-
-	sort.SliceStable(traders, func(i, j int) bool {
-		if traders[i].WeeklyProfit != traders[j].WeeklyProfit {
-			return traders[i].WeeklyProfit > traders[j].WeeklyProfit
-		}
-		return traders[i].TotalTrades > traders[j].TotalTrades
-	})
-
-	if limit > 0 && len(traders) > limit {
-		traders = traders[:limit]
+	query := e.db.Order("weekly_profit DESC, total_trades DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
 	}
-
+	var rows []models.CopyTrader
+	if err := query.Find(&rows).Error; err != nil {
+		return nil
+	}
+	traders := make([]*Trader, 0, len(rows))
+	for i := range rows {
+		traders = append(traders, copyTraderFromModel(&rows[i]))
+	}
 	return traders
 }
 
-// StartFollowing starts following a trader
+// StartFollowing starts following a trader. The follow row and the trader's
+// follower count move together in one transaction so the count can never drift
+// from the relationships.
 func (e *CopyTradingEngine) StartFollowing(followerAddress, traderAddress string, config CopyConfig) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Verify trader exists
-	_, exists := e.traders[traderAddress]
-	if !exists {
-		return errTraderNotFound
+	if e.db == nil {
+		return fmt.Errorf("copy trading store is not configured")
 	}
+	followerAddress = strings.ToLower(strings.TrimSpace(followerAddress))
+	traderAddress = strings.ToLower(strings.TrimSpace(traderAddress))
 
-	// Check if already following
-	if _, alreadyFollowing := e.following[followerAddress]; alreadyFollowing {
-		return errAlreadyFollowing
-	}
-
-	// Add follow relationship
-	e.following[followerAddress] = traderAddress
-
-	// Persist the copy configuration so the ratio and stop/take levels apply to
-	// every position copied under this relationship.
-	config.FollowerAddress = followerAddress
-	config.TraderAddress = traderAddress
-	e.configs[followerAddress] = config
-
-	if e.followers[traderAddress] == nil {
-		e.followers[traderAddress] = []string{}
-	}
-	e.followers[traderAddress] = append(e.followers[traderAddress], followerAddress)
-
-	// Update follower count
-	e.traders[traderAddress].Followers++
-
-	return nil
-}
-
-// StopFollowing stops following a trader
-func (e *CopyTradingEngine) StopFollowing(followerAddress string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	traderAddress, exists := e.following[followerAddress]
-	if !exists {
-		return errNotFollowing
-	}
-
-	// Remove from followers list
-	for i, follower := range e.followers[traderAddress] {
-		if follower == followerAddress {
-			e.followers[traderAddress] = append(e.followers[traderAddress][:i], e.followers[traderAddress][i+1:]...)
-			break
+	return e.db.Transaction(func(tx *gorm.DB) error {
+		var trader models.CopyTrader
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("address = ?", traderAddress).First(&trader).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errTraderNotFound
+			}
+			return err
 		}
-	}
 
-	// Update follower count
-	e.traders[traderAddress].Followers--
+		var existing models.CopyFollow
+		switch err := tx.Where("follower_address = ?", followerAddress).First(&existing).Error; {
+		case err == nil:
+			return errAlreadyFollowing
+		case !errors.Is(err, gorm.ErrRecordNotFound):
+			return err
+		}
 
-	// Remove following
-	delete(e.following, followerAddress)
-	delete(e.configs, followerAddress)
-
-	return nil
+		follow := models.CopyFollow{
+			FollowerAddress: followerAddress,
+			TraderAddress:   traderAddress,
+			CopyRatio:       config.CopyRatio,
+			AutoClose:       config.AutoClose,
+			StopLoss:        config.StopLoss,
+			TakeProfit:      config.TakeProfit,
+		}
+		if err := tx.Create(&follow).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.CopyTrader{}).Where("address = ?", traderAddress).
+			Update("followers", gorm.Expr("followers + 1")).Error
+	})
 }
 
-// CopyTrade copies a trade from trader to follower
-func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, traderAddress, pair, side, size, originalPositionID string) (*CopyPosition, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+// StopFollowing stops following a trader and decrements the trader's follower
+// count in the same transaction.
+func (e *CopyTradingEngine) StopFollowing(followerAddress string) error {
+	if e.db == nil {
+		return fmt.Errorf("copy trading store is not configured")
+	}
+	followerAddress = strings.ToLower(strings.TrimSpace(followerAddress))
 
-	// Verify following relationship
-	followingTrader, exists := e.following[followerAddress]
-	if !exists || followingTrader != traderAddress {
+	return e.db.Transaction(func(tx *gorm.DB) error {
+		var follow models.CopyFollow
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("follower_address = ?", followerAddress).First(&follow).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errNotFollowing
+			}
+			return err
+		}
+		if err := tx.Delete(&models.CopyFollow{}, "id = ?", follow.ID).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.CopyTrader{}).
+			Where("address = ? AND followers > 0", follow.TraderAddress).
+			Update("followers", gorm.Expr("followers - 1")).Error
+	})
+}
+
+// CopyTrade copies a trade from a trader to a follower and persists the copy
+// position.
+func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, traderAddress, pair, side, size, originalPositionID string) (*CopyPosition, error) {
+	if e.db == nil {
+		return nil, fmt.Errorf("copy trading store is not configured")
+	}
+	followerAddress = strings.ToLower(strings.TrimSpace(followerAddress))
+	traderAddress = strings.ToLower(strings.TrimSpace(traderAddress))
+
+	var follow models.CopyFollow
+	if err := e.db.Where("follower_address = ?", followerAddress).First(&follow).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("not following this trader")
+		}
+		return nil, err
+	}
+	if follow.TraderAddress != traderAddress {
 		return nil, fmt.Errorf("not following this trader")
 	}
 
-	// Get current price
 	price, err := e.getPriceForPair(ctx, pair)
 	if err != nil {
 		return nil, err
 	}
 
 	// The follower's configured ratio scales the copied size: a 0.5 ratio copies
-	// half the trader's notional. A missing or invalid config falls back to the
-	// full size, which is the ratio the follow request defaults to.
-	config, hasConfig := e.configs[followerAddress]
-	if hasConfig && config.CopyRatio > 0 && config.CopyRatio <= 1 && config.CopyRatio != 1 {
+	// half the trader's notional.
+	if follow.CopyRatio > 0 && follow.CopyRatio <= 1 && follow.CopyRatio != 1 {
 		notional, parseErr := parseDecimal(size)
 		if parseErr != nil {
 			return nil, fmt.Errorf("copy size %q is not a decimal amount: %w", size, parseErr)
 		}
-		ratio, ratioErr := rationalFromFloat(config.CopyRatio)
+		ratio, ratioErr := rationalFromFloat(follow.CopyRatio)
 		if ratioErr != nil {
 			return nil, ratioErr
 		}
@@ -336,8 +340,9 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 		size = trimDecimal(formatDecimal(scaled, 18))
 	}
 
+	now := time.Now()
 	position := &CopyPosition{
-		ID:               fmt.Sprintf("cp_%d", time.Now().UnixNano()),
+		ID:               uuid.NewString(),
 		FollowerAddress:  followerAddress,
 		TraderAddress:    traderAddress,
 		OriginalPosition: originalPositionID,
@@ -349,78 +354,97 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 		Leverage:         1,
 		PNL:              "0",
 		Status:           "open",
-		OpenedAt:         time.Now(),
-		CopiedAt:         time.Now(),
+		OpenedAt:         now,
+		CopiedAt:         now,
 	}
-
-	e.copyPositions[position.ID] = position
-
+	row := copyPositionToModel(position)
+	if err := e.db.Create(&row).Error; err != nil {
+		return nil, fmt.Errorf("persist copy position: %w", err)
+	}
+	// The row's generated id is authoritative: the id returned to the caller must
+	// be the one the close and listing paths will find.
+	position.ID = row.ID.String()
 	return position, nil
 }
 
-// UpdateCopyPositions refreshes the mark price and unrealised PnL of every open
-// copy position. The oracle calls happen before the write lock is taken so a
-// slow price read cannot stall every other copy-trading operation.
+// UpdateCopyPositions re-marks every open copy position to the live oracle
+// price, refreshes its unrealised PnL and enforces the follower's stop-loss and
+// take-profit. Every price is read before any write, so a slow oracle call
+// cannot hold the write path open.
 func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
-	if e.priceAgg == nil {
+	if e.priceAgg == nil || e.db == nil {
 		return nil
 	}
-	e.mu.RLock()
-	pairs := make(map[string]struct{})
-	for _, position := range e.copyPositions {
-		if position.Status == "open" {
-			pairs[position.Pair] = struct{}{}
-		}
-	}
-	e.mu.RUnlock()
 
-	prices := make(map[string]float64, len(pairs))
-	for pair := range pairs {
-		price, err := e.getPriceForPair(ctx, pair)
+	var rows []models.CopyPositionRecord
+	if err := e.db.Where("status = ?", "open").Find(&rows).Error; err != nil {
+		return err
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	positions := make([]*CopyPosition, 0, len(rows))
+	for i := range rows {
+		positions = append(positions, copyPositionFromModel(&rows[i]))
+	}
+
+	// Price each distinct pair once for the whole pass.
+	prices := make(map[string]float64)
+	for _, position := range positions {
+		if _, ok := prices[position.Pair]; ok {
+			continue
+		}
+		price, err := e.getPriceForPair(ctx, position.Pair)
 		if err != nil || price <= 0 {
+			prices[position.Pair] = 0
 			continue
 		}
-		prices[pair] = price
+		prices[position.Pair] = price
 	}
 
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	for _, position := range e.copyPositions {
-		if position.Status != "open" {
-			continue
+	// Load every follow configuration once, so the stop/take levels apply from
+	// the store rather than from memory that a restart would have emptied.
+	follows := make(map[string]models.CopyFollow)
+	var followRows []models.CopyFollow
+	if err := e.db.Find(&followRows).Error; err == nil {
+		for i := range followRows {
+			follows[followRows[i].FollowerAddress] = followRows[i]
 		}
-		price, ok := prices[position.Pair]
-		if !ok {
+	}
+
+	for _, position := range positions {
+		price := prices[position.Pair]
+		if price <= 0 {
 			continue
 		}
 		position.CurrentPrice = price
 		position.PNL = e.calculateCopyPNL(position)
 
-		// Enforce the follower's stop-loss and take-profit. Both are percentages
-		// of the position's entry notional, so they are compared against the
-		// signed price move rather than the absolute price.
-		config, hasConfig := e.configs[position.FollowerAddress]
-		if !hasConfig || (config.StopLoss <= 0 && config.TakeProfit <= 0) {
-			continue
+		closed := false
+		if config, ok := follows[position.FollowerAddress]; ok && (config.StopLoss > 0 || config.TakeProfit > 0) {
+			if movePct, err := e.copyMovePercent(position); err == nil {
+				if config.StopLoss > 0 && movePct <= -config.StopLoss {
+					closed = true
+				}
+				if config.TakeProfit > 0 && movePct >= config.TakeProfit {
+					closed = true
+				}
+			}
 		}
-		movePct, err := e.copyMovePercent(position)
-		if err != nil {
-			continue
+
+		updates := map[string]interface{}{
+			"current_price": formatPrice(position.CurrentPrice),
+			"pnl":           position.PNL,
 		}
-		if config.StopLoss > 0 && movePct <= -config.StopLoss {
+		if closed {
 			now := time.Now()
-			position.Status = "closed"
-			position.ClosedAt = &now
-			continue
+			updates["status"] = "closed"
+			updates["closed_at"] = &now
 		}
-		if config.TakeProfit > 0 && movePct >= config.TakeProfit {
-			now := time.Now()
-			position.Status = "closed"
-			position.ClosedAt = &now
+		if err := e.db.Model(&models.CopyPositionRecord{}).Where("id = ?", position.ID).Updates(updates).Error; err != nil {
+			return err
 		}
 	}
-
 	return nil
 }
 
@@ -440,46 +464,171 @@ func (e *CopyTradingEngine) copyMovePercent(position *CopyPosition) (float64, er
 	return move * 100, nil
 }
 
-// CloseCopyPosition closes a copy position owned by caller. Ownership is
-// checked under the engine lock before any mutation, so one account can never
-// close another account's position and a check cannot race a close.
+// CloseCopyPosition closes a copy position owned by caller. Ownership is checked
+// under a row lock before any mutation, so one account can never close another
+// account's position and a check cannot race a close.
 func (e *CopyTradingEngine) CloseCopyPosition(positionID, caller string) (*CopyPosition, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	position, exists := e.copyPositions[positionID]
-	if !exists {
+	if e.db == nil {
+		return nil, fmt.Errorf("copy trading store is not configured")
+	}
+	id, err := uuid.Parse(strings.TrimSpace(positionID))
+	if err != nil {
 		return nil, errCopyPositionNotFound
 	}
 
-	if caller == "" || !strings.EqualFold(position.FollowerAddress, caller) {
-		return nil, errCopyPositionForbidden
+	var closed *CopyPosition
+	err = e.db.Transaction(func(tx *gorm.DB) error {
+		var row models.CopyPositionRecord
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&row, "id = ?", id).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errCopyPositionNotFound
+			}
+			return err
+		}
+		if caller == "" || !strings.EqualFold(row.FollowerAddress, caller) {
+			return errCopyPositionForbidden
+		}
+		if row.Status != "open" {
+			return errCopyPositionClosed
+		}
+		now := time.Now()
+		if err := tx.Model(&models.CopyPositionRecord{}).Where("id = ?", row.ID).
+			Updates(map[string]interface{}{"status": "closed", "closed_at": &now}).Error; err != nil {
+			return err
+		}
+		row.Status = "closed"
+		row.ClosedAt = &now
+		closed = copyPositionFromModel(&row)
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-
-	if position.Status != "open" {
-		return nil, errCopyPositionClosed
-	}
-
-	now := time.Now()
-	position.Status = "closed"
-	position.ClosedAt = &now
-
-	return position, nil
+	return closed, nil
 }
 
-// GetFollowerPositions returns all copy positions for a follower
+// GetFollowerPositions returns a follower's open copy positions.
 func (e *CopyTradingEngine) GetFollowerPositions(followerAddress string) []*CopyPosition {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
-	var positions []*CopyPosition
-	for _, pos := range e.copyPositions {
-		if pos.FollowerAddress == followerAddress && pos.Status == "open" {
-			positions = append(positions, pos)
-		}
+	if e.db == nil {
+		return nil
 	}
-
+	var rows []models.CopyPositionRecord
+	if err := e.db.
+		Where("follower_address = ? AND status = ?", strings.ToLower(strings.TrimSpace(followerAddress)), "open").
+		Order("opened_at DESC").Find(&rows).Error; err != nil {
+		return nil
+	}
+	positions := make([]*CopyPosition, 0, len(rows))
+	for i := range rows {
+		positions = append(positions, copyPositionFromModel(&rows[i]))
+	}
 	return positions
+}
+
+// copyTraderToModel and copyTraderFromModel convert between the wire profile
+// and the persisted row; strategies are stored comma-separated.
+func copyTraderToModel(t *Trader) models.CopyTrader {
+	return models.CopyTrader{
+		Address:        t.Address,
+		Name:           t.Name,
+		Avatar:         t.Avatar,
+		WinRate:        t.WinRate,
+		TotalProfit:    t.TotalProfit,
+		WeeklyProfit:   t.WeeklyProfit,
+		MonthlyProfit:  t.MonthlyProfit,
+		TotalTrades:    t.TotalTrades,
+		Followers:      t.Followers,
+		TotalVolume:    t.TotalVolume,
+		AvgHoldingTime: t.AvgHoldingTime,
+		IsVerified:     t.IsVerified,
+		IsPro:          t.IsPro,
+		RiskScore:      t.RiskScore,
+		Strategies:     strings.Join(t.Strategies, ","),
+		LastActive:     t.LastActive,
+	}
+}
+
+func copyTraderFromModel(m *models.CopyTrader) *Trader {
+	var strategies []string
+	if m.Strategies != "" {
+		strategies = strings.Split(m.Strategies, ",")
+	}
+	return &Trader{
+		Address:        m.Address,
+		Name:           m.Name,
+		Avatar:         m.Avatar,
+		WinRate:        m.WinRate,
+		TotalProfit:    m.TotalProfit,
+		WeeklyProfit:   m.WeeklyProfit,
+		MonthlyProfit:  m.MonthlyProfit,
+		TotalTrades:    m.TotalTrades,
+		Followers:      m.Followers,
+		TotalVolume:    m.TotalVolume,
+		AvgHoldingTime: m.AvgHoldingTime,
+		IsVerified:     m.IsVerified,
+		IsPro:          m.IsPro,
+		RiskScore:      m.RiskScore,
+		Strategies:     strategies,
+		LastActive:     m.LastActive,
+	}
+}
+
+func copyPositionToModel(p *CopyPosition) models.CopyPositionRecord {
+	return models.CopyPositionRecord{
+		FollowerAddress:  p.FollowerAddress,
+		TraderAddress:    p.TraderAddress,
+		OriginalPosition: p.OriginalPosition,
+		Pair:             p.Pair,
+		Side:             p.Side,
+		Size:             p.Size,
+		EntryPrice:       formatPrice(p.EntryPrice),
+		CurrentPrice:     formatPrice(p.CurrentPrice),
+		Leverage:         p.Leverage,
+		PNL:              p.PNL,
+		Status:           p.Status,
+		OpenedAt:         p.OpenedAt,
+		ClosedAt:         p.ClosedAt,
+		CopiedAt:         p.CopiedAt,
+	}
+}
+
+func copyPositionFromModel(m *models.CopyPositionRecord) *CopyPosition {
+	return &CopyPosition{
+		ID:               m.ID.String(),
+		FollowerAddress:  m.FollowerAddress,
+		TraderAddress:    m.TraderAddress,
+		OriginalPosition: m.OriginalPosition,
+		Pair:             m.Pair,
+		Side:             m.Side,
+		Size:             m.Size,
+		EntryPrice:       parsePrice(m.EntryPrice),
+		CurrentPrice:     parsePrice(m.CurrentPrice),
+		Leverage:         m.Leverage,
+		PNL:              m.PNL,
+		Status:           m.Status,
+		OpenedAt:         m.OpenedAt,
+		ClosedAt:         m.ClosedAt,
+		CopiedAt:         m.CopiedAt,
+	}
+}
+
+// formatPrice and parsePrice round-trip a price through a decimal string so a
+// stored mark price is exact to eight places and never loses precision to a
+// float formatter.
+func formatPrice(value float64) string {
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "0"
+	}
+	return strconv.FormatFloat(value, 'f', 8, 64)
+}
+
+func parsePrice(raw string) float64 {
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0
+	}
+	return value
 }
 
 func (e *CopyTradingEngine) getPriceForPair(ctx context.Context, pair string) (float64, error) {

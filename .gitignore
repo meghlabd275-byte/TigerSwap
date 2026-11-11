@@ -46,6 +46,9 @@ backend/api_gateway
 backend/order_matching
 backend/api
 backend/cli
+backend/go/dex_aggregator/dex_aggregator
+backend/go/dex_connectors/dex_connectors
+backend/go/api_gateway/api_gateway
 
 # Foundry build artifacts
 contracts/cache/

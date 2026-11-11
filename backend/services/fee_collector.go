@@ -182,10 +182,11 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 		Status:        "collected",
 	}
 
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
 	s.swapFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
-
-	// Update daily revenue
 	s.updateDailyRevenue("swap", feeUSD)
 
 	return record, nil
@@ -217,6 +218,9 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 		Status:        "collected",
 	}
 
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
 	s.bridgeFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("bridge", feeUSD)
@@ -251,6 +255,9 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 		Status:        "collected",
 	}
 
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
 	s.walletFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("wallet", feeUSD)
@@ -285,6 +292,9 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 		Status:        "collected",
 	}
 
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
 	s.withdrawFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("withdraw", feeUSD)
@@ -318,6 +328,9 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 		Status:        "collected",
 	}
 
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
 	s.launchpadFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("launchpad", feeUSD)
@@ -509,6 +522,12 @@ func (s *FeeCollectorService) DistributeFees(ctx context.Context, chainID int64,
 	for _, record := range s.allRecordsLocked() {
 		if record.Status == "collected" {
 			record.Status = "distributed"
+			if s.db != nil {
+				if err := s.db.Model(&models.FeeRecordModel{}).Where("id = ?", record.ID).
+					Update("status", "distributed").Error; err != nil {
+					log.Printf("fee collector: mark record %s distributed: %v", record.ID, err)
+				}
+			}
 		}
 	}
 	s.mu.Unlock()
@@ -544,8 +563,98 @@ func feeTreasuryKey() (*ecdsa.PrivateKey, error) {
 // SetDB attaches the database used to persist admin audit entries.
 func (s *FeeCollectorService) SetDB(db *gorm.DB) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.db = db
+	s.mu.Unlock()
+	s.loadFeeRecords()
+}
+
+// persistFeeRecord writes a collected fee to the store. Without it a fee record
+// existed only in the collector's process memory, so the revenue report and the
+// admin fee log emptied on every restart. It must be called with s.mu held.
+func (s *FeeCollectorService) persistFeeRecord(record *FeeRecord) error {
+	if s.db == nil {
+		return nil
+	}
+	row := models.FeeRecordModel{
+		ID:            record.ID,
+		Type:          record.Type,
+		Amount:        record.Amount,
+		AmountUSD:     record.AmountUSD,
+		Token:         record.Token,
+		ChainID:       record.ChainID,
+		UserAddress:   record.UserAddress,
+		TxHash:        record.TxHash,
+		FeeCharged:    record.FeeCharged,
+		FeeChargedUSD: record.FeeChargedUSD,
+		Timestamp:     record.Timestamp,
+		Status:        record.Status,
+	}
+	if err := s.db.Create(&row).Error; err != nil {
+		return fmt.Errorf("persist fee record: %w", err)
+	}
+	return nil
+}
+
+// loadFeeRecords rebuilds the in-memory fee maps and revenue counters from the
+// store so the revenue report survives a restart.
+func (s *FeeCollectorService) loadFeeRecords() {
+	s.mu.Lock()
+	db := s.db
+	s.mu.Unlock()
+	if db == nil {
+		return
+	}
+
+	var rows []models.FeeRecordModel
+	if err := db.Order("timestamp").Find(&rows).Error; err != nil {
+		log.Printf("fee collector: load fee records failed: %v", err)
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range rows {
+		record := feeRecordFromModel(&rows[i])
+		switch record.Type {
+		case "swap":
+			s.swapFees[record.ID] = record
+		case "bridge":
+			s.bridgeFees[record.ID] = record
+		case "wallet":
+			s.walletFees[record.ID] = record
+		case "withdraw":
+			s.withdrawFees[record.ID] = record
+		case "deposit":
+			s.depositFees[record.ID] = record
+		case "launchpad":
+			s.launchpadFees[record.ID] = record
+		default:
+			continue
+		}
+		s.totalRevenue.Add(s.totalRevenue, big.NewFloat(record.FeeChargedUSD))
+		day := record.Timestamp.Format("2006-01-02")
+		if s.dailyRevenue[day] == nil {
+			s.dailyRevenue[day] = big.NewFloat(0)
+		}
+		s.dailyRevenue[day].Add(s.dailyRevenue[day], big.NewFloat(record.FeeChargedUSD))
+	}
+}
+
+func feeRecordFromModel(m *models.FeeRecordModel) *FeeRecord {
+	return &FeeRecord{
+		ID:            m.ID,
+		Type:          m.Type,
+		Amount:        m.Amount,
+		AmountUSD:     m.AmountUSD,
+		Token:         m.Token,
+		ChainID:       m.ChainID,
+		UserAddress:   m.UserAddress,
+		TxHash:        m.TxHash,
+		FeeCharged:    m.FeeCharged,
+		FeeChargedUSD: m.FeeChargedUSD,
+		Timestamp:     m.Timestamp,
+		Status:        m.Status,
+	}
 }
 
 func (s *FeeCollectorService) SetBlockchain(blockchain *BlockchainClient) {

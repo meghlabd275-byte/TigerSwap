@@ -15,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"tigerswap/backend/models"
 )
@@ -204,13 +205,13 @@ type marginHealth struct {
 
 // computeHealth values an account's collateral and debt and derives the health
 // factor. A debt-free account has an infinite health factor.
-func (e *MarginEngine) computeHealth(ctx context.Context, accountID uuid.UUID, cfg *marginMarketConfig) (*marginHealth, error) {
+func (e *MarginEngine) computeHealth(ctx context.Context, db *gorm.DB, accountID uuid.UUID, cfg *marginMarketConfig) (*marginHealth, error) {
 	var collaterals []models.MarginCollateral
-	if err := e.db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
+	if err := db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
 		return nil, err
 	}
 	var borrows []models.MarginBorrow
-	if err := e.db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
+	if err := db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
 		return nil, err
 	}
 
@@ -440,7 +441,7 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 		return fmt.Errorf("cannot price borrow asset %s: %w", normalized, err)
 	}
 
-	health, err := e.computeHealth(ctx, accountID, cfg)
+	health, err := e.computeHealth(ctx, e.db, accountID, cfg)
 	if err != nil {
 		return err
 	}
@@ -614,7 +615,7 @@ func (e *MarginEngine) LiquidatableAccounts(ctx context.Context) ([]LiquidationC
 		if err := e.accrueAccountInterest(accounts[i].ID, cfg, time.Now().UTC()); err != nil {
 			continue
 		}
-		health, err := e.computeHealth(ctx, accounts[i].ID, cfg)
+		health, err := e.computeHealth(ctx, e.db, accounts[i].ID, cfg)
 		if err != nil {
 			continue
 		}
@@ -644,7 +645,7 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 	if err := e.accrueAccountInterest(accountID, cfg, time.Now().UTC()); err != nil {
 		return nil, err
 	}
-	health, err := e.computeHealth(ctx, accountID, cfg)
+	health, err := e.computeHealth(ctx, e.db, accountID, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -664,19 +665,39 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 		seizeValue = health.CollateralUSD
 	}
 
-	if err := e.seizeCollateral(ctx, accountID, seizeValue); err != nil {
-		return nil, err
-	}
-	if err := e.reduceDebt(ctx, accountID, repayable); err != nil {
-		return nil, err
-	}
-
-	// Mark the account liquidated once its debt is cleared.
-	if remaining, err := e.computeHealth(ctx, accountID, cfg); err == nil && remaining.DebtUSD <= 1e-9 {
-		if err := e.db.Model(&models.MarginAccount{}).Where("id = ?", accountID).
-			Update("status", models.MarginAccountLiquidated).Error; err != nil {
-			return nil, err
+	// Seizing collateral and repaying debt must be one unit of work: if the
+	// process died between the two, the trader would lose collateral while the
+	// debt stayed on the books. The account row is locked FOR UPDATE so two
+	// liquidators cannot both settle the same account from the same snapshot,
+	// and every read and write below runs inside this transaction so it sees a
+	// consistent view.
+	err = e.db.Transaction(func(tx *gorm.DB) error {
+		var locked models.MarginAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&locked, "id = ?", accountID).Error; err != nil {
+			return err
 		}
+		if locked.Status != models.MarginAccountActive {
+			return fmt.Errorf("margin account is %s", locked.Status)
+		}
+		if err := e.seizeCollateral(ctx, tx, accountID, seizeValue); err != nil {
+			return err
+		}
+		if err := e.reduceDebt(ctx, tx, accountID, repayable); err != nil {
+			return err
+		}
+		// Mark the account liquidated once its debt is cleared, reading the
+		// post-settlement state inside the same transaction.
+		if remaining, err := e.computeHealth(ctx, tx, accountID, cfg); err == nil && remaining.DebtUSD <= 1e-9 {
+			if err := tx.Model(&models.MarginAccount{}).Where("id = ?", accountID).
+				Update("status", models.MarginAccountLiquidated).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &LiquidationCandidate{AccountID: accountID.String(), HealthFactor: health.HealthFactor, DebtUSD: health.DebtUSD}, nil
@@ -684,9 +705,9 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 
 // seizeCollateral removes collateral worth valueUSD, proportionally across the
 // account's holdings.
-func (e *MarginEngine) seizeCollateral(ctx context.Context, accountID uuid.UUID, valueUSD float64) error {
+func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64) error {
 	var collaterals []models.MarginCollateral
-	if err := e.db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
+	if err := db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
 		return err
 	}
 
@@ -743,7 +764,7 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, accountID uuid.UUID,
 			remaining = new(big.Rat)
 		}
 		stored := amountValueString(remaining)
-		if err := e.db.Model(&models.MarginCollateral{}).Where("id = ?", h.row.ID).
+		if err := db.Model(&models.MarginCollateral{}).Where("id = ?", h.row.ID).
 			Update("amount", stored).Error; err != nil {
 			return err
 		}
@@ -752,9 +773,9 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, accountID uuid.UUID,
 }
 
 // reduceDebt reduces an account's debt by valueUSD, clearing interest first.
-func (e *MarginEngine) reduceDebt(ctx context.Context, accountID uuid.UUID, valueUSD float64) error {
+func (e *MarginEngine) reduceDebt(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64) error {
 	var borrows []models.MarginBorrow
-	if err := e.db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
+	if err := db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
 		return err
 	}
 	remaining := valueUSD
@@ -806,13 +827,13 @@ func (e *MarginEngine) reduceDebt(ctx context.Context, accountID uuid.UUID, valu
 		}
 
 		if newPrincipal.Sign() == 0 && newInterest.Sign() == 0 {
-			if err := e.db.Delete(&models.MarginBorrow{}, "id = ?", borrows[i].ID).Error; err != nil {
+			if err := db.Delete(&models.MarginBorrow{}, "id = ?", borrows[i].ID).Error; err != nil {
 				return err
 			}
 		} else {
 			storedPrincipal := amountValueString(newPrincipal)
 			storedInterest := amountValueString(newInterest)
-			if err := e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
+			if err := db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
 				Updates(map[string]interface{}{
 					"principal":        storedPrincipal,
 					"accrued_interest": storedInterest,
@@ -853,7 +874,7 @@ func (e *MarginEngine) GetAccountView(ctx context.Context, userID string, accoun
 	if err := e.accrueAccountInterest(accountID, cfg, time.Now().UTC()); err != nil {
 		return nil, err
 	}
-	health, err := e.computeHealth(ctx, accountID, cfg)
+	health, err := e.computeHealth(ctx, e.db, accountID, cfg)
 	if err != nil {
 		return nil, err
 	}
