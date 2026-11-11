@@ -14,6 +14,7 @@ import (
 	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 	"tigerswap/backend/services"
+	"tigerswap/backend/services/botengine"
 )
 
 // depositWatcherChains returns the chains the deposit watcher should scan.
@@ -264,6 +265,16 @@ func main() {
 	services.StartPositionMaintenance(realtimeCtx, perpetualEngine, copyTradingEngine, services.DefaultPositionRefreshInterval)
 	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
 	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
+
+	// Drive every active bot against live market data. The Rust engine is the
+	// strategy layer; when the server is built without it the runner reports
+	// that instead of pretending bots trade.
+	botEngine, err := botengine.New()
+	if err != nil {
+		log.Printf("bot engine unavailable: %v", err)
+	}
+	botRunner := services.NewBotRunner(db, botsService, perpetualEngine, botEngine)
+	go botRunner.Run(realtimeCtx)
 
 	router := setupRouter(apiDeps{
 		redis:              redis,

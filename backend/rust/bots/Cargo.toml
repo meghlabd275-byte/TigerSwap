@@ -8,7 +8,12 @@ license = "MIT"
 
 [lib]
 name = "tigerswap_bots"
-crate-type = ["rlib"]
+# rlib keeps the crate usable as a normal Rust dependency; cdylib exports the C
+# ABI the Go control plane links against. The shared library is deliberate: the
+# staticlib embeds LLVM bitcode, which Go's cgo linker rejects as a disallowed
+# LTO section.
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 parking_lot = "0.12"
+serde_json = "1"

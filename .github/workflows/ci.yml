@@ -54,6 +54,18 @@ jobs:
           set -e
           cd "$GITHUB_WORKSPACE/backend/rust" && cargo build --release && cargo test --release
 
+      - name: Build and test the Rust-tagged Go control plane
+        run: |
+          set -e
+          # The bots crate is a cdylib; the Go server links it through cgo behind
+          # the `rust` build tag. Build the library, then build and test the
+          # tagged Go packages so the cgo bridge and the engine are exercised
+          # together rather than only compiled in isolation.
+          cd "$GITHUB_WORKSPACE/backend/rust" && cargo build --release -p tigerswap-bots
+          cd "$GITHUB_WORKSPACE/backend"
+          go build -tags rust ./cmd/api
+          go test -tags rust ./services/botengine/
+
       - name: Build and test C++ packages
         run: |
           set -e

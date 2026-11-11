@@ -467,3 +467,39 @@ and the wallet page reads the same hook.
 - Contract fixtures live in `frontend/src/lib/serverContract.test.ts` and are
   captured from the handlers by `TestPortfolioWireFormat` in
   `backend/services/portfolio_service_test.go` (run with `-v` to regenerate).
+
+## Trading bots (Rust engine, Go control plane)
+
+`backend/rust/bots` is the strategy layer: pure strategies plus a stateful
+`Engine` that remembers a grid's filled levels and a DCA bot's schedule. The Go
+side (`services/bots_service.go`, `services/bot_runner.go`,
+`services/botengine/`) is only the control plane — it never reimplements a
+strategy.
+
+- The engine is a `cdylib`, not a `staticlib`. Go's cgo linker rejects the LLVM
+  bitcode a staticlib embeds (a disallowed `.llvmbc` LTO section), so the crate
+  builds `["rlib", "cdylib"]` and the server links `libtigerswap_bots.so`.
+- The bridge is build-tagged `rust` (`services/botengine/bridge_cgo.go`); a
+  default build uses `bridge_stub.go`, whose `New` returns `ErrUnavailable`.
+  Build the library first, then the server:
+  `cd backend/rust && cargo build --release -p tigerswap-bots`, then
+  `cd backend && go build -tags rust ./cmd/api`.
+- Every FFI call takes and returns JSON in an envelope
+  (`{"ok":true,"data":...}` / `{"ok":false,"error":"..."}`). A null return only
+  ever means allocation failed. Prices and quantities are exact decimal strings,
+  never floats.
+- `BotRunner.Run` sweeps every active bot on an interval. For each it builds a
+  snapshot from the perp engine's own resting orders plus the oracle mark
+  (`PerpetualEngine.BookSnapshot`), steps the engine, and turns the returned
+  orders into real resting orders via `PerpetualEngine.CreateOrder`. A bot with
+  no priceable market is skipped, never fed a fabricated book.
+- The runner enforces the operator's `max_order_size` and `max_open_orders`
+  before placing anything; a paused or stopped bot is unloaded from the engine
+  on the next sweep so it stops trading.
+- `services/bot_runner_test.go` drives the control plane against a real database
+  and a real `PerpetualEngine`. `services/botengine/bridge_cgo_test.go` (built
+  with `-tags rust`) drives the real Rust library through cgo. CI builds and
+  tests the `rust`-tagged path so the bridge cannot rot.
+- The C++ matching engine (`backend/cpp`) exposes exact-string depth
+  (`Book.DepthExact`) alongside the float view, so a consumer that needs an
+  unrounded price reads it without a `float64` round-trip.

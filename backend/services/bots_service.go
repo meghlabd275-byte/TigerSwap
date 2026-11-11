@@ -791,3 +791,40 @@ func (s *BotsService) AvailableStrategies(c *gin.Context) {
 // sweepInterval is how often a caller should poll for scheduled work. Exposed
 // so a client does not invent its own cadence.
 const sweepInterval = 5 * time.Second
+
+// activeBots returns every active bot, oldest first, so the runner processes a
+// bot in the order it was created. It reads the database rather than a cache so
+// a status change made through the API takes effect on the next tick.
+func (s *BotsService) activeBots() ([]models.BotInstance, error) {
+	var bots []models.BotInstance
+	if err := s.db.Where("status = ?", models.BotStatusActive).
+		Order("id ASC").Find(&bots).Error; err != nil {
+		return nil, err
+	}
+	return bots, nil
+}
+
+// pendingOrderCount is the number of the bot's orders that are still working.
+func (s *BotsService) pendingOrderCount(botID uint) (int64, error) {
+	var count int64
+	err := s.db.Model(&models.BotOrder{}).
+		Where("bot_id = ? AND status = ?", botID, "pending").Count(&count).Error
+	return count, err
+}
+
+// recordBotOrders persists the orders a bot decided to place. They are written
+// in one transaction so a partial batch cannot leave a bot's audit trail
+// inconsistent with its position in the market.
+func (s *BotsService) recordBotOrders(bot models.BotInstance, orders []models.BotOrder) error {
+	if len(orders) == 0 {
+		return nil
+	}
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&orders).Error; err != nil {
+			return err
+		}
+		return tx.Model(&models.BotInstance{}).
+			Where("id = ?", bot.ID).
+			Update("last_run_at", time.Now().UTC()).Error
+	})
+}

@@ -600,3 +600,50 @@ func TestIntegerPriceExactness(t *testing.T) {
 		t.Fatalf("expected quantity 0.3, got %v", trades[0].Quantity)
 	}
 }
+
+// TestDepthExactMatchesFloatDepth verifies the exact-string depth carries the
+// same levels as the float view, with no rounding.
+func TestDepthExactMatchesFloatDepth(t *testing.T) {
+	e := testEngine(t)
+
+	mustSubmit(t, e, Order{Trader: "m1", Pair: "BTC/RUSD", Side: SideSell, Type: TypeLimit, Price: 60000.5, Quantity: 1.25})
+	mustSubmit(t, e, Order{Trader: "m2", Pair: "BTC/RUSD", Side: SideBuy, Type: TypeLimit, Price: 59999.25, Quantity: 0.5})
+
+	book, err := e.Book("BTC/RUSD")
+	if err != nil {
+		t.Fatalf("book: %v", err)
+	}
+
+	bids, asks := book.DepthExact(5)
+	if len(asks) != 1 || asks[0].Price != "60000.5" || asks[0].Quantity != "1.25" {
+		t.Fatalf("unexpected ask depth: %+v", asks)
+	}
+	if len(bids) != 1 || bids[0].Price != "59999.25" || bids[0].Quantity != "0.5" {
+		t.Fatalf("unexpected bid depth: %+v", bids)
+	}
+	if book.LastPriceExact() != "0" {
+		t.Fatalf("expected no last price before a trade, got %q", book.LastPriceExact())
+	}
+}
+
+// TestFormatScaledTrimsTrailingZeros verifies the exact renderer never emits a
+// trailing zero or a bare decimal point.
+func TestFormatScaledTrimsTrailingZeros(t *testing.T) {
+	cases := []struct {
+		value int64
+		scale int64
+		want  string
+	}{
+		{60000, 1, "60000"},
+		{6000050000000, 100000000, "60000.5"},
+		{125000000, 100000000, "1.25"},
+		{-250000000, 100000000, "-2.5"},
+		{0, 100000000, "0"},
+	}
+	for _, tc := range cases {
+		if got := formatScaled(tc.value, tc.scale); got != tc.want {
+			t.Fatalf("formatScaled(%d, %d) = %q, want %q", tc.value, tc.scale, got, tc.want)
+		}
+	}
+}
+

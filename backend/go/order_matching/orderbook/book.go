@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -652,6 +654,82 @@ func (b *Book) Depth(limit int) ([]Level, []Level) {
 	}
 
 	return build(b.bids), build(b.asks)
+}
+
+// DepthExact returns the top `limit` levels of each side as exact decimal
+// strings, using the book's own price and quantity scales.
+//
+// It exists because a bot snapshot must never be built from floats: the
+// float64 `Depth` view rounds a price to the nearest representable double, and
+// a bot that sizes against a rounded price can be a tick wrong. The caller
+// converts the strings to fixed point without loss.
+func (b *Book) DepthExact(limit int) ([]ExactLevel, []ExactLevel) {
+        b.mu.RLock()
+        defer b.mu.RUnlock()
+
+        if limit <= 0 {
+                limit = 20
+        }
+        build := func(s *sideBook) []ExactLevel {
+                n := len(s.levels)
+                if n > limit {
+                        n = limit
+                }
+                out := make([]ExactLevel, 0, n)
+                for i := 0; i < n; i++ {
+                        l := s.levels[i]
+                        out = append(out, ExactLevel{
+                                Price:    formatScaled(l.priceTicks, b.cfg.PriceScale),
+                                Quantity: formatScaled(l.totalUnits, b.cfg.QtyScale),
+                                Orders:   len(l.orders),
+                        })
+                }
+                return out
+        }
+        return build(b.bids), build(b.asks)
+}
+
+// ExactLevel is one price level rendered as exact decimal strings.
+type ExactLevel struct {
+        Price    string `json:"price"`
+        Quantity string `json:"quantity"`
+        Orders   int    `json:"orders"`
+}
+
+// LastPriceExact renders the last traded price exactly, or "0" when nothing
+// has traded yet.
+func (b *Book) LastPriceExact() string {
+        b.mu.RLock()
+        defer b.mu.RUnlock()
+        return formatScaled(b.lastPriceTk, b.cfg.PriceScale)
+}
+
+// formatScaled renders an integer count of 1/scale units as a decimal string,
+// trimming trailing zeros. The result is exact for any value the engine holds.
+func formatScaled(value, scale int64) string {
+        if scale <= 0 {
+                scale = 1
+        }
+        negative := value < 0
+        if negative {
+                value = -value
+        }
+        whole := value / scale
+        fraction := value % scale
+        if fraction == 0 {
+                if negative {
+                        return "-" + strconv.FormatInt(whole, 10)
+                }
+                return strconv.FormatInt(whole, 10)
+        }
+        digits := strconv.FormatInt(scale, 10)
+        width := len(digits) - 1
+        text := fmt.Sprintf("%0*d", width, fraction)
+        text = strings.TrimRight(text, "0")
+        if negative {
+                return "-" + strconv.FormatInt(whole, 10) + "." + text
+        }
+        return strconv.FormatInt(whole, 10) + "." + text
 }
 
 // BestBid and BestAsk return the top of book, or 0 when that side is empty.
