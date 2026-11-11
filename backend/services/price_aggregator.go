@@ -31,7 +31,6 @@ type PriceAggregator struct {
 	signer       *ecdsa.PrivateKey
 	tigerClients map[int64]*tigerswap.Client
 	mu           sync.RWMutex
-	prices       map[string]*PriceData
 }
 
 // PriceData represents price data from multiple sources
@@ -87,7 +86,6 @@ func NewPriceAggregator(redisClient *redis.Client) *PriceAggregator {
 		redis:        redisClient,
 		signer:       signer,
 		tigerClients: make(map[int64]*tigerswap.Client),
-		prices:       make(map[string]*PriceData),
 	}
 }
 
