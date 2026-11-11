@@ -84,6 +84,33 @@ type FundingInfo struct {
 	InterestRate    float64   `json:"interest_rate"`
 }
 
+// clonePosition returns a deep copy of a position. The engine re-marks
+// positions on a background tick while HTTP handlers read them, so an accessor
+// must never hand out a pointer into the live map: the reader would observe a
+// half-written mark price and PnL and, under `-race`, would be flagged as a
+// data race. Every accessor returns a clone.
+func clonePosition(position *PerpetualPosition) *PerpetualPosition {
+	if position == nil {
+		return nil
+	}
+	copied := *position
+	if position.ClosedAt != nil {
+		closedAt := *position.ClosedAt
+		copied.ClosedAt = &closedAt
+	}
+	return &copied
+}
+
+// cloneOrder returns a deep copy of an order for the same reason clonePosition
+// exists: the matching loop mutates orders while handlers serialise them.
+func cloneOrder(order *PerpetualOrder) *PerpetualOrder {
+	if order == nil {
+		return nil
+	}
+	copied := *order
+	return &copied
+}
+
 // perpMarketConfig is the tradable subset of an admin listing. It is derived
 // from a FuturesMarket or PerpsMarket row and carries everything the trading
 // path needs: the oracle symbol, leverage cap, margin rates and fees.
@@ -572,7 +599,7 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 		return nil, err
 	}
 
-	return position, nil
+	return clonePosition(position), nil
 }
 
 // ClosePosition closes an existing position
@@ -635,7 +662,7 @@ func (e *PerpetualEngine) ClosePosition(ctx context.Context, ownerID, positionID
 		return nil, err
 	}
 
-	return position, nil
+	return clonePosition(position), nil
 }
 
 // GetPosition returns a specific position
@@ -648,7 +675,7 @@ func (e *PerpetualEngine) GetPosition(positionID string) (*PerpetualPosition, er
 		return nil, fmt.Errorf("position not found")
 	}
 
-	return position, nil
+	return clonePosition(position), nil
 }
 
 // GetUserPositions returns all positions for a user
@@ -659,7 +686,7 @@ func (e *PerpetualEngine) GetUserPositions(userAddress string) []*PerpetualPosit
 	var userPositions []*PerpetualPosition
 	for _, pos := range e.positions {
 		if pos.UserAddress == userAddress && positionIsLive(pos.Status) {
-			userPositions = append(userPositions, pos)
+			userPositions = append(userPositions, clonePosition(pos))
 		}
 	}
 
@@ -760,7 +787,7 @@ func (e *PerpetualEngine) LiquidatablePositions() []*PerpetualPosition {
 	var liquidatable []*PerpetualPosition
 	for _, position := range e.positions {
 		if position.Status == "liquidatable" {
-			liquidatable = append(liquidatable, position)
+			liquidatable = append(liquidatable, clonePosition(position))
 		}
 	}
 	return liquidatable
@@ -911,7 +938,7 @@ func (e *PerpetualEngine) CreateOrder(ctx context.Context, userAddress, pair, si
 	}
 
 	order := &PerpetualOrder{
-		ID:           fmt.Sprintf("ord_%d", time.Now().UnixNano()),
+		ID:           "ord_" + uuid.NewString(),
 		UserAddress:  userAddress,
 		Pair:         pair,
 		Side:         side,
@@ -938,7 +965,7 @@ func (e *PerpetualEngine) CreateOrder(ctx context.Context, userAddress, pair, si
 		return e.executeOrder(ctx, order)
 	}
 
-	return order, nil
+	return cloneOrder(order), nil
 }
 
 // CancelOrder cancels a pending order. When owner is non-empty the order must
@@ -991,7 +1018,7 @@ func (e *PerpetualEngine) executeOrder(ctx context.Context, order *PerpetualOrde
 	}
 	e.mu.Unlock()
 
-	return order, nil
+	return cloneOrder(order), nil
 }
 
 // MatchPendingOrders evaluates every resting order against the live oracle price
@@ -1110,7 +1137,7 @@ func (e *PerpetualEngine) fillRestingOrder(ctx context.Context, orderID string) 
 	if err := e.persistOrder(order); err != nil {
 		return nil, err
 	}
-	return order, nil
+	return cloneOrder(order), nil
 }
 
 func (e *PerpetualEngine) getMarkPrice(ctx context.Context, pair string) (float64, error) {
@@ -1419,7 +1446,7 @@ func (e *PerpetualEngine) GetUserOrders(owner string) []*PerpetualOrder {
 	orders := make([]*PerpetualOrder, 0)
 	for _, order := range e.orders {
 		if order.UserAddress == owner {
-			orders = append(orders, order)
+			orders = append(orders, cloneOrder(order))
 		}
 	}
 	sort.Slice(orders, func(i, j int) bool {

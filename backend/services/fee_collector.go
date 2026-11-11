@@ -19,6 +19,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"tigerswap/backend/models"
@@ -150,7 +151,11 @@ func (s *FeeCollectorService) UpdateConfig(config *FeeConfig) error {
 func (s *FeeCollectorService) GetConfig() *FeeConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.config
+	if s.config == nil {
+		return nil
+	}
+	copied := *s.config
+	return &copied
 }
 
 // CollectSwapFee calculates and records swap fee
@@ -168,7 +173,7 @@ func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash s
 	feeUSD := feeAmount * priceIn
 
 	record := &FeeRecord{
-		ID:            fmt.Sprintf("swap_%d", time.Now().UnixNano()),
+		ID:            "swap_" + uuid.NewString(),
 		Type:          "swap",
 		Amount:        fmt.Sprintf("%.8f", feeAmount),
 		AmountUSD:     feeUSD,
@@ -205,7 +210,7 @@ func (s *FeeCollectorService) CollectBridgeFee(srcChain, dstChain, token, amount
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
-		ID:            fmt.Sprintf("bridge_%d", time.Now().UnixNano()),
+		ID:            "bridge_" + uuid.NewString(),
 		Type:          "bridge",
 		Amount:        fmt.Sprintf("%.8f", feeAmount),
 		AmountUSD:     feeUSD,
@@ -241,7 +246,7 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
-		ID:            fmt.Sprintf("wallet_%d", time.Now().UnixNano()),
+		ID:            "wallet_" + uuid.NewString(),
 		Type:          "wallet",
 		Amount:        fmt.Sprintf("%.8f", feeAmount),
 		AmountUSD:     feeUSD,
@@ -278,7 +283,7 @@ func (s *FeeCollectorService) CollectWithdrawFee(token, amount, txHash string, c
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
-		ID:            fmt.Sprintf("withdraw_%d", time.Now().UnixNano()),
+		ID:            "withdraw_" + uuid.NewString(),
 		Type:          "withdraw",
 		Amount:        fmt.Sprintf("%.8f", feeAmount),
 		AmountUSD:     feeUSD,
@@ -315,7 +320,7 @@ func (s *FeeCollectorService) CollectLaunchpadFee(projectID, token, amount, txHa
 	feeUSD := feeAmount * price
 
 	record := &FeeRecord{
-		ID:            fmt.Sprintf("launchpad_%d", time.Now().UnixNano()),
+		ID:            "launchpad_" + uuid.NewString(),
 		Type:          "launchpad",
 		Amount:        fmt.Sprintf("%.8f", feeAmount),
 		AmountUSD:     feeUSD,
@@ -439,34 +444,36 @@ func (s *FeeCollectorService) GetRevenueReport(period string) *RevenueReport {
 	return report
 }
 
-// GetFeeRecords returns all fee records of a type
+// GetFeeRecords returns a snapshot of the records of one type. The records are
+// copied: DistributeFees mutates a record's status in place under the write
+// lock, so returning the live pointers would let a handler serialise a record
+// while that write is in flight.
 func (s *FeeCollectorService) GetFeeRecords(feeType string) []*FeeRecord {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var records []*FeeRecord
 
+	appendCopies := func(source map[string]*FeeRecord) {
+		for _, r := range source {
+			copied := *r
+			records = append(records, &copied)
+		}
+	}
+
 	switch feeType {
 	case "swap":
-		for _, r := range s.swapFees {
-			records = append(records, r)
-		}
+		appendCopies(s.swapFees)
 	case "bridge":
-		for _, r := range s.bridgeFees {
-			records = append(records, r)
-		}
+		appendCopies(s.bridgeFees)
 	case "wallet":
-		for _, r := range s.walletFees {
-			records = append(records, r)
-		}
+		appendCopies(s.walletFees)
 	case "withdraw":
-		for _, r := range s.withdrawFees {
-			records = append(records, r)
-		}
+		appendCopies(s.withdrawFees)
 	case "launchpad":
-		for _, r := range s.launchpadFees {
-			records = append(records, r)
-		}
+		appendCopies(s.launchpadFees)
+	case "deposit":
+		appendCopies(s.depositFees)
 	}
 
 	return records
