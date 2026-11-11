@@ -295,9 +295,16 @@ func TestPerpCopySourceRendersRestingOrders(t *testing.T) {
 	if _, err := engine.CreateOrder(ctx, "0xleader", "BTC/RUSD", "long", "limit", "60000", 59000, 0, 3600); err != nil {
 		t.Fatalf("leader order: %v", err)
 	}
+	// A second order on another listed market must not be mirrored by a bot
+	// configured for BTC/RUSD.
+	engine.markets["ETH/RUSD"] = &perpMarketConfig{Symbol: "ETH/RUSD", OracleSymbol: "ETH", MaxLeverage: 50}
+	if _, err := engine.CreateOrder(ctx, "0xleader", "ETH/RUSD", "long", "limit", "3000", 3000, 0, 3600); err != nil {
+		t.Fatalf("leader second order: %v", err)
+	}
 
 	source := NewPerpCopySource(engine)
 	raw, err := source.Signals(ctx, models.BotInstance{
+		Symbol: "BTC/RUSD",
 		Config: `{"trader_address":"0xleader","scale_bps":5000}`,
 	})
 	if err != nil {

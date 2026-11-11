@@ -291,6 +291,11 @@ func (s *perpCopySource) Signals(_ context.Context, bot models.BotInstance) (jso
 		if order.Status != "pending" {
 			continue
 		}
+		// The operator chooses which market to copy by the bot's own symbol, so a
+		// follower never mirrors a market it was not configured for.
+		if bot.Symbol != "" && order.Pair != bot.Symbol {
+			continue
+		}
 		quantity, err := perpOrderBaseQuantity(order)
 		if err != nil {
 			continue
