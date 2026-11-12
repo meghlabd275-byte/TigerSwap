@@ -91,7 +91,7 @@ func NewMarginEngine(db *gorm.DB, priceAgg priceSource) *MarginEngine {
 func (e *MarginEngine) SetLedger(ledger *LedgerService, settlementChainID int64) {
 	e.ledger = ledger
 	e.settlementChainID = settlementChainID
-	e.assetResolver = resolveSettlementFromConfig(settlementChainID)
+	e.assetResolver = resolveAssetFromConfig(settlementChainID)
 }
 
 // SetAssetResolver overrides how an asset symbol is resolved to a ledger entry.

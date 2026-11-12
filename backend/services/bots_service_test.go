@@ -42,6 +42,7 @@ func newBotsTestDB(t *testing.T) *gorm.DB {
 		&models.BotPerformance{},
 		&models.OtcOrder{},
 		&models.TwammOrder{},
+		&models.AccountBalance{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -343,7 +344,8 @@ func TestListBotOrdersRejectsANonNumericId(t *testing.T) {
 
 func TestCreateOtcOrderRequiresAValidExpiry(t *testing.T) {
 	db := newBotsTestDB(t)
-	service := NewOtcService(db)
+	service := newOtcTestService(t, db)
+	fundOtcUser(t, db, "1", "BTC", 100)
 
 	base := `{"symbol":"BTC/RUSD","side":"sell","quantity":"1","price":"60000","min_fill":"1","expires_in_seconds":%d}`
 
@@ -365,7 +367,8 @@ func TestCreateOtcOrderRequiresAValidExpiry(t *testing.T) {
 
 func TestCreateOtcOrderRejectsMinFillAboveQuantity(t *testing.T) {
 	db := newBotsTestDB(t)
-	service := NewOtcService(db)
+	service := newOtcTestService(t, db)
+	fundOtcUser(t, db, "1", "BTC", 100)
 
 	body := `{"symbol":"BTC/RUSD","side":"sell","quantity":"1","price":"60000","min_fill":"2","expires_in_seconds":3600}`
 	status, _ := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/otc/orders", body, nil)
@@ -376,11 +379,12 @@ func TestCreateOtcOrderRejectsMinFillAboveQuantity(t *testing.T) {
 
 func TestTakeOtcOrderRefusesASelfTake(t *testing.T) {
 	db := newBotsTestDB(t)
-	service := NewOtcService(db)
+	service := newOtcTestService(t, db)
 
 	order := models.OtcOrder{
 		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "1", Price: "60000",
-		MinFill: "1", Status: "open", ExpiresAt: time.Now().UTC().Add(time.Hour),
+		MinFill: "1", Status: "open", EscrowAsset: "BTC", EscrowAmount: "1",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("seed order: %v", err)
@@ -395,11 +399,12 @@ func TestTakeOtcOrderRefusesASelfTake(t *testing.T) {
 
 func TestTakeOtcOrderRefusesBelowMinFill(t *testing.T) {
 	db := newBotsTestDB(t)
-	service := NewOtcService(db)
+	service := newOtcTestService(t, db)
 
 	order := models.OtcOrder{
 		MakerID: "1", Symbol: "BTC/RUSD", Side: "sell", Quantity: "10", Price: "60000",
-		MinFill: "5", Status: "open", ExpiresAt: time.Now().UTC().Add(time.Hour),
+		MinFill: "5", Status: "open", EscrowAsset: "BTC", EscrowAmount: "10",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}
 	if err := db.Create(&order).Error; err != nil {
 		t.Fatalf("seed order: %v", err)

@@ -119,7 +119,8 @@ func TestBotResponseWireFormat(t *testing.T) {
 
 func TestOtcOrderWireFormat(t *testing.T) {
 	db := newBotsTestDB(t)
-	service := NewOtcService(db)
+	service := newOtcTestService(t, db)
+	fundOtcUser(t, db, "7", "RUSD", 1000000)
 
 	status, body := callHandler(t, service.CreateOrder, "7", http.MethodPost, "/otc/orders",
 		`{"symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000",`+
@@ -131,10 +132,11 @@ func TestOtcOrderWireFormat(t *testing.T) {
 	t.Logf("SERVER_OTC_ORDER = `%s`", body)
 
 	// taker_id, counterparty and the settlement hashes are omitempty, so an
-	// unfilled order carries only these keys.
+	// unfilled order carries only these keys plus the escrow it posted.
 	assertKeys(t, body,
 		"id", "maker_id", "symbol", "side", "quantity", "price",
-		"status", "min_fill", "expires_at", "created_at", "updated_at",
+		"status", "min_fill", "escrow_asset", "escrow_amount",
+		"expires_at", "created_at", "updated_at",
 	)
 }
 

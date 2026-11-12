@@ -1361,6 +1361,8 @@ export interface OtcOrder {
   status: string;
   min_fill: string;
   counterparty: string | null;
+  escrow_asset: string | null;
+  escrow_amount: string | null;
   escrow_tx_hash: string | null;
   settle_tx_hash: string | null;
   expires_at: string;
@@ -1379,6 +1381,8 @@ export const otcOrderValidator = object<OtcOrder>({
   status: string,
   min_fill: withDefault(decimal, "0"),
   counterparty: withDefault(nullable(string), null),
+  escrow_asset: withDefault(nullable(string), null),
+  escrow_amount: withDefault(nullable(string), null),
   escrow_tx_hash: withDefault(nullable(string), null),
   settle_tx_hash: withDefault(nullable(string), null),
   expires_at: withDefault(timestamp, new Date(0).toISOString()),

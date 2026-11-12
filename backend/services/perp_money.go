@@ -184,6 +184,28 @@ func resolveSettlementFromConfig(chainID int64) func(pair string) (perpSettlemen
 	}
 }
 
+// resolveAssetFromConfig resolves a bare asset symbol (BTC, RUSD, ...) to its
+// ledger entry from the chain token registry. The margin engine names its assets
+// directly rather than as a pair, so it needs this resolver instead of the
+// pair-based perp one.
+func resolveAssetFromConfig(chainID int64) func(asset string) (perpSettlement, error) {
+	return func(asset string) (perpSettlement, error) {
+		symbol := strings.ToUpper(strings.TrimSpace(asset))
+		if symbol == "" {
+			return perpSettlement{}, errors.New("asset symbol is empty")
+		}
+		address, ok := config.TokenAddress(chainID, symbol)
+		if !ok {
+			return perpSettlement{}, fmt.Errorf("asset %s is not configured on chain %d", symbol, chainID)
+		}
+		decimals, ok := config.TokenDecimals(chainID, address)
+		if !ok {
+			return perpSettlement{}, fmt.Errorf("asset %s has no configured decimals on chain %d", symbol, chainID)
+		}
+		return perpSettlement{Symbol: symbol, ChainID: chainID, Address: address, Decimals: decimals}, nil
+	}
+}
+
 // scaleToBaseUnits converts an exact decimal amount into the token's smallest
 // unit, truncating any remainder. Truncation (never rounding up) means the
 // ledger can never be credited more than the exact amount owed.

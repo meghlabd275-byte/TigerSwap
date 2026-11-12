@@ -20,12 +20,67 @@ import (
 // OtcService implements private block trades. An OTC order never enters the
 // public book, so a large trade produces no price impact: the two
 // counterparties are matched directly and the fill is recorded.
+//
+// Both sides of a trade are escrowed on the platform ledger. A sell escrows the
+// base asset and a buy escrows the quote cost, so a taker always receives funds
+// that were already committed, and a cancel or expiry refunds them.
 type OtcService struct {
-	db *gorm.DB
+	db                *gorm.DB
+	ledger            *LedgerService
+	settlementChainID int64
+	assetResolver     func(asset string) (perpSettlement, error)
 }
 
 func NewOtcService(db *gorm.DB) *OtcService {
 	return &OtcService{db: db}
+}
+
+// SetLedger wires the ledger that OTC escrow draws on, and the chain whose token
+// registry names the escrowed asset. Without it the service refuses to create an
+// order rather than publishing one that moves no funds.
+func (s *OtcService) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	s.ledger = ledger
+	s.settlementChainID = settlementChainID
+	s.assetResolver = resolveAssetFromConfig(settlementChainID)
+}
+
+// SetAssetResolver overrides how an asset symbol resolves to a ledger entry.
+// Tests use it to supply a fixed registry.
+func (s *OtcService) SetAssetResolver(resolver func(asset string) (perpSettlement, error)) {
+	s.assetResolver = resolver
+}
+
+// assetLedger resolves an asset symbol to its ledger entry, requiring both a
+// ledger and a resolver so a deployment that forgets either moves no funds.
+func (s *OtcService) assetLedger(asset string) (perpSettlement, error) {
+	if s.ledger == nil {
+		return perpSettlement{}, errors.New("otc service has no ledger configured; funds cannot be escrowed")
+	}
+	if s.assetResolver == nil {
+		return perpSettlement{}, fmt.Errorf("no ledger asset resolver configured for %s", asset)
+	}
+	resolved, err := s.assetResolver(asset)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if resolved.Symbol == "" || resolved.Address == "" {
+		return perpSettlement{}, fmt.Errorf("asset %s has no resolvable ledger entry", asset)
+	}
+	if resolved.Decimals < 0 || resolved.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("asset %s has invalid decimals %d", resolved.Symbol, resolved.Decimals)
+	}
+	return resolved, nil
+}
+
+// otcOrderAssets returns the (base, quote) assets of an order symbol. A symbol
+// with no quote side cannot be escrowed, so it is refused rather than defaulted.
+func otcOrderAssets(symbol string) (base, quote string, err error) {
+	normalized := strings.ToUpper(strings.TrimSpace(symbol))
+	i := strings.IndexByte(normalized, '/')
+	if i <= 0 || i >= len(normalized)-1 {
+		return "", "", fmt.Errorf("otc symbol %q is not a BASE/QUOTE pair", symbol)
+	}
+	return strings.TrimSpace(normalized[:i]), strings.TrimSpace(normalized[i+1:]), nil
 }
 
 // maxOtcExpiry bounds how far ahead an order may expire, so an order cannot be
@@ -98,19 +153,66 @@ func (s *OtcService) CreateOrder(c *gin.Context) {
 		return
 	}
 
+	// Escrow the maker's side of the trade before the order is published: the base
+	// asset for a sell, the quote cost for a buy. Without the funds committed, a
+	// taker would be promised an asset the maker never posted.
+	baseAsset, quoteAsset, err := otcOrderAssets(symbol)
+	if err != nil {
+		respondBadRequestError(c, err)
+		return
+	}
+	quantityValue, err := parseDecimal(req.Quantity)
+	if err != nil {
+		respondBadRequestError(c, fmt.Errorf("quantity: %w", err))
+		return
+	}
+	priceValue, err := parseDecimal(req.Price)
+	if err != nil {
+		respondBadRequestError(c, fmt.Errorf("price: %w", err))
+		return
+	}
+	var escrowAsset string
+	var escrowValue *big.Rat
+	if req.Side == "sell" {
+		escrowAsset, escrowValue = baseAsset, quantityValue
+	} else {
+		escrowAsset = quoteAsset
+		escrowValue = new(big.Rat).Mul(quantityValue, priceValue)
+	}
+	escrowLedger, err := s.assetLedger(escrowAsset)
+	if err != nil {
+		respondBadRequestError(c, err)
+		return
+	}
+	escrowUnits := scaleToBaseUnits(escrowValue, escrowLedger.Decimals)
+	if escrowUnits.Sign() <= 0 {
+		respondBadRequestError(c, fmt.Errorf("order escrow of %s is below one base unit of %s", escrowAsset, escrowLedger.Symbol))
+		return
+	}
+	escrowAmount := formatDecimal(escrowValue, 8)
+
 	order := models.OtcOrder{
-		MakerID:   userID,
-		Symbol:    symbol,
-		Side:      req.Side,
-		Quantity:  req.Quantity,
-		Price:     req.Price,
-		MinFill:   minFill,
-		Status:    "open",
-		ExpiresAt: time.Now().UTC().Add(time.Duration(req.ExpiresIn) * time.Second),
+		MakerID:      userID,
+		Symbol:       symbol,
+		Side:         req.Side,
+		Quantity:     req.Quantity,
+		Price:        req.Price,
+		MinFill:      minFill,
+		Status:       "open",
+		EscrowAsset:  escrowLedger.Symbol,
+		EscrowAmount: escrowAmount,
+		ExpiresAt:    time.Now().UTC().Add(time.Duration(req.ExpiresIn) * time.Second),
 	}
 
-	if err := s.db.Create(&order).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not create otc order"})
+	// The maker's escrow and the order row are written in one transaction, so an
+	// order can never be published without the funds it promises.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.ledger.debitWithin(tx, userID, escrowLedger.ChainID, escrowLedger.Address, escrowUnits); err != nil {
+			return err
+		}
+		return tx.Create(&order).Error
+	}); err != nil {
+		respondServiceError(c, err)
 		return
 	}
 
@@ -165,7 +267,121 @@ type takeOtcRequest struct {
 	Quantity string `json:"quantity"`
 }
 
-// TakeOrder fills an open OTC order, wholly or down to its minimum fill.
+// settleOtcTake moves both legs of a matched OTC trade on the ledger: the taker
+// pays their side, the maker receives it, the taker receives the escrowed asset,
+// and any escrow the maker posted beyond the fill is refunded. It runs inside the
+// caller's transaction so the ledger moves commit with the order's new status.
+func (s *OtcService) settleOtcTake(tx *gorm.DB, order *models.OtcOrder, fill *big.Rat) error {
+	baseAsset, quoteAsset, err := otcOrderAssets(order.Symbol)
+	if err != nil {
+		return err
+	}
+	baseLedger, err := s.assetLedger(baseAsset)
+	if err != nil {
+		return err
+	}
+	quoteLedger, err := s.assetLedger(quoteAsset)
+	if err != nil {
+		return err
+	}
+	priceValue, err := parseDecimal(order.Price)
+	if err != nil {
+		return fmt.Errorf("otc order %d has an unreadable price %q: %w", order.ID, order.Price, err)
+	}
+	escrowValue, err := parseDecimal(order.EscrowAmount)
+	if err != nil {
+		return fmt.Errorf("otc order %d has an unreadable escrow %q: %w", order.ID, order.EscrowAmount, err)
+	}
+	costValue := new(big.Rat).Mul(fill, priceValue)
+
+	// The maker's escrow was posted for the whole order; only the fill's worth is
+	// consumed, and the remainder goes back to the maker. Truncation can make the
+	// remainder a hair negative, so it is floored at zero.
+	requiredEscrow := fill
+	refundLedger := baseLedger
+	if order.Side == "buy" {
+		requiredEscrow = costValue
+		refundLedger = quoteLedger
+	}
+	refundValue := new(big.Rat).Sub(escrowValue, requiredEscrow)
+	if refundValue.Sign() < 0 {
+		refundValue = new(big.Rat)
+	}
+
+	taker := ""
+	if order.TakerID != nil {
+		taker = *order.TakerID
+	}
+	if taker == "" {
+		return errors.New("otc order has no taker to settle")
+	}
+
+	if order.Side == "sell" {
+		// Maker escrowed the base asset; the taker pays the quote cost.
+		costUnits := scaleToBaseUnits(costValue, quoteLedger.Decimals)
+		if costUnits.Sign() > 0 {
+			if err := s.ledger.debitWithin(tx, taker, quoteLedger.ChainID, quoteLedger.Address, costUnits); err != nil {
+				return err
+			}
+			if err := s.ledger.creditWithin(tx, order.MakerID, quoteLedger.ChainID, quoteLedger.Address, quoteLedger.Symbol, quoteLedger.Decimals, costUnits); err != nil {
+				return err
+			}
+		}
+		fillUnits := scaleToBaseUnits(fill, baseLedger.Decimals)
+		if fillUnits.Sign() > 0 {
+			if err := s.ledger.creditWithin(tx, taker, baseLedger.ChainID, baseLedger.Address, baseLedger.Symbol, baseLedger.Decimals, fillUnits); err != nil {
+				return err
+			}
+		}
+	} else {
+		// Maker escrowed the quote cost; the taker pays the base asset.
+		fillUnits := scaleToBaseUnits(fill, baseLedger.Decimals)
+		if fillUnits.Sign() > 0 {
+			if err := s.ledger.debitWithin(tx, taker, baseLedger.ChainID, baseLedger.Address, fillUnits); err != nil {
+				return err
+			}
+			if err := s.ledger.creditWithin(tx, order.MakerID, baseLedger.ChainID, baseLedger.Address, baseLedger.Symbol, baseLedger.Decimals, fillUnits); err != nil {
+				return err
+			}
+		}
+		costUnits := scaleToBaseUnits(costValue, quoteLedger.Decimals)
+		if costUnits.Sign() > 0 {
+			if err := s.ledger.creditWithin(tx, taker, quoteLedger.ChainID, quoteLedger.Address, quoteLedger.Symbol, quoteLedger.Decimals, costUnits); err != nil {
+				return err
+			}
+		}
+	}
+
+	if refundUnits := scaleToBaseUnits(refundValue, refundLedger.Decimals); refundUnits.Sign() > 0 {
+		if err := s.ledger.creditWithin(tx, order.MakerID, refundLedger.ChainID, refundLedger.Address, refundLedger.Symbol, refundLedger.Decimals, refundUnits); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// refundOtcEscrow returns an order's full escrow to its maker, used when an open
+// order is cancelled or expires. It runs inside the caller's transaction.
+func (s *OtcService) refundOtcEscrow(tx *gorm.DB, order *models.OtcOrder) error {
+	if strings.TrimSpace(order.EscrowAsset) == "" || strings.TrimSpace(order.EscrowAmount) == "" {
+		return nil
+	}
+	escrowLedger, err := s.assetLedger(order.EscrowAsset)
+	if err != nil {
+		return err
+	}
+	escrowValue, err := parseDecimal(order.EscrowAmount)
+	if err != nil {
+		return fmt.Errorf("otc order %d has an unreadable escrow %q: %w", order.ID, order.EscrowAmount, err)
+	}
+	units := scaleToBaseUnits(escrowValue, escrowLedger.Decimals)
+	if units.Sign() <= 0 {
+		return nil
+	}
+	return s.ledger.creditWithin(tx, order.MakerID, escrowLedger.ChainID, escrowLedger.Address, escrowLedger.Symbol, escrowLedger.Decimals, units)
+}
+
+// TakeOrder takes an open OTC order, settling both legs on the ledger.
 func (s *OtcService) TakeOrder(c *gin.Context) {
 	userID, ok := currentUserID(c)
 	if !ok {
@@ -188,6 +404,12 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 	fill, err := validatePositiveDecimal("quantity", req.Quantity)
 	if err != nil {
 		respondBadRequestError(c, err)
+		return
+	}
+	// The rational form of the fill is what the ledger settlement moves.
+	fillValue, err := parseDecimal(req.Quantity)
+	if err != nil {
+		respondBadRequestError(c, fmt.Errorf("quantity: %w", err))
 		return
 	}
 
@@ -230,13 +452,20 @@ func (s *OtcService) TakeOrder(c *gin.Context) {
 
 		takerID := userID
 		order.TakerID = &takerID
-		order.Status = "matched"
+		order.Status = "settled"
 		order.Counterparty = order.MakerID
 
 		// Record the executed quantity so a partial fill is visible, and close
 		// the order: a partially filled block is not re-offered at a price the
 		// taker has now moved away from.
 		order.Quantity = req.Quantity
+
+		// Move both legs on the ledger before the order is marked settled, so the
+		// order can never show as settled without the funds having moved. The
+		// taker's debit failing rolls the whole settlement back.
+		if err := s.settleOtcTake(tx, &order, fillValue); err != nil {
+			return err
+		}
 
 		if err := tx.Save(&order).Error; err != nil {
 			return err
@@ -276,36 +505,68 @@ func (s *OtcService) CancelOrder(c *gin.Context) {
 	}
 
 	var order models.OtcOrder
-	if err := s.db.Where("id = ? AND maker_id = ?", id, userID).First(&order).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"error": "otc order not found"})
-			return
+	// Cancel and refund are one transaction: a cancelled order must not keep the
+	// maker's escrow locked, and a refund must not happen for an order that is
+	// still live.
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND maker_id = ?", id, userID).First(&order).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errOrderNotFound
+			}
+			return err
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not load otc order"})
-		return
-	}
-
-	if order.Status != "open" {
+		if order.Status != "open" {
+			return errOrderNotOpen
+		}
+		if err := s.refundOtcEscrow(tx, &order); err != nil {
+			return err
+		}
+		order.Status = "cancelled"
+		return tx.Model(&models.OtcOrder{}).Where("id = ?", order.ID).Update("status", "cancelled").Error
+	})
+	switch {
+	case err == nil:
+		c.JSON(http.StatusOK, order)
+	case errors.Is(err, errOrderNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "otc order not found"})
+	case errors.Is(err, errOrderNotOpen):
 		c.JSON(http.StatusConflict, gin.H{"error": "only an open otc order can be cancelled"})
-		return
+	default:
+		respondServiceError(c, err)
 	}
-
-	if err := s.db.Model(&order).Update("status", "cancelled").Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not cancel otc order"})
-		return
-	}
-
-	order.Status = "cancelled"
-	c.JSON(http.StatusOK, order)
 }
 
-// ExpireStaleOrders marks open orders whose expiry has passed. Called by the
-// keeper so a stale order does not linger in the open list.
+// ExpireStaleOrders marks open orders whose expiry has passed and refunds each
+// one's escrow to its maker. Called by the keeper so a stale order does not
+// linger in the open list with the maker's funds still locked.
 func (s *OtcService) ExpireStaleOrders() (int64, error) {
-	result := s.db.Model(&models.OtcOrder{}).
-		Where("status = ? AND expires_at <= ?", "open", time.Now().UTC()).
-		Update("status", "expired")
-	return result.RowsAffected, result.Error
+	var stale []models.OtcOrder
+	if err := s.db.Where("status = ? AND expires_at <= ?", "open", time.Now().UTC()).Find(&stale).Error; err != nil {
+		return 0, err
+	}
+	var expired int64
+	for i := range stale {
+		err := s.db.Transaction(func(tx *gorm.DB) error {
+			var order models.OtcOrder
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&order, "id = ?", stale[i].ID).Error; err != nil {
+				return err
+			}
+			if order.Status != "open" {
+				return nil
+			}
+			if err := s.refundOtcEscrow(tx, &order); err != nil {
+				return err
+			}
+			return tx.Model(&models.OtcOrder{}).Where("id = ?", order.ID).Update("status", "expired").Error
+		})
+		if err != nil {
+			return expired, err
+		}
+		expired++
+	}
+	return expired, nil
 }
 
 // ExpireStaleOrdersHandler expires every open order past its deadline and

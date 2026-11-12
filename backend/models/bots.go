@@ -117,6 +117,11 @@ type OtcOrder struct {
 	Status       string    `gorm:"size:16;index;not null;default:open" json:"status"`
 	MinFill      string    `gorm:"size:78;not null;default:0" json:"min_fill"`
 	Counterparty string    `gorm:"size:42" json:"counterparty,omitempty"`
+	// EscrowAsset and EscrowAmount record what the maker posted when the order
+	// was created: the base asset for a sell, the quote cost for a buy. They are
+	// the amounts released to the taker and refunded on cancel or expiry.
+	EscrowAsset  string    `gorm:"size:20" json:"escrow_asset,omitempty"`
+	EscrowAmount string    `gorm:"size:78" json:"escrow_amount,omitempty"`
 	EscrowTxHash string    `gorm:"size:66" json:"escrow_tx_hash,omitempty"`
 	SettleTxHash string    `gorm:"size:66" json:"settle_tx_hash,omitempty"`
 	ExpiresAt    time.Time `gorm:"index" json:"expires_at"`
