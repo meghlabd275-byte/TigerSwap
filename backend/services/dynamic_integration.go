@@ -490,9 +490,9 @@ func (s *DynamicIntegrationService) count(model interface{}, activeOnly bool) in
 
 // SearchChains matches a chain name or symbol, case-insensitively.
 func (s *DynamicIntegrationService) SearchChains(query string) ([]*DynamicChain, error) {
-	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+	like := containsPattern(query)
 	var rows []models.IntegrationChain
-	if err := s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+	if err := s.db.Where("LOWER(name) LIKE ? ESCAPE ? OR LOWER(symbol) LIKE ? ESCAPE ?", like, likeEscape, like, likeEscape).
 		Order("added_at asc").Find(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -505,9 +505,9 @@ func (s *DynamicIntegrationService) SearchChains(query string) ([]*DynamicChain,
 
 // SearchTokens matches a token name or symbol, case-insensitively.
 func (s *DynamicIntegrationService) SearchTokens(query string) ([]*DynamicToken, error) {
-	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
+	like := containsPattern(query)
 	var rows []models.IntegrationToken
-	if err := s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+	if err := s.db.Where("LOWER(name) LIKE ? ESCAPE ? OR LOWER(symbol) LIKE ? ESCAPE ?", like, likeEscape, like, likeEscape).
 		Order("added_at asc").Find(&rows).Error; err != nil {
 		return nil, err
 	}

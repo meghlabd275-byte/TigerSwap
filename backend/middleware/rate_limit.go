@@ -81,9 +81,14 @@ func RateLimitMiddleware(requests int, window time.Duration) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		// Get client identifier (IP or user ID)
+		// The value comes from validated token claims, so it is a string in the
+		// normal case; a malformed claim would make the assertion panic and turn a
+		// rate-limited request into a 500, so it is checked.
 		key := c.ClientIP()
-		if userID, exists := c.Get("user_id"); exists {
-			key = userID.(string)
+		if userID, ok := c.Get("user_id"); ok {
+			if s, ok := userID.(string); ok && s != "" {
+				key = s
+			}
 		}
 
 		if !limiter.allow(key) {

@@ -184,7 +184,12 @@ func (s *TokenService) GetToken(c *gin.Context) {
 func (s *TokenService) SearchTokens(c *gin.Context) {
 	query := c.Query("q")
 	var tokens []models.Token
-	if err := s.db.Where("symbol ILIKE ? OR name ILIKE ?", "%"+query+"%", "%"+query+"%").
+	// LOWER(...) LIKE ... is used rather than ILIKE so the query works on every
+	// dialect TigerSwap runs on (Postgres in production, SQLite in the test
+	// suite). The pattern is bound, and wildcards in the caller's input are
+	// escaped, so a query of "%" is a literal rather than "every row".
+	like := containsPattern(query)
+	if err := s.db.Where("LOWER(symbol) LIKE ? ESCAPE ? OR LOWER(name) LIKE ? ESCAPE ?", like, likeEscape, like, likeEscape).
 		Order("symbol ASC").Limit(20).Find(&tokens).Error; err != nil {
 		respondInternalError(c, err)
 		return

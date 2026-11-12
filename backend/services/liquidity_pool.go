@@ -151,8 +151,16 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	token0Symbol := s.getSymbolFromAddress(chainID, token0.Hex())
 	token1Symbol := s.getSymbolFromAddress(chainID, token1.Hex())
 
-	token0Price, _ := s.priceAgg.GetRealPrice(ctx, token0Symbol)
-	token1Price, _ := s.priceAgg.GetRealPrice(ctx, token1Symbol)
+	// A missing oracle price leaves that side unvalued. GetRealPrice returns a
+	// nil price alongside the error, so the result must be checked rather than
+	// dereferenced: reading `.USD` off the nil would panic the request.
+	var token0USD, token1USD float64
+	if price, err := s.priceAgg.GetRealPrice(ctx, token0Symbol); err == nil && price != nil {
+		token0USD = price.USD
+	}
+	if price, err := s.priceAgg.GetRealPrice(ctx, token1Symbol); err == nil && price != nil {
+		token1USD = price.USD
+	}
 
 	// Reserves are raw integer amounts; their decimals are needed to value them.
 	token0Decimals, err := s.tokenDecimals(ctx, chainID, client, token0)
@@ -170,8 +178,8 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 		Token1:      token1.Hex(),
 		Reserve0:    res.Reserve0.String(),
 		Reserve1:    res.Reserve1.String(),
-		Token0Price: token0Price.USD,
-		Token1Price: token1Price.USD,
+		Token0Price: token0USD,
+		Token1Price: token1USD,
 		LastUpdated: time.Now(),
 	}
 
@@ -207,10 +215,10 @@ func (s *LiquidityPoolService) GetPoolData(ctx context.Context, chainID int64, p
 	if err != nil {
 		return nil, err
 	}
-	pool.ReserveValueUSD = reserve0*token0Price.USD + reserve1*token1Price.USD
+	pool.ReserveValueUSD = reserve0*token0USD + reserve1*token1USD
 
 	// Volume and fees come from the pool's own Swap logs over the last 24 hours.
-	volume, fees, err := s.CalculateVolume24h(ctx, chainID, poolAddress, token0Price.USD, token1Price.USD)
+	volume, fees, err := s.CalculateVolume24h(ctx, chainID, poolAddress, token0USD, token1USD)
 	if err != nil {
 		return nil, err
 	}
