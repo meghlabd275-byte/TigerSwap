@@ -329,9 +329,13 @@ func (d *chainDeployment) loadState(ctx context.Context, pool common.Address, fa
 			return nil, fmt.Errorf("getReserves: %w", err)
 		}
 		res, err := poolABI.Unpack("getReserves", resOut)
-		if err != nil || len(res) < 2 {
+		if err != nil {
 			return nil, fmt.Errorf("unpack getReserves: %w", err)
 		}
+		if len(res) < 2 {
+			return nil, fmt.Errorf("unpack response: expected at least 2 values, got %d", len(res))
+		}
+
 		st.reserve0, _ = res[0].(*big.Int)
 		st.reserve1, _ = res[1].(*big.Int)
 		t0, err := aggCallAddress(ctx, d.client, pool, "token0")
@@ -354,9 +358,13 @@ func aggCallAddress(ctx context.Context, client *ethclient.Client, pool common.A
 		return common.Address{}, fmt.Errorf("%s: %w", method, err)
 	}
 	vals, err := poolABI.Unpack(method, out)
-	if err != nil || len(vals) < 1 {
+	if err != nil {
 		return common.Address{}, fmt.Errorf("unpack %s: %w", method, err)
 	}
+	if len(vals) < 1 {
+		return common.Address{}, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(vals))
+	}
+
 	addr, ok := vals[0].(common.Address)
 	if !ok {
 		return common.Address{}, fmt.Errorf("unexpected %s type %T", method, vals[0])
@@ -371,9 +379,13 @@ func aggCallUint(ctx context.Context, client *ethclient.Client, pool common.Addr
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 	vals, err := poolABI.Unpack(method, out)
-	if err != nil || len(vals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack %s: %w", method, err)
 	}
+	if len(vals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(vals))
+	}
+
 	v, ok := vals[0].(*big.Int)
 	if !ok {
 		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])
@@ -388,9 +400,13 @@ func aggCallUintArray(ctx context.Context, client *ethclient.Client, pool common
 		return nil, fmt.Errorf("%s: %w", method, err)
 	}
 	vals, err := poolABI.Unpack(method, out)
-	if err != nil || len(vals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack %s: %w", method, err)
 	}
+	if len(vals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(vals))
+	}
+
 	arr, ok := vals[0].([]*big.Int)
 	if !ok {
 		return nil, fmt.Errorf("unexpected %s type %T", method, vals[0])

@@ -450,9 +450,15 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 	if tokenAddress != "" && tokenAddress != "0x0000000000000000000000000000000000000000" {
 		// Token transfer
 		gasLimit = 65000
-		transferABI, _ := abi.JSON(strings.NewReader(`[{"constant":false,"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}]`))
+		transferABI, err := abi.JSON(strings.NewReader(`[{"constant":false,"inputs":[{"name":"to","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"type":"function"}]`))
+		if err != nil {
+			return "", fmt.Errorf("build erc20 abi: %w", err)
+		}
 
-		data, _ = transferABI.Pack("transfer", to, amount)
+		data, err = transferABI.Pack("transfer", to, amount)
+		if err != nil {
+			return "", fmt.Errorf("encode erc20 transfer: %w", err)
+		}
 		value = big.NewInt(0)
 	} else {
 		// Native ETH transfer

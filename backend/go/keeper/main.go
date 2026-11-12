@@ -329,9 +329,13 @@ func (k *Keeper) syncPositions() {
 	added := 0
 	for _, lg := range logs {
 		vals, err := k.perpsABI.Unpack("PositionOpened", lg.Data)
-		if err != nil || len(vals) < 1 {
+		if err != nil {
 			continue
 		}
+		if len(vals) < 1 {
+			continue
+		}
+
 		id, ok := vals[0].([32]byte)
 		if !ok {
 			continue
@@ -517,9 +521,13 @@ func (k *Keeper) fetchMarkPrice(ctx context.Context, marketID common.Hash) (*big
 		return nil, err
 	}
 	vals, err := k.perpsABI.Unpack("getMarkPrice", out)
-	if err != nil || len(vals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack getMarkPrice: %w", err)
 	}
+	if len(vals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(vals))
+	}
+
 	price, ok := vals[0].(*big.Int)
 	if !ok || price.Sign() == 0 {
 		return nil, fmt.Errorf("market %s has no mark price", marketID.Hex())
@@ -620,9 +628,13 @@ func (k *Keeper) oraclePrice(ctx context.Context) (*big.Int, error) {
 		return nil, fmt.Errorf("priceOracle: %w", err)
 	}
 	oracleVals, err := k.ordersABI.Unpack("priceOracle", oracleOut)
-	if err != nil || len(oracleVals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack priceOracle: %w", err)
 	}
+	if len(oracleVals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(oracleVals))
+	}
+
 	oracle, ok := oracleVals[0].(common.Address)
 	if !ok || oracle == (common.Address{}) {
 		return nil, fmt.Errorf("orders contract has no price oracle configured")
@@ -633,9 +645,13 @@ func (k *Keeper) oraclePrice(ctx context.Context) (*big.Int, error) {
 		return nil, fmt.Errorf("priceAsset: %w", err)
 	}
 	assetVals, err := k.ordersABI.Unpack("priceAsset", assetOut)
-	if err != nil || len(assetVals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack priceAsset: %w", err)
 	}
+	if len(assetVals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(assetVals))
+	}
+
 	asset, ok := assetVals[0].(common.Address)
 	if !ok {
 		return nil, fmt.Errorf("unexpected priceAsset type")
@@ -649,9 +665,13 @@ func (k *Keeper) oraclePrice(ctx context.Context) (*big.Int, error) {
 		return nil, fmt.Errorf("oracle.getPrice: %w", err)
 	}
 	priceVals, err := k.oracleABI.Unpack("getPrice", priceOut)
-	if err != nil || len(priceVals) < 1 {
+	if err != nil {
 		return nil, fmt.Errorf("unpack getPrice: %w", err)
 	}
+	if len(priceVals) < 1 {
+		return nil, fmt.Errorf("unpack response: expected at least 1 values, got %d", len(priceVals))
+	}
+
 	price, ok := priceVals[0].(*big.Int)
 	if !ok || price.Sign() == 0 {
 		return nil, fmt.Errorf("oracle returned no usable price")
