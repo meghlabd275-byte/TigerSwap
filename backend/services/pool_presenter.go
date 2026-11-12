@@ -15,7 +15,10 @@ import (
 
 // tokenDecimals returns a lowercase-address -> decimals map covering every token
 // referenced by the given transactions. Unknown tokens default to 18 decimals.
-func (s *SwapService) tokenDecimals(txs []models.Transaction) map[string]int {
+// A database failure is returned rather than swallowed: falling back to an
+// empty map would render every amount at 18 decimals, misreporting a 6-decimal
+// token by 1e12.
+func (s *SwapService) tokenDecimals(txs []models.Transaction) (map[string]int, error) {
 	addresses := make(map[string]struct{}, len(txs)*2)
 	for _, tx := range txs {
 		if tx.FromToken != "" {
@@ -28,7 +31,7 @@ func (s *SwapService) tokenDecimals(txs []models.Transaction) map[string]int {
 
 	out := make(map[string]int, len(addresses))
 	if len(addresses) == 0 {
-		return out
+		return out, nil
 	}
 
 	list := make([]string, 0, len(addresses))
@@ -37,11 +40,13 @@ func (s *SwapService) tokenDecimals(txs []models.Transaction) map[string]int {
 	}
 
 	var tokens []models.Token
-	s.db.Where("LOWER(address) IN ?", list).Find(&tokens)
+	if err := s.db.Where("LOWER(address) IN ?", list).Find(&tokens).Error; err != nil {
+		return nil, err
+	}
 	for _, token := range tokens {
 		out[strings.ToLower(token.Address)] = token.Decimals
 	}
-	return out
+	return out, nil
 }
 
 // newPoolDTOs maps stored pools to the frontend's pool shape, resolving symbols

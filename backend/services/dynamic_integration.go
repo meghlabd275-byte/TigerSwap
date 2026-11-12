@@ -489,29 +489,33 @@ func (s *DynamicIntegrationService) count(model interface{}, activeOnly bool) in
 }
 
 // SearchChains matches a chain name or symbol, case-insensitively.
-func (s *DynamicIntegrationService) SearchChains(query string) []*DynamicChain {
+func (s *DynamicIntegrationService) SearchChains(query string) ([]*DynamicChain, error) {
 	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
 	var rows []models.IntegrationChain
-	s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
-		Order("added_at asc").Find(&rows)
+	if err := s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+		Order("added_at asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
 	out := make([]*DynamicChain, 0, len(rows))
 	for i := range rows {
 		out = append(out, toChain(&rows[i]))
 	}
-	return out
+	return out, nil
 }
 
 // SearchTokens matches a token name or symbol, case-insensitively.
-func (s *DynamicIntegrationService) SearchTokens(query string) []*DynamicToken {
+func (s *DynamicIntegrationService) SearchTokens(query string) ([]*DynamicToken, error) {
 	like := "%" + strings.ToLower(strings.TrimSpace(query)) + "%"
 	var rows []models.IntegrationToken
-	s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
-		Order("added_at asc").Find(&rows)
+	if err := s.db.Where("LOWER(name) LIKE ? OR LOWER(symbol) LIKE ?", like, like).
+		Order("added_at asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
 	out := make([]*DynamicToken, 0, len(rows))
 	for i := range rows {
 		out = append(out, toToken(&rows[i]))
 	}
-	return out
+	return out, nil
 }
 
 // DeleteChain removes a chain registration.
@@ -707,11 +711,19 @@ func (s *DynamicIntegrationService) SearchHandler(c *gin.Context) {
 	query := c.Query("q")
 	kind := c.Query("type")
 	if kind == "tokens" {
-		tokens := s.SearchTokens(query)
+		tokens, err := s.SearchTokens(query)
+		if err != nil {
+			respondInternalError(c, err)
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"tokens": tokens, "count": len(tokens)})
 		return
 	}
-	chains := s.SearchChains(query)
+	chains, err := s.SearchChains(query)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"chains": chains, "count": len(chains)})
 }
 

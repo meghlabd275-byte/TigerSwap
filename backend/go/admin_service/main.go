@@ -423,7 +423,9 @@ func (s *AdminService) ListWhiteLabels(status string, page, pageSize int) ([]Whi
 		query = query.Where("status = ?", status)
 	}
 
-	query.Count(&total)
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
 	query.Offset((page - 1) * pageSize).Limit(pageSize)
 
 	return whiteLabels, total, query.Find(&whiteLabels).Error

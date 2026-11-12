@@ -126,7 +126,10 @@ func TestMarketStatsAggregatesConfirmedSwaps(t *testing.T) {
 
 	// Fees and swap counts are not part of the public stats contract, so they are
 	// asserted against the aggregation itself rather than through the endpoint.
-	volume24h, fees24h, swaps24h := svc.swapTotals(time.Now().Add(-24 * time.Hour))
+	volume24h, fees24h, swaps24h, err := svc.swapTotals(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		t.Fatalf("swapTotals: %v", err)
+	}
 	if volume24h != 15000 {
 		t.Fatalf("expected 24h volume 15000, got %v", volume24h)
 	}
@@ -137,7 +140,10 @@ func TestMarketStatsAggregatesConfirmedSwaps(t *testing.T) {
 	if swaps24h != 2 {
 		t.Fatalf("expected 2 swaps in 24h, got %v", swaps24h)
 	}
-	volume7d, _, _ := svc.swapTotals(time.Now().Add(-7 * 24 * time.Hour))
+	volume7d, _, _, err := svc.swapTotals(time.Now().Add(-7 * 24 * time.Hour))
+	if err != nil {
+		t.Fatalf("swapTotals: %v", err)
+	}
 	if volume7d != 35000 {
 		t.Fatalf("expected 7d volume 35000, got %v", volume7d)
 	}

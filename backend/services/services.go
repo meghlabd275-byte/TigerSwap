@@ -70,7 +70,10 @@ func seedChains(db *gorm.DB) {
 // which is the shape the frontend's chain validator requires.
 func (s *BlockchainService) GetSupportedChains(c *gin.Context) {
 	var chains []models.Blockchain
-	s.db.Where("is_active = ?", true).Order("chain_id ASC").Find(&chains)
+	if err := s.db.Where("is_active = ?", true).Order("chain_id ASC").Find(&chains).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, newChainDTOs(chains))
 }
 
@@ -161,7 +164,10 @@ func (s *TokenService) GetTokens(c *gin.Context) {
 		query = query.Where("chain_id = ?", chainID)
 	}
 	var tokens []models.Token
-	query.Order("chain_id ASC, symbol ASC").Find(&tokens)
+	if err := query.Order("chain_id ASC, symbol ASC").Find(&tokens).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, newTokenDTOs(tokens))
 }
 
@@ -178,8 +184,11 @@ func (s *TokenService) GetToken(c *gin.Context) {
 func (s *TokenService) SearchTokens(c *gin.Context) {
 	query := c.Query("q")
 	var tokens []models.Token
-	s.db.Where("symbol ILIKE ? OR name ILIKE ?", "%"+query+"%", "%"+query+"%").
-		Order("symbol ASC").Limit(20).Find(&tokens)
+	if err := s.db.Where("symbol ILIKE ? OR name ILIKE ?", "%"+query+"%", "%"+query+"%").
+		Order("symbol ASC").Limit(20).Find(&tokens).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, newTokenDTOs(tokens))
 }
 
@@ -304,7 +313,10 @@ func (s *SwapService) BuildTransaction(c *gin.Context) {
 // are resolved from the tokens table rather than guessed.
 func (s *SwapService) GetPairs(c *gin.Context) {
 	var pools []models.Pool
-	s.db.Where("is_active = ?", true).Order("tvl_usd DESC").Limit(50).Find(&pools)
+	if err := s.db.Where("is_active = ?", true).Order("tvl_usd DESC").Limit(50).Find(&pools).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	c.JSON(http.StatusOK, s.newPoolDTOs(pools))
 }
 
@@ -377,13 +389,26 @@ func (s *SwapService) GetPrice(c *gin.Context) {
 func (s *SwapService) GetMarketStats(c *gin.Context) {
 	var poolCount, userCount int64
 
-	s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount)
-	s.db.Model(&models.User{}).Count(&userCount)
+	if err := s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := s.db.Model(&models.User{}).Count(&userCount).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	var tvl float64
-	s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl)
+	if err := s.db.Model(&models.Pool{}).Select("COALESCE(SUM(tvl_usd), 0)").Scan(&tvl).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
-	volume24h, _, _ := s.swapTotals(time.Now().Add(-24 * time.Hour))
+	volume24h, _, _, err := s.swapTotals(time.Now().Add(-24 * time.Hour))
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	c.JSON(http.StatusOK, marketStatsDTO{
 		TotalTVL:   tvl,
@@ -397,11 +422,11 @@ func (s *SwapService) GetMarketStats(c *gin.Context) {
 // swapTotals sums confirmed swap notional and the fees they paid since a point
 // in time. Fees are taken from the pool the swap belongs to, so a pool with a
 // different fee tier is accounted for correctly.
-func (s *SwapService) swapTotals(since time.Time) (volume float64, fees float64, count int64) {
+func (s *SwapService) swapTotals(since time.Time) (volume float64, fees float64, count int64, err error) {
 	var txs []models.Transaction
 	if err := s.db.Where("type = ? AND status = ? AND timestamp >= ?", "swap", "confirmed", since).
 		Find(&txs).Error; err != nil {
-		return 0, 0, 0
+		return 0, 0, 0, err
 	}
 
 	// Look the pool fee up once per pair rather than per transaction.
@@ -422,7 +447,7 @@ func (s *SwapService) swapTotals(since time.Time) (volume float64, fees float64,
 		}
 		fees += tx.AmountUSD * float64(feeBps) / 10000
 	}
-	return volume, fees, count
+	return volume, fees, count, nil
 }
 
 // GetRecentTrades returns confirmed swaps from the database.
@@ -435,12 +460,19 @@ func (s *SwapService) GetRecentTrades(c *gin.Context) {
 	}
 
 	var txs []models.Transaction
-	s.db.Where("type = ? AND status = ?", "swap", "confirmed").
+	if err := s.db.Where("type = ? AND status = ?", "swap", "confirmed").
 		Order("timestamp DESC").
 		Limit(limit).
-		Find(&txs)
+		Find(&txs).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
-	decimals := s.tokenDecimals(txs)
+	decimals, err := s.tokenDecimals(txs)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	trades := make([]tradeDTO, 0, len(txs))
 	for _, tx := range txs {
 		fromDecimals := decimals[strings.ToLower(tx.FromToken)]
@@ -1204,15 +1236,27 @@ func (s *AdminService) SetAuthService(auth *AuthService) {
 func (s *AdminService) GetDashboard(c *gin.Context) {
 	var userCount, txCount, poolCount int64
 
-	s.db.Model(&models.User{}).Count(&userCount)
-	s.db.Model(&models.Transaction{}).Count(&txCount)
-	s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount)
+	if err := s.db.Model(&models.User{}).Count(&userCount).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := s.db.Model(&models.Transaction{}).Count(&txCount).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
+	if err := s.db.Model(&models.Pool{}).Where("is_active = ?", true).Count(&poolCount).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	// 24h volume and fees come from confirmed swaps, not a constant.
 	var volume24h float64
-	s.db.Model(&models.Transaction{}).
+	if err := s.db.Model(&models.Transaction{}).
 		Where("type = ? AND status = ? AND timestamp >= ?", "swap", "confirmed", time.Now().Add(-24*time.Hour)).
-		Select("COALESCE(SUM(amount_usd), 0)").Scan(&volume24h)
+		Select("COALESCE(SUM(amount_usd), 0)").Scan(&volume24h).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	fees24h := volume24h * float64(DefaultFeeBps) / 10000
 
 	c.JSON(http.StatusOK, adminDashboardDTO{
@@ -1431,7 +1475,10 @@ func (s *AdminService) CreateChain(c *gin.Context) {
 	}
 	// chain_id is unique; report the collision as a conflict rather than a 500.
 	var existing int64
-	s.db.Model(&models.Blockchain{}).Where("chain_id = ?", chain.ChainID).Count(&existing)
+	if err := s.db.Model(&models.Blockchain{}).Where("chain_id = ?", chain.ChainID).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "a chain with this chain_id already exists"})
 		return

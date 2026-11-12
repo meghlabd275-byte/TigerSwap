@@ -266,7 +266,10 @@ func (s *FarmService) CreateFarm(c *gin.Context) {
 	}
 
 	var existing int64
-	s.db.Model(&models.FarmPool{}).Where("key = ?", key).Count(&existing)
+	if err := s.db.Model(&models.FarmPool{}).Where("key = ?", key).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "a farm with this key already exists"})
 		return

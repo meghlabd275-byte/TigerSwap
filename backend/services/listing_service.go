@@ -256,7 +256,10 @@ func (s *ListingService) CreateFuturesMarket(c *gin.Context) {
 	}
 
 	var existing int64
-	s.db.Model(&models.FuturesMarket{}).Where("symbol = ?", strings.ToUpper(req.Symbol)).Count(&existing)
+	if err := s.db.Model(&models.FuturesMarket{}).Where("symbol = ?", strings.ToUpper(req.Symbol)).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "a futures market with this symbol already exists"})
 		return
@@ -597,7 +600,10 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 
 	symbol := strings.ToUpper(strings.TrimSpace(req.Symbol))
 	var existing int64
-	s.db.Model(&models.PerpsMarket{}).Where("symbol = ?", symbol).Count(&existing)
+	if err := s.db.Model(&models.PerpsMarket{}).Where("symbol = ?", symbol).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "a perps market with this symbol already exists"})
 		return
@@ -932,7 +938,10 @@ func (s *ListingService) CreateMarginMarket(c *gin.Context) {
 
 	pair := strings.ToUpper(strings.TrimSpace(req.Pair))
 	var existing int64
-	s.db.Model(&models.MarginMarket{}).Where("pair = ?", pair).Count(&existing)
+	if err := s.db.Model(&models.MarginMarket{}).Where("pair = ?", pair).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "a margin market for this pair already exists"})
 		return

@@ -104,7 +104,10 @@ func (s *AirdropService) CreateCampaign(c *gin.Context) {
 	}
 
 	var existing int64
-	s.db.Model(&models.AirdropCampaign{}).Where("key = ?", key).Count(&existing)
+	if err := s.db.Model(&models.AirdropCampaign{}).Where("key = ?", key).Count(&existing).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if existing > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "an airdrop campaign with this key already exists"})
 		return
@@ -254,7 +257,10 @@ func (s *AirdropService) SetAllocations(c *gin.Context) {
 	}
 
 	var claimed int64
-	s.db.Model(&models.AirdropAllocation{}).Where("campaign_id = ? AND claimed = ?", campaign.ID, true).Count(&claimed)
+	if err := s.db.Model(&models.AirdropAllocation{}).Where("campaign_id = ? AND claimed = ?", campaign.ID, true).Count(&claimed).Error; err != nil {
+		respondInternalError(c, err)
+		return
+	}
 	if claimed > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "allocations cannot be replaced after a claim has been made"})
 		return
