@@ -278,7 +278,7 @@ func (s *BridgeService) InitiateTransfer(ctx context.Context, srcChain, dstChain
 	txHash, err := signAndSend(ctx, client, key, srcChain, common.HexToAddress(route.Router), big.NewInt(0), data)
 	if err != nil {
 		transfer.Status = "failed"
-		_ = s.persist(transfer)
+		s.persistOrLog(transfer)
 		return nil, fmt.Errorf("lock transaction failed: %w", err)
 	}
 	transfer.SrcTxHash = txHash
@@ -290,7 +290,7 @@ func (s *BridgeService) InitiateTransfer(ctx context.Context, srcChain, dstChain
 	}
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		transfer.Status = "failed"
-		_ = s.persist(transfer)
+		s.persistOrLog(transfer)
 		return nil, fmt.Errorf("lock transaction reverted: %s", txHash)
 	}
 
@@ -360,7 +360,7 @@ func (s *BridgeService) ReleaseMint(ctx context.Context, transferID string) (*Br
 	}
 	if receipt.Status != types.ReceiptStatusSuccessful {
 		transfer.Status = "failed"
-		_ = s.persist(transfer)
+		s.persistOrLog(transfer)
 		return nil, fmt.Errorf("mint transaction reverted: %s", txHash)
 	}
 
@@ -423,6 +423,16 @@ func (s *BridgeService) ProcessPending(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// persistOrLog records a transfer's terminal state on a path that is already
+// returning an error. A persistence failure is logged rather than discarded: it
+// would otherwise leave the row showing a stale status, which an operator
+// reading the bridge table would misread as an in-flight transfer.
+func (s *BridgeService) persistOrLog(transfer *BridgeTransfer) {
+	if err := s.persist(transfer); err != nil {
+		log.Printf("bridge: persist transfer %s status %q failed: %v", transfer.ID, transfer.Status, err)
+	}
 }
 
 // persist upserts a transfer into the database.

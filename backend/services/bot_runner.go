@@ -325,14 +325,18 @@ func (r *BotRunner) runLiquidationBot(ctx context.Context, bot models.BotInstanc
 			log.Printf("bot runner: bot %d could not liquidate account %s: %v", bot.ID, candidate.AccountID, err)
 			continue
 		}
+		if result == nil {
+			log.Printf("bot runner: bot %d liquidation of account %s returned no settlement", bot.ID, candidate.AccountID)
+			continue
+		}
 		record := models.BotOrder{
 			BotID:      bot.ID,
 			UserID:     bot.UserID,
 			Symbol:     bot.Symbol,
 			Side:       "sell",
 			OrderKind:  "market",
-			Price:      decision.HealthFactor,
-			Quantity:   decision.RepayAmount,
+			Price:      strconv.FormatFloat(result.HealthFactor, 'f', -1, 64),
+			Quantity:   strconv.FormatFloat(result.DebtUSD, 'f', -1, 64),
 			ReduceOnly: true,
 			Source:     "liquidation",
 			Status:     "filled",
@@ -341,7 +345,6 @@ func (r *BotRunner) runLiquidationBot(ctx context.Context, bot models.BotInstanc
 			log.Printf("bot runner: bot %d liquidation record failed: %v", bot.ID, err)
 		}
 		placed++
-		_ = result
 	}
 }
 
