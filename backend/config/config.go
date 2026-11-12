@@ -45,9 +45,18 @@ func InitDB() (*gorm.DB, error) {
 		port = "5432" // Default only if explicitly empty
 	}
 
+	// TLS to Postgres is required by default. A single-node deployment whose
+	// database is only reachable over a private network may set DB_SSLMODE to a
+	// weaker value, but the default keeps a misconfigured deployment from
+	// silently sending credentials in the clear.
+	sslmode := os.Getenv("DB_SSLMODE")
+	if sslmode == "" {
+		sslmode = "require"
+	}
+
 	dsn := fmt.Sprintf(
-		"host=%s user=%s password=%s dbname=%s port=%s sslmode=require TimeZone=UTC",
-		host, user, password, dbname, port,
+		"host=%s user=%s password=%s dbname=%s port=%s sslmode=%s TimeZone=UTC",
+		host, user, password, dbname, port, sslmode,
 	)
 
 	var err error

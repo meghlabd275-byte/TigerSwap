@@ -1,0 +1,23 @@
+# Keep the build context small and reproducible.
+Dockerfile
+.dockerignore
+
+# Test and build artifacts.
+*_test.go
+**/*_test.go
+build/
+dist/
+
+# Language trees the API image does not build (they have their own toolchains).
+cpp/
+rust/
+java/
+python/
+go/api_gateway/
+go/dex_aggregator/
+go/dex_connectors/
+
+# Local junk.
+*.log
+.git
+.env
