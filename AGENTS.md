@@ -546,3 +546,33 @@ strategy.
 - The C++ matching engine (`backend/cpp`) exposes exact-string depth
   (`Book.DepthExact`) alongside the float view, so a consumer that needs an
   unrounded price reads it without a `float64` round-trip.
+
+## Bridge (TigerBridge)
+
+`contracts/TigerSwapBridge.sol` and `services/bridge_new.go` are one system split
+across two languages, so the two sides must agree on the ABI and on the signed
+digest byte for byte.
+
+- Outbound is `lock(uint256 toChain, address token, uint256 amount, address
+  receiver, uint256 nonce)`. The relayer signs it with the holder's own custody
+  key (`WalletService.custodyKeyForAddress`), so `msg.sender` is the account
+  whose tokens are locked; the relayer never spends on behalf of an account it
+  does not custody. It approves the router first, because `lock` pulls the
+  tokens with `transferFrom`.
+- Inbound is `completeBridge(BridgeMessage, bytes signatures)`, gated by a
+  validator supermajority. The relayer signs the digest with
+  `TIGERBRIDGE_VALIDATOR_KEYS` and calls it from `TIGERBRIDGE_RELAYER_KEY`.
+- `services/bridge_new.go` recomputes the digest in `bridgeInboundDigest`; it
+  must equal `TigerSwapBridge.inboundDigest` digit for digit. Two tests pin both
+  sides to the constant `0x9f5a44e1...`:
+  `contracts/test/TigerSwapBridge.t.sol::testInboundDigestMatchesGoRelayer` and
+  `backend/services/bridge_new_test.go::TestBridgeInboundDigestMatchesSolidity`.
+  Change one encoding and one of them fails.
+- A successful receipt is not proof the lock happened as intended. The relayer
+  decodes the `BridgeInitiated` event and requires the sender, destination chain,
+  token and recipient to match before confirming, and stores the on-chain
+  `messageId` and the post-fee amount (`message_amount`) from the event. The
+  destination release uses that stored amount, so the released value is exactly
+  what the source `lock` escrowed after the protocol fee.
+- `BridgeTransfer.MessageID` / `MessageAmount` are on the wire and validated by
+  `bridgeTransferValidator` in `frontend/src/lib/types.ts`; keep them in step.
