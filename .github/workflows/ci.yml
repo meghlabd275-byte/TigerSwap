@@ -38,6 +38,14 @@ jobs:
         run: |
           cd "$GITHUB_WORKSPACE/frontend" && npm install && npm run build
 
+      - name: Typecheck and test Frontend
+        run: |
+          # The build type-checks the app, but the runtime API-contract validators
+          # live in the test suite: they pin each validator to a payload captured
+          # from a running server. Run them here so a shape change that breaks a
+          # validator fails CI instead of shipping.
+          cd "$GITHUB_WORKSPACE/frontend" && npm run typecheck && npm test
+
       - name: Run Go tests
         run: |
           set -e
