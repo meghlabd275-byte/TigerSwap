@@ -217,13 +217,15 @@ func (s *SwapExecutor) RemoveLiquidity(ctx context.Context, chainID int64, priva
 	if !ok {
 		return "", fmt.Errorf("invalid liquidity %q", liquidity)
 	}
-	minA, _ := new(big.Int).SetString(amountA, 10)
-	minB, _ := new(big.Int).SetString(amountB, 10)
-	if minA == nil {
-		minA = big.NewInt(0)
+	// A minimum that does not parse must not silently become zero: that would
+	// broadcast a remove-liquidity with no slippage floor at all.
+	minA, ok := new(big.Int).SetString(amountA, 10)
+	if !ok || minA.Sign() < 0 {
+		return "", fmt.Errorf("invalid amountAMin %q", amountA)
 	}
-	if minB == nil {
-		minB = big.NewInt(0)
+	minB, ok := new(big.Int).SetString(amountB, 10)
+	if !ok || minB.Sign() < 0 {
+		return "", fmt.Errorf("invalid amountBMin %q", amountB)
 	}
 	deadline := big.NewInt(time.Now().Add(20 * time.Minute).Unix())
 

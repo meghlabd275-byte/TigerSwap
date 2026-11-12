@@ -969,7 +969,14 @@ func (s *AuthService) Register(c *gin.Context) {
 		return
 	}
 
-	token, _ := s.generateToken(user.ID, user.Email, user.Role)
+	// A signing failure must not hand the client a user record with an empty
+	// token: the client would treat the registration as successful and then fail
+	// every authenticated call.
+	token, err := s.generateToken(user.ID, user.Email, user.Role)
+	if err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	c.JSON(201, gin.H{
 		"user":  user,
