@@ -129,3 +129,54 @@ func TestRouterProtectedRoutesRejectAnonymousCallers(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryAdminRouteRequiresAuthentication sweeps the whole registered tree and
+// proves every /admin route is behind the auth+role middleware. The hand-written
+// list above can drift as routes are added; this iterates what the router
+// actually registered, so a new admin route placed on the public group — which
+// would expose operator-only actions to anonymous callers — fails the test.
+func TestEveryAdminRouteRequiresAuthentication(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := setupRouter(apiDeps{})
+
+	checked := 0
+	for _, route := range router.Routes() {
+		if len(route.Path) < len("/api/v1/admin/") || route.Path[:len("/api/v1/admin/")] != "/api/v1/admin/" {
+			continue
+		}
+		checked++
+		// Substitute a concrete value for every path parameter so the request
+		// reaches the middleware rather than 404-ing on the mux.
+		path := route.Path
+		for {
+			start := indexOf(path, ":")
+			if start < 0 {
+				break
+			}
+			end := start + 1
+			for end < len(path) && path[end] != '/' {
+				end++
+			}
+			path = path[:start] + "1" + path[end:]
+		}
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(route.Method, path, nil)
+		router.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusUnauthorized && recorder.Code != http.StatusForbidden {
+			t.Errorf("%s %s answered %d without a token, want 401/403",
+				route.Method, route.Path, recorder.Code)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no admin routes were registered; the sweep checked nothing")
+	}
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
+}

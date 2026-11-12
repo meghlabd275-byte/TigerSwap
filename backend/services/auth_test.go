@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 
 	"tigerswap/backend/models"
@@ -34,6 +35,30 @@ func TestGenerateAndValidateTokenRoundTrip(t *testing.T) {
 	}
 	if claims["jti"] == "" || claims["jti"] == nil {
 		t.Fatalf("token must carry a jti claim")
+	}
+}
+
+// TestValidateTokenRejectsForeignAlgorithm proves the verifier is pinned to the
+// HS256 the issuer signs with. A token minted with a different HMAC variant must
+// be rejected rather than accepted because it is merely "an HMAC".
+func TestValidateTokenRejectsForeignAlgorithm(t *testing.T) {
+	db := newListingTestDB(t)
+	t.Setenv("JWT_SECRET", "test-secret-for-revocation-suite")
+	svc := NewAuthService(db)
+
+	claims := jwt.MapClaims{
+		"user_id": uuid.New().String(),
+		"role":    "user",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+		"iat":     time.Now().Unix(),
+	}
+	foreign := jwt.NewWithClaims(jwt.SigningMethodHS512, claims)
+	signed, err := foreign.SignedString(svc.jwtSecret)
+	if err != nil {
+		t.Fatalf("sign foreign token: %v", err)
+	}
+	if _, err := svc.ValidateToken(signed); err == nil {
+		t.Fatal("a token signed with HS512 must not validate against an HS256 verifier")
 	}
 }
 
