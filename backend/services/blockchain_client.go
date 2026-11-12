@@ -19,6 +19,9 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+
+	"tigerswap/backend/models"
 )
 
 // BlockchainClient handles real blockchain interactions
@@ -149,6 +152,29 @@ func (b *BlockchainClient) SetRPCURL(chainID int64, url string) {
 		delete(b.clients, chainID)
 	}
 	b.rpcURLs[chainID] = url
+}
+
+// LoadChainRPCs registers every active chain's operator-supplied RPC endpoint
+// from the `blockchains` table with the live client, so a node entered in the
+// admin panel is actually dialled. It is best-effort: a chain whose row cannot
+// be read is skipped, and an endpoint already present in the environment takes
+// precedence over the stored value.
+func (b *BlockchainClient) LoadChainRPCs(db *gorm.DB) error {
+	var rows []models.Blockchain
+	if err := db.Where("is_active = ?", true).Find(&rows).Error; err != nil {
+		return fmt.Errorf("load chain rpc endpoints: %w", err)
+	}
+	for _, row := range rows {
+		url := strings.TrimSpace(row.RPCURL)
+		if url == "" {
+			continue
+		}
+		if rpcFromEnv(row.ChainID) != "" {
+			continue
+		}
+		b.SetRPCURL(row.ChainID, url)
+	}
+	return nil
 }
 
 // GetClient returns or creates an ethclient for the given chain

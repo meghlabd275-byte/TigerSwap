@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,35 +110,48 @@ func TestTokensEndpointMatchesFrontendContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("frontend requires a bare array; got %T (%s)", body, rec.Body.String())
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 token, got %d", len(items))
+	if len(items) == 0 {
+		t.Fatalf("expected at least the seeded token, got an empty array")
 	}
 
-	token, ok := items[0].(map[string]any)
-	if !ok {
-		t.Fatalf("expected an object element, got %T", items[0])
-	}
-	assertFrontendAddress(t, "token.address", token["address"])
-	assertFrontendSymbol(t, "token.symbol", token["symbol"])
-	if _, ok := token["name"].(string); !ok {
-		t.Fatalf("token.name must be a string, got %T", token["name"])
-	}
-	assertFrontendInteger(t, "token.decimals", token["decimals"])
-	assertFrontendInteger(t, "token.chainId", token["chainId"])
-
-	// `logoURI` is nullable(string) and `priceUSD` is nullable(nonNegative):
-	// the key must be present, and its value must be null or the right type.
-	if v, present := token["logoURI"]; present && v != nil {
-		if _, ok := v.(string); !ok {
-			t.Fatalf("token.logoURI must be a string or null, got %T", v)
+	// The service seeds the token registry, so the array holds more than the row
+	// seeded here. Every element must satisfy the frontend contract, and the
+	// seeded row must be present.
+	var token map[string]any
+	for _, raw := range items {
+		element, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("expected an object element, got %T", raw)
 		}
-	} else if !present {
-		t.Fatalf("token.logoURI key is missing; the validator requires it")
+		assertFrontendAddress(t, "token.address", element["address"])
+		assertFrontendSymbol(t, "token.symbol", element["symbol"])
+		if _, ok := element["name"].(string); !ok {
+			t.Fatalf("token.name must be a string, got %T", element["name"])
+		}
+		assertFrontendInteger(t, "token.decimals", element["decimals"])
+		assertFrontendInteger(t, "token.chainId", element["chainId"])
+
+		// `logoURI` is nullable(string) and `priceUSD` is nullable(nonNegative):
+		// the key must be present, and its value must be null or the right type.
+		if v, present := element["logoURI"]; present && v != nil {
+			if _, ok := v.(string); !ok {
+				t.Fatalf("token.logoURI must be a string or null, got %T", v)
+			}
+		} else if !present {
+			t.Fatalf("token.logoURI key is missing; the validator requires it")
+		}
+		if v, present := element["priceUSD"]; present && v != nil {
+			assertFrontendNonNegative(t, "token.priceUSD", v)
+		} else if !present {
+			t.Fatalf("token.priceUSD key is missing; the validator requires it")
+		}
+
+		if address, _ := element["address"].(string); strings.EqualFold(address, "0x1111111111111111111111111111111111111111") {
+			token = element
+		}
 	}
-	if v, present := token["priceUSD"]; present && v != nil {
-		assertFrontendNonNegative(t, "token.priceUSD", v)
-	} else if !present {
-		t.Fatalf("token.priceUSD key is missing; the validator requires it")
+	if token == nil {
+		t.Fatalf("seeded token 0x1111...1111 is missing from the response")
 	}
 }
 
@@ -166,33 +180,55 @@ func TestChainsEndpointMatchesFrontendContract(t *testing.T) {
 	if !ok {
 		t.Fatalf("frontend requires a bare array; got %T (%s)", body, rec.Body.String())
 	}
-	if len(items) != 1 {
-		t.Fatalf("expected 1 chain, got %d", len(items))
+	if len(items) == 0 {
+		t.Fatalf("expected at least the seeded chain, got an empty array")
 	}
 
-	chain, ok := items[0].(map[string]any)
-	if !ok {
-		t.Fatalf("expected an object element, got %T", items[0])
-	}
-	assertFrontendInteger(t, "chain.id", chain["id"])
-	if _, ok := chain["name"].(string); !ok {
-		t.Fatalf("chain.name must be a string, got %T", chain["name"])
-	}
-	if _, ok := chain["chainType"].(string); !ok {
-		t.Fatalf("chain.chainType must be a string, got %T (%v)", chain["chainType"], chain["chainType"])
-	}
-	if _, ok := chain["nativeSymbol"].(string); !ok {
-		t.Fatalf("chain.nativeSymbol must be a string, got %T (%v)", chain["nativeSymbol"], chain["nativeSymbol"])
-	}
-	if v, present := chain["explorerURL"]; present && v != nil {
-		if _, ok := v.(string); !ok {
-			t.Fatalf("chain.explorerURL must be a string or null, got %T", v)
+	// The service seeds the chain registry, so the array holds more than the row
+	// seeded here. Every element must satisfy the frontend contract, and the
+	// seeded row must be present.
+	var chain map[string]any
+	for _, raw := range items {
+		element, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("expected an object element, got %T", raw)
 		}
-	} else if !present {
-		t.Fatalf("chain.explorerURL key is missing")
+		assertFrontendInteger(t, "chain.id", element["id"])
+		if _, ok := element["name"].(string); !ok {
+			t.Fatalf("chain.name must be a string, got %T", element["name"])
+		}
+		if _, ok := element["chainType"].(string); !ok {
+			t.Fatalf("chain.chainType must be a string, got %T (%v)", element["chainType"], element["chainType"])
+		}
+		if _, ok := element["nativeSymbol"].(string); !ok {
+			t.Fatalf("chain.nativeSymbol must be a string, got %T (%v)", element["nativeSymbol"], element["nativeSymbol"])
+		}
+		if v, present := element["explorerURL"]; present && v != nil {
+			if _, ok := v.(string); !ok {
+				t.Fatalf("chain.explorerURL must be a string or null, got %T", v)
+			}
+		} else if !present {
+			t.Fatalf("chain.explorerURL key is missing")
+		}
+		if _, ok := element["isActive"].(bool); !ok {
+			t.Fatalf("chain.isActive must be a boolean, got %T", element["isActive"])
+		}
+		// `nativeDecimals` and `rpcUrls` drive wallet_addEthereumChain on the
+		// client, so both keys must always be present. `rpcUrls` may be empty when
+		// the operator has not configured an endpoint, but it must still be an array.
+		if _, ok := element["nativeDecimals"].(float64); !ok {
+			t.Fatalf("chain.nativeDecimals must be a number, got %T", element["nativeDecimals"])
+		}
+		if _, ok := element["rpcUrls"].([]any); !ok {
+			t.Fatalf("chain.rpcUrls must be an array, got %T", element["rpcUrls"])
+		}
+
+		if id, ok := element["id"].(float64); ok && int64(id) == 1 {
+			chain = element
+		}
 	}
-	if _, ok := chain["isActive"].(bool); !ok {
-		t.Fatalf("chain.isActive must be a boolean, got %T", chain["isActive"])
+	if chain == nil {
+		t.Fatalf("seeded chain id 1 is missing from the response")
 	}
 }
 

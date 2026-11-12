@@ -134,14 +134,38 @@ export const useWalletStore = create<WalletState>()(
         set({ error: null });
         try {
           const chain = get().chains.find((entry) => entry.id === chainId);
-          await switchProviderChain(chainId, chain
-            ? {
-                chainName: chain.name,
-                nativeCurrency: { name: chain.nativeSymbol, symbol: chain.nativeSymbol, decimals: 18 },
-                rpcUrls: [],
-                blockExplorerUrls: chain.explorerURL ? [chain.explorerURL] : undefined,
-              }
-            : undefined);
+          // A non-EVM network (Solana, Cosmos) cannot be reached through an
+          // EIP-1193 wallet, so switching to one is rejected rather than faked.
+          if (chain && chain.chainType.toLowerCase() !== "evm") {
+            throw new WalletError(
+              `${chain.name} is not an EVM network; connect a ${chain.chainType} wallet`,
+              "unsupported_chain",
+            );
+          }
+          if (chain) {
+            // A wallet will not add a chain it cannot reach. An empty RPC list is
+            // rejected by the provider, so a chain the operator has not given an
+            // endpoint for is reported instead of passed through and failing
+            // opaquely.
+            if (chain.rpcUrls.length === 0) {
+              throw new WalletError(
+                `no RPC endpoint is configured for ${chain.name}`,
+                "no_rpc",
+              );
+            }
+            await switchProviderChain(chainId, {
+              chainName: chain.name,
+              nativeCurrency: {
+                name: chain.nativeSymbol,
+                symbol: chain.nativeSymbol,
+                decimals: chain.nativeDecimals,
+              },
+              rpcUrls: chain.rpcUrls,
+              blockExplorerUrls: chain.explorerURL ? [chain.explorerURL] : undefined,
+            });
+          } else {
+            await switchProviderChain(chainId);
+          }
           set({ chainId });
           void get().refreshBalances();
         } catch (error) {
@@ -168,7 +192,9 @@ export const useWalletStore = create<WalletState>()(
           const chain = get().chains.find((entry) => entry.id === currentChain);
 
           const raw = await getNativeBalance(account.address, provider);
-          const decimals = 18;
+          // Native precision is per chain (SOL is 9, most EVM coins 18), so it
+          // comes from the chain record rather than a fixed 18.
+          const decimals = chain?.nativeDecimals ?? 18;
 
           set({
             chainId: currentChain,

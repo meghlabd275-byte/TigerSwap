@@ -71,7 +71,7 @@ const SERVER_PORTFOLIO = `{"totalValueUSD":4000,"assets":[{"chainId":1,"tokenAdd
 
 const SERVER_TRANSACTIONS = `[{"hash":"0xdeadbeef","chainId":1,"type":"swap","status":"confirmed","amount":"1000000000000000000","tokenSymbol":"ETH","createdAt":"2026-11-08T12:20:36.201140162Z"}]`;
 
-const SERVER_CHAINS = `[{"id":1,"name":"Ethereum","chainType":"evm","nativeSymbol":"ETH","explorerURL":"https://etherscan.io","isActive":true},{"id":10,"name":"Optimism","chainType":"evm","nativeSymbol":"ETH","explorerURL":"https://optimistic.etherscan.io","isActive":true}]`;
+const SERVER_CHAINS = `[{"id":1,"name":"Ethereum","chainType":"evm","nativeSymbol":"ETH","nativeDecimals":18,"rpcUrls":["https://rpc.tigerswap.io/1"],"explorerURL":"https://etherscan.io","isActive":true},{"id":6666,"name":"TigerSmartChain","chainType":"evm","nativeSymbol":"TGR","nativeDecimals":18,"rpcUrls":[],"explorerURL":"https://tigerscan.io","isActive":true}]`;
 
 const SERVER_TOKENS = `[{"address":"0x0000000000000000000000000000000000000000","symbol":"ETH","name":"Ethereum","decimals":18,"chainId":1,"logoURI":"https://assets.coingecko.com/coins/images/279/small/ethereum.png","priceUSD":null},{"address":"0x514910771AF9Ca656af840dff83E8264EcF986CA","symbol":"LINK","name":"Chainlink","decimals":18,"chainId":1,"logoURI":null,"priceUSD":12.5}]`;
 
@@ -164,6 +164,12 @@ test("live /chains payload satisfies chainListValidator", () => {
   assert.equal(chains[0].id, 1);
   assert.equal(chains[0].chainType, "evm");
   assert.equal(chains[0].nativeSymbol, "ETH");
+  assert.deepEqual(chains[0].rpcUrls, ["https://rpc.tigerswap.io/1"]);
+  assert.equal(chains[0].nativeDecimals, 18);
+  // A chain with no operator RPC endpoint is still valid to list; the wallet
+  // store is what refuses to add it.
+  assert.equal(chains[1].id, 6666);
+  assert.deepEqual(chains[1].rpcUrls, []);
 });
 
 test("live /tokens payload satisfies tokenListValidator", () => {

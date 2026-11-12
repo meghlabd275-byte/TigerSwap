@@ -58,6 +58,8 @@ export interface Chain {
   name: string;
   chainType: string;
   nativeSymbol: string;
+  nativeDecimals: number;
+  rpcUrls: string[];
   explorerURL: string | null;
   isActive: boolean;
 }
@@ -67,6 +69,8 @@ export const chainValidator = object<Chain>({
   name: string,
   chainType: string,
   nativeSymbol: string,
+  nativeDecimals: withDefault(integer, 18),
+  rpcUrls: withDefault(arrayLenient(httpURL), []),
   explorerURL: nullable(httpURL),
   isActive: boolean,
 });

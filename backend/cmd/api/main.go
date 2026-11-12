@@ -23,7 +23,10 @@ import (
 func depositWatcherChains() []int64 {
 	raw := strings.TrimSpace(os.Getenv("DEPOSIT_WATCH_CHAINS"))
 	if raw == "" {
-		return []int64{1, 56, 137, 42161, 10, 8453, 43114}
+		// TigerSmartChain (6666) is the platform's own chain, so it is watched by
+		// default alongside the other enabled networks. A chain with no
+		// TIGERSWAP_RPC_<id> endpoint is skipped at scan time rather than failing.
+		return []int64{1, 56, 137, 42161, 10, 8453, 43114, 6666}
 	}
 
 	var chains []int64
@@ -155,6 +158,11 @@ func main() {
 	// Real on-chain and trading services. These share one blockchain client and
 	// one price aggregator; every handler reads live chain or market state.
 	blockchainClient := services.NewBlockchainClient()
+	// Dial the endpoints the operator stored in the admin panel, so an
+	// admin-entered node is used instead of leaving the chain unreachable.
+	if err := blockchainClient.LoadChainRPCs(db); err != nil {
+		log.Printf("warning: could not load stored chain RPC endpoints: %v", err)
+	}
 	priceAggregator := services.NewPriceAggregator(redis)
 	swapExecutor := services.NewSwapExecutor(blockchainClient, priceAggregator, redis)
 	services.SetSwapExecutor(swapExecutor)

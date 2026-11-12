@@ -101,6 +101,14 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
 - API responses are validated on the frontend. When a handler's JSON shape
   changes, update the matching validator in `src/lib/types.ts` and the
   corresponding test (e.g. `services/perp_market_view_test.go`).
+- A boolean column tagged `gorm:"default:true"` (`Blockchain.IsActive`,
+  `Token.IsActive`, `Pool.IsActive`, `SystemSettings.TradingEnabled`, ...) is
+  omitted by GORM on a struct insert when its value is `false`, so the column
+  default wins and the flag comes back `true`. Neither `Select("*")` nor an
+  explicit column list overrides this. An admin create that must honour a
+  `false` value inserts a `map[string]interface{}` instead — which also means
+  `created_at`/`updated_at` are no longer filled automatically and have to be
+  set explicitly. Reads and `Update`/`Update("col", false)` calls are unaffected.
 
 ## Contracts
 

@@ -643,6 +643,46 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 	}
 }
 
+// ChainRPCURLs returns the operator-configured RPC endpoints for a chain.
+// TigerSwap dials only its own nodes, declared as TIGERSWAP_RPC_<chainID> (or
+// TIGERSWAP_RPC_URL_<chainID>). A single endpoint may hold several URLs
+// separated by a comma or semicolon. An empty result means no endpoint is
+// configured, which the caller must treat as "cannot be added to a wallet"
+// rather than substituting a third-party node.
+func ChainRPCURLs(chainID int64) []string {
+	raw := os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_%d", chainID))
+	if strings.TrimSpace(raw) == "" {
+		raw = os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_URL_%d", chainID))
+	}
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var urls []string
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' }) {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			urls = append(urls, trimmed)
+		}
+	}
+	return urls
+}
+
+// NativeDecimals returns the native coin's decimal precision for a chain from
+// the static registry. It is what a wallet needs to display a native balance,
+// and it is not always 18 (SOL is 9).
+func NativeDecimals(chainID int64) (int, bool) {
+	cfg := GetBlockchainConfigs()[chainID]
+	if cfg == nil {
+		return 0, false
+	}
+	if cfg.NativeToken != nil && cfg.NativeToken.Decimals > 0 {
+		return cfg.NativeToken.Decimals, true
+	}
+	if cfg.Decimals > 0 {
+		return cfg.Decimals, true
+	}
+	return 0, false
+}
+
 // GetBlockchainByName returns blockchain config by name (case insensitive)
 func GetBlockchainByName(name string) *BlockchainConfig {
 	name = strings.ToLower(name)

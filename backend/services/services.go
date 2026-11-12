@@ -32,12 +32,7 @@ type BlockchainService struct {
 }
 
 func NewBlockchainService(db *gorm.DB) *BlockchainService {
-	// Seed initial chains if empty
-	var count int64
-	db.Model(&models.Blockchain{}).Count(&count)
-	if count == 0 {
-		seedChains(db)
-	}
+	seedChains(db)
 	return &BlockchainService{db: db}
 }
 
@@ -60,7 +55,11 @@ func seedChains(db *gorm.DB) {
 		{ChainID: 6666, Name: "TigerSmartChain", Symbol: "TGR", Icon: "🐯", ExplorerURL: "https://tigerscan.io", Type: "evm", IsActive: true},
 	}
 	for _, chain := range chains {
-		if err := db.Create(&chain).Error; err != nil {
+		// Upsert on the unique chain_id so a chain added to this registry reaches
+		// an existing deployment. A plain Create would collide on every boot after
+		// the first, and the empty-table guard it replaced meant a newly registered
+		// chain never appeared at all.
+		if err := db.Where("chain_id = ?", chain.ChainID).FirstOrCreate(&chain).Error; err != nil {
 			log.Printf("failed to seed chain %s (chain_id %d): %v", chain.Name, chain.ChainID, err)
 		}
 	}
@@ -91,12 +90,7 @@ type TokenService struct {
 }
 
 func NewTokenService(db *gorm.DB) *TokenService {
-	// Seed initial tokens if empty
-	var count int64
-	db.Model(&models.Token{}).Count(&count)
-	if count == 0 {
-		seedTokens(db)
-	}
+	seedTokens(db)
 	return &TokenService{db: db}
 }
 
@@ -118,7 +112,11 @@ func seedTokens(db *gorm.DB) {
 	}
 	tokens = append(tokens, operatorTokenRows()...)
 	for _, token := range tokens {
-		if err := db.Create(&token).Error; err != nil {
+		// A token is unique on (chain_id, address). FirstOrCreate keyed on that
+		// pair makes the seed idempotent and lets a token added to this registry --
+		// or declared by the operator via TIGERSWAP_TOKEN_* -- appear on an
+		// existing deployment instead of only on a fresh one.
+		if err := db.Where("chain_id = ? AND address = ?", token.ChainID, token.Address).FirstOrCreate(&token).Error; err != nil {
 			log.Printf("failed to seed token %s on chain %d: %v", token.Symbol, token.ChainID, err)
 		}
 	}
@@ -1417,8 +1415,29 @@ func (s *AdminService) CreateChain(c *gin.Context) {
 		return
 	}
 
-	if err := s.db.Create(&chain).Error; err != nil {
+	// is_active carries `gorm:"default:true"`. A struct insert omits a false
+	// value, so the column default would make the row active and the operator's
+	// choice would be silently dropped. Inserting a column map writes every
+	// field, so the false value is persisted.
+	row := map[string]interface{}{
+		"chain_id":     chain.ChainID,
+		"name":         chain.Name,
+		"symbol":       chain.Symbol,
+		"icon":         chain.Icon,
+		"rpc_url":      chain.RPCURL,
+		"explorer_url": chain.ExplorerURL,
+		"type":         chain.Type,
+		"is_active":    chain.IsActive,
+		"is_testnet":   chain.IsTestnet,
+		"created_at":   time.Now(),
+		"updated_at":   time.Now(),
+	}
+	if err := s.db.Model(&models.Blockchain{}).Create(row).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create chain"})
+		return
+	}
+	if err := s.db.Where("chain_id = ?", chain.ChainID).First(&chain).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load created chain"})
 		return
 	}
 	s.logAdminAction(c, "create_chain", "chain", chain.Name, nil)
@@ -1513,8 +1532,29 @@ func (s *AdminService) CreateToken(c *gin.Context) {
 		return
 	}
 
-	if err := s.db.Create(&token).Error; err != nil {
+	// See CreateChain: a column-map insert persists `is_active:false`, which a
+	// struct insert would drop in favour of the column default.
+	row := map[string]interface{}{
+		"address":      token.Address,
+		"chain_id":     token.ChainID,
+		"name":         token.Name,
+		"symbol":       token.Symbol,
+		"decimals":     token.Decimals,
+		"logo_uri":     token.LogoURI,
+		"total_supply": token.TotalSupply,
+		"is_active":    token.IsActive,
+		"is_verified":  token.IsVerified,
+		"coingecko_id": token.CoingeckoID,
+		"created_by":   token.CreatedBy,
+		"created_at":   time.Now(),
+		"updated_at":   time.Now(),
+	}
+	if err := s.db.Model(&models.Token{}).Create(row).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create token"})
+		return
+	}
+	if err := s.db.Where("chain_id = ? AND address = ?", token.ChainID, token.Address).First(&token).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load created token"})
 		return
 	}
 	s.logAdminAction(c, "create_token", "token", token.Symbol, nil)
@@ -1606,8 +1646,34 @@ func (s *AdminService) CreatePool(c *gin.Context) {
 		respondBadRequestError(c, err)
 		return
 	}
-	if err := s.db.Create(&pool).Error; err != nil {
+	// See CreateChain: a column-map insert persists `is_active:false`, which a
+	// struct insert would drop in favour of the column default.
+	row := map[string]interface{}{
+		"token_a_address": pool.TokenAAddress,
+		"token_b_address": pool.TokenBAddress,
+		"chain_id":        pool.ChainID,
+		"factory_address": pool.FactoryAddress,
+		"pool_address":    pool.PoolAddress,
+		"reserve_a":       pool.ReserveA,
+		"reserve_b":       pool.ReserveB,
+		"total_liquidity": pool.TotalLiquidity,
+		"token_0_price":   pool.Token0Price,
+		"token_1_price":   pool.Token1Price,
+		"fee":             pool.Fee,
+		"volume_24h":      pool.Volume24h,
+		"volume_7d":       pool.Volume7d,
+		"tvl_usd":         pool.TvlUSD,
+		"tx_count":        pool.TxCount,
+		"is_active":       pool.IsActive,
+		"created_at":      time.Now(),
+		"updated_at":      time.Now(),
+	}
+	if err := s.db.Model(&models.Pool{}).Create(row).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create pool"})
+		return
+	}
+	if err := s.db.Where("pool_address = ?", pool.PoolAddress).First(&pool).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load created pool"})
 		return
 	}
 	s.logAdminAction(c, "create_pool", "pool", pool.PoolAddress, nil)

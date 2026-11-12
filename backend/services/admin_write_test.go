@@ -163,3 +163,51 @@ func TestLogAdminActionStoresDetails(t *testing.T) {
 		t.Fatalf("expected chain_id 4243 in details, got %v", decoded["chain_id"])
 	}
 }
+
+// TestCreateChainPersistsInactiveFlag pins that a chain created with
+// `is_active:false` is stored inactive. `is_active` carries `gorm:"default:true"`,
+// so without an explicit column selection GORM omits the zero value and the row
+// would come back active, silently ignoring the operator's choice.
+func TestCreateChainPersistsInactiveFlag(t *testing.T) {
+	db := newAdminWriteTestDB(t)
+	svc := NewAdminService(db)
+
+	rec := postJSONBody(t, svc.CreateChain, "/api/v1/admin/chains",
+		`{"chain_id":7007,"name":"Paused Chain","symbol":"PAU","type":"evm","is_active":false}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var stored models.Blockchain
+	if err := db.Where("chain_id = ?", 7007).First(&stored).Error; err != nil {
+		t.Fatalf("load chain: %v", err)
+	}
+	if stored.IsActive {
+		t.Fatalf("chain created with is_active:false was stored active")
+	}
+	// The insert goes through a column map, so GORM's automatic timestamps are
+	// bypassed and must be supplied explicitly.
+	if stored.CreatedAt.IsZero() || stored.UpdatedAt.IsZero() {
+		t.Fatalf("created chain is missing timestamps: created=%v updated=%v", stored.CreatedAt, stored.UpdatedAt)
+	}
+}
+
+// TestCreateTokenPersistsInactiveFlag is the token counterpart.
+func TestCreateTokenPersistsInactiveFlag(t *testing.T) {
+	db := newAdminWriteTestDB(t)
+	svc := NewAdminService(db)
+
+	rec := postJSONBody(t, svc.CreateToken, "/api/v1/admin/tokens",
+		`{"chain_id":1,"address":"0x2222222222222222222222222222222222222222","name":"Paused","symbol":"PAU","decimals":18,"is_active":false}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var stored models.Token
+	if err := db.Where("chain_id = ? AND address = ?", 1, "0x2222222222222222222222222222222222222222").First(&stored).Error; err != nil {
+		t.Fatalf("load token: %v", err)
+	}
+	if stored.IsActive {
+		t.Fatalf("token created with is_active:false was stored active")
+	}
+}

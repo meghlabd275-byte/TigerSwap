@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -28,22 +29,44 @@ import (
 // (it is passed straight to the wallet's switch-chain call), so `id` carries the
 // chain ID rather than the database primary key.
 type chainDTO struct {
-	ID           int64   `json:"id"`
-	Name         string  `json:"name"`
-	ChainType    string  `json:"chainType"`
-	NativeSymbol string  `json:"nativeSymbol"`
-	ExplorerURL  *string `json:"explorerURL"`
-	IsActive     bool    `json:"isActive"`
+	ID             int64    `json:"id"`
+	Name           string   `json:"name"`
+	ChainType      string   `json:"chainType"`
+	NativeSymbol   string   `json:"nativeSymbol"`
+	NativeDecimals int      `json:"nativeDecimals"`
+	RPCURLs        []string `json:"rpcUrls"`
+	ExplorerURL    *string  `json:"explorerURL"`
+	IsActive       bool     `json:"isActive"`
 }
 
 func newChainDTO(m models.Blockchain) chainDTO {
+	// Native decimals come from the static registry (not the DB row) so a wallet
+	// gets the true precision; 18 is the fallback only when the registry has no
+	// entry, never a substitute for a real value.
+	decimals := 18
+	if d, ok := config.NativeDecimals(m.ChainID); ok {
+		decimals = d
+	}
+	// Prefer the operator's environment endpoint; otherwise use the endpoint the
+	// admin panel stored on the chain row. Both are the operator's own nodes.
+	rpcURLs := config.ChainRPCURLs(m.ChainID)
+	if len(rpcURLs) == 0 {
+		if stored := strings.TrimSpace(m.RPCURL); stored != "" {
+			rpcURLs = []string{stored}
+		}
+	}
+	if rpcURLs == nil {
+		rpcURLs = []string{}
+	}
 	return chainDTO{
-		ID:           m.ChainID,
-		Name:         m.Name,
-		ChainType:    m.Type,
-		NativeSymbol: m.Symbol,
-		ExplorerURL:  optionalString(m.ExplorerURL),
-		IsActive:     m.IsActive,
+		ID:             m.ChainID,
+		Name:           m.Name,
+		ChainType:      m.Type,
+		NativeSymbol:   m.Symbol,
+		NativeDecimals: decimals,
+		RPCURLs:        rpcURLs,
+		ExplorerURL:    optionalString(m.ExplorerURL),
+		IsActive:       m.IsActive,
 	}
 }
 
