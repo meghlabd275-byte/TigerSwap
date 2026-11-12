@@ -1549,6 +1549,12 @@ export interface BridgeTransfer {
   recipient: string;
   token: string;
   amount: string;
+  /** On-chain message id from the source BridgeInitiated event, set once the
+   *  lock is verified. Empty until then. */
+  message_id: string;
+  /** Post-fee amount locked on the source chain, used for the destination
+   *  release. Empty until the lock event is verified. */
+  message_amount: string;
   src_tx_hash: string;
   dst_tx_hash: string;
   nonce: number;
@@ -1569,6 +1575,8 @@ export const bridgeTransferValidator = object<BridgeTransfer>({
   recipient: address,
   token: string,
   amount: decimal,
+  message_id: withDefault(hex, ""),
+  message_amount: withDefault(decimal, "0"),
   src_tx_hash: withDefault(hex, ""),
   dst_tx_hash: withDefault(hex, ""),
   nonce: nonNegative,

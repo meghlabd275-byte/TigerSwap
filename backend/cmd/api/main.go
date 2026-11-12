@@ -251,6 +251,9 @@ func main() {
 		walletService = services.NewWalletService(db)
 		walletService.SetDependencies(blockchainClient, swapExecutor, perpetualEngine, copyTradingEngine)
 		walletService.SetLedger(ledgerService)
+		// Outbound bridge locks are signed with the holder's own custody key, so
+		// the relayer needs the wallet service to resolve that key.
+		bridgeService.SetWallet(walletService)
 	} else {
 		log.Println("WALLET_ENCRYPTION_KEY not set: wallet custody endpoints are disabled")
 	}

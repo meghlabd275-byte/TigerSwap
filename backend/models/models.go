@@ -626,6 +626,8 @@ type BridgeTransfer struct {
 	Recipient      string     `gorm:"index;size:42" json:"recipient"`
 	Token          string     `gorm:"size:42" json:"token"`
 	Amount         string     `gorm:"size:80" json:"amount"`
+	MessageID      string     `gorm:"size:66;index" json:"message_id"`
+	MessageAmount  string     `gorm:"size:80" json:"message_amount"`
 	SrcTxHash      string     `gorm:"size:80" json:"src_tx_hash"`
 	DstTxHash      string     `gorm:"size:80" json:"dst_tx_hash"`
 	Nonce          uint64     `json:"nonce"`

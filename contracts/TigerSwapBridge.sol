@@ -142,7 +142,9 @@ contract TigerSwapBridge {
     // ============ Outbound ============
 
     /// @notice Lock `amount` of `token` and publish a bridge message.
-    function bridge(
+    /// @dev The off-chain relayer signs this call with the holder's custody key,
+    ///      so `msg.sender` is the account whose tokens are locked.
+    function lock(
         uint256 toChain,
         address token,
         uint256 amount,

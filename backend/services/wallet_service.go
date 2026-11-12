@@ -972,6 +972,25 @@ func (s *WalletService) decryptSecret(encoded string) ([]byte, error) {
 	return gcm.Open(nil, nonce, ciphertext, nil)
 }
 
+// custodyKeyForAddress returns the decrypted private key for a custody wallet
+// address. Callers that must sign on behalf of a user's own account (for
+// example an outbound bridge lock, where the on-chain msg.sender has to be the
+// token holder) resolve the key here rather than accepting a key from the
+// request. An address the platform does not custody is refused.
+func (s *WalletService) custodyKeyForAddress(address string) (*ecdsa.PrivateKey, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("database not configured")
+	}
+	if !common.IsHexAddress(address) {
+		return nil, fmt.Errorf("invalid wallet address")
+	}
+	var stored models.MasterWallet
+	if err := s.db.Where("LOWER(address) = ?", strings.ToLower(address)).First(&stored).Error; err != nil {
+		return nil, fmt.Errorf("no custody wallet for address %s", address)
+	}
+	return s.loadMasterKey(&stored)
+}
+
 // storeMasterWallet persists the encrypted key material for a master wallet.
 func (s *WalletService) storeMasterWallet(w *MasterWallet, key *ecdsa.PrivateKey) error {
 	encKey, err := s.encryptSecret(crypto.FromECDSA(key))

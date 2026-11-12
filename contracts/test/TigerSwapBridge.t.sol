@@ -59,7 +59,7 @@ contract BridgeTest is Test {
         uint256 bridgeBefore = token.balanceOf(address(bridge));
 
         vm.prank(user);
-        bytes32 messageId = bridge.bridge(REMOTE_CHAIN, address(token), 10_000e18, user, 1);
+        bytes32 messageId = bridge.lock(REMOTE_CHAIN, address(token), 10_000e18, user, 1);
 
         assertTrue(messageId != bytes32(0));
         assertEq(token.balanceOf(user), before - 10_000e18);
@@ -71,14 +71,14 @@ contract BridgeTest is Test {
     function testOutboundRejectsUnsupportedChain() public {
         vm.prank(user);
         vm.expectRevert(bytes("TigerSwap: CHAIN_NOT_SUPPORTED"));
-        bridge.bridge(999, address(token), 10_000e18, user, 1);
+        bridge.lock(999, address(token), 10_000e18, user, 1);
     }
 
     function testOutboundRejectsDuplicateNonce() public {
         vm.startPrank(user);
-        bridge.bridge(REMOTE_CHAIN, address(token), 10_000e18, user, 7);
+        bridge.lock(REMOTE_CHAIN, address(token), 10_000e18, user, 7);
         vm.expectRevert(bytes("TigerSwap: MESSAGE_EXISTS"));
-        bridge.bridge(REMOTE_CHAIN, address(token), 10_000e18, user, 7);
+        bridge.lock(REMOTE_CHAIN, address(token), 10_000e18, user, 7);
         vm.stopPrank();
     }
 
@@ -184,9 +184,27 @@ contract BridgeTest is Test {
         assertEq(bridge.validatorCount(), 2);
     }
 
+    /// The Go relayer recomputes the inbound digest off-chain before signing, so
+    /// the two implementations must agree byte for byte. This pins the Solidity
+    /// digest to the value the Go `bridgeInboundDigest` produces for the same
+    /// message (messageId 0x1111..11, fromChain 1, toChain 8888, token 0x..0abc,
+    /// amount 5000, receiver 0x..cafe). If either side changes its encoding, this
+    /// test and its Go counterpart (TestBridgeInboundDigestMatchesSolidity) fail.
+    function testInboundDigestMatchesGoRelayer() public view {
+        TigerSwapBridge.BridgeMessage memory m = TigerSwapBridge.BridgeMessage({
+            messageId: bytes32(uint256(0x1111111111111111111111111111111111111111111111111111111111111111)),
+            fromChain: 1,
+            toChain: 8888,
+            token: address(0xabc),
+            amount: 5000,
+            receiver: address(0xcafe)
+        });
+        assertEq(bridge.inboundDigest(m), bytes32(0x9f5a44e1a36e3e2d69d2da1946056f826ba29536cdbcb776fac74ea4b5cb0139));
+    }
+
     function testWithdrawFees() public {
         vm.prank(user);
-        bridge.bridge(REMOTE_CHAIN, address(token), 10_000e18, user, 3);
+        bridge.lock(REMOTE_CHAIN, address(token), 10_000e18, user, 3);
 
         address treasury = address(0xFEE);
         bridge.withdrawFees(address(token), treasury);
