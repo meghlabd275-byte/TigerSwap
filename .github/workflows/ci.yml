@@ -123,3 +123,11 @@ jobs:
           mkdir -p lib
           git clone --depth 1 --quiet https://github.com/foundry-rs/forge-std.git lib/forge-std
           forge build && forge test
+
+      - name: Build deployment images
+        run: |
+          # The Dockerfiles are part of the shipped product; build them here so a
+          # change to the API or the frontend cannot silently break a deploy.
+          docker build -t tigerswap-api:ci "$GITHUB_WORKSPACE/backend"
+          docker build -t tigerswap-web:ci --build-arg NEXT_PUBLIC_API_URL=http://localhost:8080 "$GITHUB_WORKSPACE/frontend"
+

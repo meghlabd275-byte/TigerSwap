@@ -60,6 +60,27 @@ npm run build
 
 The root build is intended to become the primary launch gate. Until every package is fully integrated, always review [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md) before relying on any module for production.
 
+## Deployment
+
+The API and the web app each ship as a Docker image, and `docker-compose.yml`
+brings up a complete stack (Postgres, API, web) for a single host.
+
+```bash
+cp .env.example .env     # fill in DB_*, JWT_SECRET and any signing keys
+docker compose up --build
+```
+
+The API runs GORM `AutoMigrate` on startup, so the schema is created on the
+first boot. For a production database, run a reviewed migration instead.
+
+- `backend/Dockerfile` builds the API server (Go module at `backend/`). The
+  default build links no cgo; the Rust strategy engine is opt-in via the `rust`
+  build tag and a prebuilt `libtigerswap_bots.so` (see `AGENTS.md`).
+- `frontend/Dockerfile` builds a Next.js standalone server. `NEXT_PUBLIC_API_URL`
+  is baked in at build time, so pass it as a build argument.
+- `DB_SSLMODE` selects the Postgres TLS mode and defaults to `require`; set it to
+  `disable` only when the database is reached over a private network without TLS.
+
 ## Production policy
 
 Production builds must fail closed when live dependencies are missing. They must not silently fall back to mock quotes, mock balances, fake transaction hashes, or fake transaction success messages.
