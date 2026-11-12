@@ -22,6 +22,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -56,6 +57,7 @@ func seedChains(db *gorm.DB) {
 		{ChainID: 9001, Name: "Aptos", Symbol: "APT", Icon: "🔷", ExplorerURL: "https://aptoscan.com", Type: "aptos", IsActive: true},
 		{ChainID: 9002, Name: "Cosmos", Symbol: "ATOM", Icon: "🌌", ExplorerURL: "https://mintscan.io/cosmos", Type: "cosmos", IsActive: true},
 		{ChainID: 9003, Name: "TON", Symbol: "TON", Icon: "📱", ExplorerURL: "https://tonscan.org", Type: "ton", IsActive: true},
+		{ChainID: 6666, Name: "TigerSmartChain", Symbol: "TGR", Icon: "🐯", ExplorerURL: "https://tigerscan.io", Type: "evm", IsActive: true},
 	}
 	for _, chain := range chains {
 		if err := db.Create(&chain).Error; err != nil {
@@ -108,13 +110,42 @@ func seedTokens(db *gorm.DB) {
 		{ChainID: 1, Address: "0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984", Name: "Uniswap", Symbol: "UNI", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/12504/small/uniswap-uni.png", IsActive: true, IsVerified: true},
 		{ChainID: 137, Address: "0x0000000000000000000000000000000000000000", Name: "Polygon", Symbol: "MATIC", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/4713/small/polygon.png", IsActive: true, IsVerified: true},
 		{ChainID: 56, Address: "0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c", Name: "Wrapped BNB", Symbol: "WBNB", Decimals: 18, LogoURI: "https://assets.coingecko.com/coins/images/825/small/bnb-icon2_2x.png", IsActive: true, IsVerified: true},
+		// TigerSmartChain's native coin is TGR. The token rows for the chain's
+		// ERC-20s (RUSD, RYUSD, the bridged stables) are seeded from the operator's
+		// TIGERSWAP_TOKEN_6666_* declarations, because those addresses are
+		// deployment-specific.
+		{ChainID: 6666, Address: "0x0000000000000000000000000000000000000000", Name: "Tiger Coin", Symbol: "TGR", Decimals: 18, IsActive: true, IsVerified: true},
 	}
+	tokens = append(tokens, operatorTokenRows()...)
 	for _, token := range tokens {
 		if err := db.Create(&token).Error; err != nil {
 			log.Printf("failed to seed token %s on chain %d: %v", token.Symbol, token.ChainID, err)
 		}
 	}
 	log.Println("Seeded token data")
+}
+
+// operatorTokenRows converts the operator's TIGERSWAP_TOKEN_<chainID>_<SYMBOL>
+// declarations into token rows, so a real deployment address (RUSD, RYUSD, a
+// bridged USDT) becomes a tradable listing without a code change.
+func operatorTokenRows() []models.Token {
+	var rows []models.Token
+	for chainID, tokens := range config.OperatorTokens() {
+		for _, tok := range tokens {
+			rows = append(rows, models.Token{
+				ChainID:     chainID,
+				Address:     tok.Address,
+				Name:        tok.Name,
+				Symbol:      tok.Symbol,
+				Decimals:    tok.Decimals,
+				LogoURI:     tok.LogoURI,
+				IsActive:    true,
+				IsVerified:  tok.IsVerified,
+				CoingeckoID: tok.CoingeckoID,
+			})
+		}
+	}
+	return rows
 }
 
 // GetTokens lists active tokens as a bare array of camelCase objects.

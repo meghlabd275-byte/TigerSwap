@@ -5,7 +5,9 @@ package config
 import (
 	"fmt"
 	"math/big"
+	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -620,6 +622,24 @@ func GetBlockchainConfigs() map[int64]*BlockchainConfig {
 			IconURL:           "https://assets.coingecko.com/coins/images/17980/small/ton_symbol.png",
 			CoingeckoID:       "the-open-network",
 		},
+		// TigerSmartChain (TigerEx's own EVM chain; native coin is TGR).
+		6666: {
+			ChainID:           6666,
+			Name:              "TigerSmartChain",
+			Symbol:            "TGR",
+			Type:              ChainTypeEVM,
+			RPCURLs:           nil, // operator-supplied via TIGERSWAP_RPC_6666
+			ExplorerURL:       "https://tigerscan.io",
+			BlockTime:         3,
+			Decimals:          18,
+			ChainIDHex:        "0x1a0a",
+			NetworkID:         6666,
+			NativeToken:       &NativeToken{Name: "Tiger Coin", Symbol: "TGR", Decimals: 18, Address: "0x0000000000000000000000000000000000000000"},
+			IsTestnet:         false,
+			SupportsEIP1559:   true,
+			SupportsWebSocket: true,
+			CoingeckoID:       "",
+		},
 	}
 }
 
@@ -688,10 +708,113 @@ func IsEVMChain(chainID int64) bool {
 	return ok && cfg.Type == ChainTypeEVM
 }
 
+// operatorTokenConfigs reads token deployments the operator supplies for a
+// chain, in the form
+//
+//	TIGERSWAP_TOKEN_<chainID>_<SYMBOL>=<address>[,<decimals>]
+//
+// (for example TIGERSWAP_TOKEN_6666_RUSD=0x... or TIGERSWAP_TOKEN_6666_USDT=0x...,6).
+// Tokens that live only on TigerEx's own chain -- RUSD, RYUSD and the bridged
+// stables -- have no public registry, so the operator declares them here rather
+// than the code hardcoding an address that would be wrong on every deployment.
+// The decimals default to 18; an operator states them explicitly for a 6- or
+// 8-decimal asset.
+func operatorTokenConfigs() map[int64][]*TokenConfig {
+	const prefix = "TIGERSWAP_TOKEN_"
+	result := map[int64][]*TokenConfig{}
+	for _, entry := range os.Environ() {
+		key, value, found := strings.Cut(entry, "=")
+		if !found || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(key, prefix)
+		idText, symbol, ok := strings.Cut(rest, "_")
+		if !ok {
+			continue
+		}
+		chainID, err := strconv.ParseInt(strings.TrimSpace(idText), 10, 64)
+		if err != nil {
+			continue
+		}
+		symbol = strings.ToUpper(strings.TrimSpace(symbol))
+		address, decimals := parseTokenDeployment(value)
+		if symbol == "" || !isHexAddress(address) {
+			continue
+		}
+		result[chainID] = append(result[chainID], &TokenConfig{
+			Address:    address,
+			ChainID:    chainID,
+			Name:       symbol,
+			Symbol:     symbol,
+			Decimals:   decimals,
+			IsVerified: true,
+			IsNative:   false,
+		})
+	}
+	return result
+}
+
+// parseTokenDeployment splits an operator value into an address and decimals.
+// An omitted decimals field defaults to 18.
+func parseTokenDeployment(value string) (string, int) {
+	address, decimalsText, hasDecimals := strings.Cut(strings.TrimSpace(value), ",")
+	address = strings.TrimSpace(address)
+	decimals := 18
+	if hasDecimals {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(decimalsText)); err == nil && parsed >= 0 && parsed <= 36 {
+			decimals = parsed
+		}
+	}
+	return address, decimals
+}
+
+// isHexAddress reports whether s is a 20-byte hex address. It mirrors the
+// address check the HTTP layer applies, so a malformed operator value is
+// rejected here rather than becoming a ledger row that can never be resolved.
+func isHexAddress(s string) bool {
+	if len(s) != 42 || s[0] != '0' || (s[1] != 'x' && s[1] != 'X') {
+		return false
+	}
+	for _, r := range s[2:] {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// mergeOperatorTokens folds operator-declared tokens into a chain's static list.
+// An operator token for a symbol that already exists on that chain replaces the
+// static entry, so precedence does not depend on map iteration order.
+func mergeOperatorTokens(base map[int64][]*TokenConfig) map[int64][]*TokenConfig {
+	for chainID, tokens := range operatorTokenConfigs() {
+		existing := base[chainID]
+		for _, token := range tokens {
+			filtered := existing[:0]
+			for _, e := range existing {
+				if !strings.EqualFold(e.Symbol, token.Symbol) {
+					filtered = append(filtered, e)
+				}
+			}
+			existing = append(filtered, token)
+		}
+		base[chainID] = existing
+	}
+	return base
+}
+
+// OperatorTokens returns only the tokens the operator declared for each chain,
+// for seeding the database with real deployment addresses.
+func OperatorTokens() map[int64][]*TokenConfig {
+	return operatorTokenConfigs()
+}
+
 // GetTokenConfigs returns common token configurations for all chains
 func GetTokenConfigs() map[int64][]*TokenConfig {
 	// Common tokens across chains
-	return map[int64][]*TokenConfig{
+	return mergeOperatorTokens(map[int64][]*TokenConfig{
 		1: { // Ethereum
 			{Address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", ChainID: 1, Name: "USD Coin", Symbol: "USDC", Decimals: 6, LogoURI: "https://assets.coingecko.com/coins/images/6319/small/usdc.png", CoingeckoID: "usd-coin", IsVerified: true, IsNative: false},
 			{Address: "0xdAC17F958D2ee523a2206206994597C13D831ec7", ChainID: 1, Name: "Tether USD", Symbol: "USDT", Decimals: 6, LogoURI: "https://assets.coingecko.com/coins/images/325/small/Tether.png", CoingeckoID: "tether", IsVerified: true, IsNative: false},
@@ -710,7 +833,7 @@ func GetTokenConfigs() map[int64][]*TokenConfig {
 			{Address: "0xc2132D05D31c914a87C6611C10748AEb04B58e8F", ChainID: 137, Name: "Tether USD", Symbol: "USDT", Decimals: 6, LogoURI: "https://assets.coingecko.com/coins/images/325/small/Tether.png", CoingeckoID: "tether", IsVerified: true, IsNative: false},
 			{Address: "0x1BFD67037B42Cf73acF2047067bd4F2C47D9BfD6", ChainID: 137, Name: "Wrapped Bitcoin", Symbol: "WBTC", Decimals: 8, LogoURI: "https://assets.coingecko.com/coins/images/7598/small/wrapped_bitcoin_wbtc.png", CoingeckoID: "wrapped-bitcoin", IsVerified: true, IsNative: false},
 		},
-	}
+	})
 }
 
 // TokenAddress returns the contract address for a token symbol on a chain.

@@ -16,6 +16,10 @@ var TrackedPriceSymbols = []string{
 	"INJ", "SUI", "FIL", "ATOM", "XTZ", "ADA", "ALGO", "XLM", "HBAR", "FTM",
 	"EGLD", "GRT", "CRO", "ONE", "LDO", "IMX", "GALA", "ENJ", "BAT", "ZEC",
 	"XMR", "DASH", "ZIL", "ENS", "COMP", "DAI",
+	// TigerEx's own assets on TigerSmartChain: the native coin and the
+	// platform stablecoins. A symbol the oracle cannot price is skipped by
+	// the feed rather than sent with an invented value.
+	"TGR", "RUSD", "RYUSD",
 }
 
 // DefaultMarketFeedInterval is the cadence of the WebSocket market feed when no
