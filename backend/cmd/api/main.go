@@ -201,6 +201,12 @@ func main() {
 
 	ledgerService := services.NewLedgerService(db)
 
+	// The perpetual engine escrows margin from and settles payouts to the ledger,
+	// denominated in each listing's quote asset. Wiring it here means a position
+	// can only be opened against a real ledger balance.
+	perpetualEngine.SetLedger(ledgerService, services.PerpSettlementChainID())
+	marginEngine.SetLedger(ledgerService, services.PerpSettlementChainID())
+
 	// Liquidity mining and token distribution. Both escrow a real ledger
 	// balance, so a farm reward or an airdrop claim can only pay out what was
 	// funded. The farm boost reads veTGR voting power from governance.

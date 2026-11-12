@@ -34,6 +34,16 @@ type priceSource interface {
 type MarginEngine struct {
 	db       *gorm.DB
 	priceAgg priceSource
+
+	// ledger, when set, holds every asset the engine moves: a collateral
+	// deposit debits the trader's balance, a borrow credits it from the pool,
+	// a repayment returns it, and a liquidation moves it between the liquidator
+	// and the pool. Without it the engine refuses to move funds.
+	ledger            *LedgerService
+	settlementChainID int64
+	// assetResolver names the ledger asset for a symbol. It is a field so a test
+	// can supply a fixed registry; production wires the config-backed resolver.
+	assetResolver func(asset string) (perpSettlement, error)
 }
 
 // marginMarketConfig is the tradable subset of an admin margin listing.
@@ -71,6 +81,47 @@ type MarginAccountView struct {
 // NewMarginEngine builds a margin engine over the given database.
 func NewMarginEngine(db *gorm.DB, priceAgg priceSource) *MarginEngine {
 	return &MarginEngine{db: db, priceAgg: priceAgg}
+}
+
+// SetLedger wires the platform ledger that funds collateral, borrows and
+// repayments, and the chain whose token registry names an asset's ledger entry.
+// With it set, a collateral deposit debits real balance and a borrow credits it.
+// Without it the engine refuses to move funds rather than crediting a balance
+// out of nothing.
+func (e *MarginEngine) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	e.ledger = ledger
+	e.settlementChainID = settlementChainID
+	e.assetResolver = resolveSettlementFromConfig(settlementChainID)
+}
+
+// SetAssetResolver overrides how an asset symbol is resolved to a ledger entry.
+// Tests use it to supply a fixed registry; production leaves the config-backed
+// resolver wired by SetLedger.
+func (e *MarginEngine) SetAssetResolver(resolver func(asset string) (perpSettlement, error)) {
+	e.assetResolver = resolver
+}
+
+// assetLedger resolves the ledger entry for an asset symbol. It requires both a
+// ledger and a resolver, so a deployment that forgets either refuses to move
+// funds rather than moving them in a guessed asset.
+func (e *MarginEngine) assetLedger(asset string) (perpSettlement, error) {
+	if e.ledger == nil {
+		return perpSettlement{}, errors.New("margin engine has no ledger configured; funds cannot be moved")
+	}
+	if e.assetResolver == nil {
+		return perpSettlement{}, fmt.Errorf("no ledger asset resolver configured for %s", asset)
+	}
+	resolved, err := e.assetResolver(asset)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if resolved.Symbol == "" || resolved.Address == "" {
+		return perpSettlement{}, fmt.Errorf("asset %s has no resolvable ledger entry", asset)
+	}
+	if resolved.Decimals < 0 || resolved.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("asset %s has invalid decimals %d", resolved.Symbol, resolved.Decimals)
+	}
+	return resolved, nil
 }
 
 // Sentinel errors let handlers map failures to status codes.
@@ -376,7 +427,10 @@ func (e *MarginEngine) OpenAccount(_ context.Context, userID string, req OpenAcc
 	return account, nil
 }
 
-// DepositCollateral adds collateral to an account the caller owns.
+// DepositCollateral adds collateral to an account the caller owns. The deposit
+// escrows real ledger balance: the caller's balance is debited and the
+// collateral row is written in one transaction, so a deposit can never be
+// recorded without the funds to back it.
 func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, accountID uuid.UUID, asset, amount string) error {
 	cfg, _, err := e.ownedAccount(userID, accountID)
 	if err != nil {
@@ -395,28 +449,40 @@ func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, acc
 	if _, err := e.assetPriceUSD(ctx, normalized); err != nil {
 		return fmt.Errorf("cannot price collateral %s: %w", normalized, err)
 	}
-
-	var existing models.MarginCollateral
-	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		stored := amountValueString(value)
-		return e.db.Create(&models.MarginCollateral{
-			AccountID: accountID,
-			Asset:     normalized,
-			Amount:    stored,
-		}).Error
-	}
+	settled, err := e.assetLedger(normalized)
 	if err != nil {
 		return err
 	}
-
-	current, err := parseDecimal(existing.Amount)
-	if err != nil {
-		return fmt.Errorf("stored collateral for %s is unreadable: %w", normalized, err)
+	units := scaleToBaseUnits(value, settled.Decimals)
+	if units.Sign() <= 0 {
+		return fmt.Errorf("collateral %s is below one base unit of %s", amount, settled.Symbol)
 	}
-	stored := amountValueString(new(big.Rat).Add(current, value))
-	return e.db.Model(&models.MarginCollateral{}).Where("id = ?", existing.ID).
-		Update("amount", stored).Error
+
+	return e.db.Transaction(func(tx *gorm.DB) error {
+		if err := e.ledger.debitWithin(tx, userID, settled.ChainID, settled.Address, units); err != nil {
+			return err
+		}
+
+		var existing models.MarginCollateral
+		err := tx.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(&models.MarginCollateral{
+				AccountID: accountID,
+				Asset:     normalized,
+				Amount:    amountValueString(value),
+			}).Error
+		}
+		if err != nil {
+			return err
+		}
+		current, err := parseDecimal(existing.Amount)
+		if err != nil {
+			return fmt.Errorf("stored collateral for %s is unreadable: %w", normalized, err)
+		}
+		stored := amountValueString(new(big.Rat).Add(current, value))
+		return tx.Model(&models.MarginCollateral{}).Where("id = ?", existing.ID).
+			Update("amount", stored).Error
+	})
 }
 
 // Borrow borrows an asset against the account's collateral, enforcing the
@@ -472,56 +538,74 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, cfg.LTV)
 	}
 
-	now := time.Now().UTC()
-	var existing models.MarginBorrow
-	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		stored := amountValueString(value)
-		return e.db.Create(&models.MarginBorrow{
-			AccountID:       accountID,
-			Asset:           normalized,
-			Principal:       stored,
-			AccruedInterest: "0",
-			LastAccrual:     now,
-		}).Error
-	}
+	settled, err := e.assetLedger(normalized)
 	if err != nil {
 		return err
 	}
+	units := scaleToBaseUnits(value, settled.Decimals)
+	if units.Sign() <= 0 {
+		return fmt.Errorf("borrow %s is below one base unit of %s", amount, settled.Symbol)
+	}
 
-	// Settle interest first so the new principal does not earn interest for the
-	// time before this borrow.
-	principal, err := parseDecimal(existing.Principal)
-	if err != nil {
-		return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
-	}
-	interest, err := parseDecimal(existing.AccruedInterest)
-	if err != nil {
-		return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
-	}
-	if elapsed := now.Sub(existing.LastAccrual); elapsed > 0 {
-		rate := borrowRateAPY(cfg, 0)
-		days := elapsed.Hours() / 24
-		growth := math.Pow(1+rate/365, days)
-		growthRat, err := rationalFromFloat(growth)
-		if err != nil {
-			return fmt.Errorf("interest growth factor is unusable: %w", err)
+	now := time.Now().UTC()
+	// The borrowed asset is credited to the trader and the debt recorded in one
+	// transaction, so a credit can never be paid without the matching debt. The
+	// platform is the counterparty: the loan is backed by the escrowed collateral
+	// and repaid (with interest) out of the trader's balance.
+	return e.db.Transaction(func(tx *gorm.DB) error {
+		if err := e.ledger.creditWithin(tx, userID, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, units); err != nil {
+			return err
 		}
-		accrued := new(big.Rat).Mul(principal, new(big.Rat).Sub(growthRat, big.NewRat(1, 1)))
-		interest = new(big.Rat).Add(interest, accrued)
-	}
-	total := new(big.Rat).Add(principal, value)
-	newPrincipal := amountValueString(total)
-	if interest.Sign() < 0 {
-		interest = new(big.Rat)
-	}
-	newInterest := amountValueString(interest)
-	return e.db.Model(&models.MarginBorrow{}).Where("id = ?", existing.ID).
-		Updates(map[string]interface{}{
-			"principal":        newPrincipal,
-			"accrued_interest": newInterest,
-			"last_accrual":     now,
-		}).Error
+
+		var existing models.MarginBorrow
+		err := tx.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return tx.Create(&models.MarginBorrow{
+				AccountID:       accountID,
+				Asset:           normalized,
+				Principal:       amountValueString(value),
+				AccruedInterest: "0",
+				LastAccrual:     now,
+			}).Error
+		}
+		if err != nil {
+			return err
+		}
+
+		// Settle interest first so the new principal does not earn interest for the
+		// time before this borrow.
+		principal, err := parseDecimal(existing.Principal)
+		if err != nil {
+			return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
+		}
+		interest, err := parseDecimal(existing.AccruedInterest)
+		if err != nil {
+			return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
+		}
+		if elapsed := now.Sub(existing.LastAccrual); elapsed > 0 {
+			rate := borrowRateAPY(cfg, 0)
+			days := elapsed.Hours() / 24
+			growth := math.Pow(1+rate/365, days)
+			growthRat, err := rationalFromFloat(growth)
+			if err != nil {
+				return fmt.Errorf("interest growth factor is unusable: %w", err)
+			}
+			accrued := new(big.Rat).Mul(principal, new(big.Rat).Sub(growthRat, big.NewRat(1, 1)))
+			interest = new(big.Rat).Add(interest, accrued)
+		}
+		total := new(big.Rat).Add(principal, value)
+		newPrincipal := amountValueString(total)
+		if interest.Sign() < 0 {
+			interest = new(big.Rat)
+		}
+		newInterest := amountValueString(interest)
+		return tx.Model(&models.MarginBorrow{}).Where("id = ?", existing.ID).
+			Updates(map[string]interface{}{
+				"principal":        newPrincipal,
+				"accrued_interest": newInterest,
+				"last_accrual":     now,
+			}).Error
+	})
 }
 
 // Repay reduces an account's debt. Repaying more than is owed is rejected
@@ -562,29 +646,47 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 		owedF, _ := owed.Float64()
 		return fmt.Errorf("repay amount %.8f exceeds debt %.8f", f, owedF)
 	}
-	if value.Cmp(owed) == 0 {
-		return e.db.Delete(&models.MarginBorrow{}, "id = ?", borrow.ID).Error
+
+	settled, err := e.assetLedger(normalized)
+	if err != nil {
+		return err
+	}
+	units := scaleToBaseUnits(value, settled.Decimals)
+	if units.Sign() <= 0 {
+		return fmt.Errorf("repay %s is below one base unit of %s", amount, settled.Symbol)
 	}
 
-	// Repayment clears interest before principal.
-	var newInterest, newPrincipal *big.Rat
-	if value.Cmp(interest) <= 0 {
-		newInterest = new(big.Rat).Sub(interest, value)
-		newPrincipal = principal
-	} else {
-		newInterest = new(big.Rat)
-		newPrincipal = new(big.Rat).Sub(principal, new(big.Rat).Sub(value, interest))
-	}
-	if newPrincipal.Sign() < 0 {
-		newPrincipal = new(big.Rat)
-	}
-	storedPrincipal := amountValueString(newPrincipal)
-	storedInterest := amountValueString(newInterest)
-	return e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrow.ID).
-		Updates(map[string]interface{}{
-			"principal":        storedPrincipal,
-			"accrued_interest": storedInterest,
-		}).Error
+	// Repaying debits the trader and reduces the debt in one transaction, so a
+	// debit can never be taken without the debt it clears.
+	return e.db.Transaction(func(tx *gorm.DB) error {
+		if err := e.ledger.debitWithin(tx, userID, settled.ChainID, settled.Address, units); err != nil {
+			return err
+		}
+
+		if value.Cmp(owed) == 0 {
+			return tx.Delete(&models.MarginBorrow{}, "id = ?", borrow.ID).Error
+		}
+
+		// Repayment clears interest before principal.
+		var newInterest, newPrincipal *big.Rat
+		if value.Cmp(interest) <= 0 {
+			newInterest = new(big.Rat).Sub(interest, value)
+			newPrincipal = principal
+		} else {
+			newInterest = new(big.Rat)
+			newPrincipal = new(big.Rat).Sub(principal, new(big.Rat).Sub(value, interest))
+		}
+		if newPrincipal.Sign() < 0 {
+			newPrincipal = new(big.Rat)
+		}
+		storedPrincipal := amountValueString(newPrincipal)
+		storedInterest := amountValueString(newInterest)
+		return tx.Model(&models.MarginBorrow{}).Where("id = ?", borrow.ID).
+			Updates(map[string]interface{}{
+				"principal":        storedPrincipal,
+				"accrued_interest": storedInterest,
+			}).Error
+	})
 }
 
 // LiquidationCandidate describes an account that can be liquidated.
@@ -631,9 +733,9 @@ func (e *MarginEngine) LiquidatableAccounts(ctx context.Context) ([]LiquidationC
 }
 
 // Liquidate seizes collateral from an under-collateralized account. The debt is
-// repaid up to the listing's close factor, and the liquidator receives the
-// seized collateral plus the liquidation bonus.
-func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*LiquidationCandidate, error) {
+// repaid up to the listing's close factor, and the seized collateral is credited
+// to the liquidator (the platform operator who called this endpoint).
+func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liquidator string) (*LiquidationCandidate, error) {
 	var account models.MarginAccount
 	if err := e.db.First(&account, "id = ?", accountID).Error; err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrMarginAccountNotFound, accountID)
@@ -680,7 +782,7 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 		if locked.Status != models.MarginAccountActive {
 			return fmt.Errorf("margin account is %s", locked.Status)
 		}
-		if err := e.seizeCollateral(ctx, tx, accountID, seizeValue); err != nil {
+		if err := e.seizeCollateral(ctx, tx, accountID, seizeValue, liquidator); err != nil {
 			return err
 		}
 		if err := e.reduceDebt(ctx, tx, accountID, repayable); err != nil {
@@ -704,8 +806,11 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID) (*Liq
 }
 
 // seizeCollateral removes collateral worth valueUSD, proportionally across the
-// account's holdings.
-func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64) error {
+// account's holdings, and credits the seized amount to the liquidator's ledger
+// balance. The trader's collateral is escrowed balance, so seizing it is a real
+// transfer out of the trader's escrow into the liquidator's, not a bookkeeping
+// edit.
+func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64, liquidator string) error {
 	var collaterals []models.MarginCollateral
 	if err := db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
 		return err
@@ -763,10 +868,28 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, account
 		if remaining.Sign() < 0 {
 			remaining = new(big.Rat)
 		}
+		seized := new(big.Rat).Sub(amount, remaining)
 		stored := amountValueString(remaining)
 		if err := db.Model(&models.MarginCollateral{}).Where("id = ?", h.row.ID).
 			Update("amount", stored).Error; err != nil {
 			return err
+		}
+
+		// Move the seized amount to the liquidator. A zero seize (the position was
+		// already fully drained) is skipped, and a holding whose asset has no
+		// ledger entry is refused rather than seized into nowhere.
+		if seized.Sign() <= 0 {
+			continue
+		}
+		settled, err := e.assetLedger(h.row.Asset)
+		if err != nil {
+			return err
+		}
+		units := scaleToBaseUnits(seized, settled.Decimals)
+		if units.Sign() > 0 {
+			if err := e.ledger.creditWithin(db, liquidator, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, units); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1031,7 +1154,13 @@ func (e *MarginEngine) LiquidateAccountHandler(c *gin.Context) {
 		return
 	}
 
-	result, err := e.Liquidate(c.Request.Context(), accountID)
+	// The seized collateral is credited to the operator who called this endpoint.
+	liquidator, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+
+	result, err := e.Liquidate(c.Request.Context(), accountID, liquidator)
 	if err != nil {
 		respondServiceError(c, err)
 		return

@@ -1,10 +1,16 @@
 package services
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"os"
+	"sort"
+	"strconv"
 	"strings"
+
+	"tigerswap/backend/config"
 )
 
 // maxPerpAmountMagnitude caps a single position size or collateral amount. The
@@ -111,4 +117,121 @@ func openInterestCapRat(cfg *perpMarketConfig) (*big.Rat, bool, error) {
 		return nil, false, fmt.Errorf("listing %s has a non-positive max_open_interest %q", cfg.Symbol, cfg.MaxOpenInterest)
 	}
 	return cap, true, nil
+}
+
+// perpSettlement describes the asset a position's margin and PnL are
+// denominated in. Margin is escrowed from, and settlement paid to, the ledger
+// row keyed by (chainID, tokenAddress) for this asset.
+type perpSettlement struct {
+	Symbol   string
+	ChainID  int64
+	Address  string
+	Decimals int
+}
+
+// perpSettlementChain returns the chain whose token registry defines settlement
+// assets. TIGERSWAP_DEFAULT_CHAIN wins; otherwise the lowest configured chain id
+// is used so the choice is deterministic rather than map-order dependent.
+func PerpSettlementChainID() int64 {
+	if raw := strings.TrimSpace(os.Getenv("TIGERSWAP_DEFAULT_CHAIN")); raw != "" {
+		if id, err := strconv.ParseInt(raw, 10, 64); err == nil {
+			return id
+		}
+	}
+	ids := make([]int64, 0)
+	for id := range config.GetBlockchainConfigs() {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return 0
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids[0]
+}
+
+// perpSettlementQuote returns the quote side of a listing symbol: the asset a
+// position on that symbol settles in. "BTC/RUSD" settles in RUSD. A symbol with
+// no quote side cannot be settled, so it is refused rather than defaulted.
+func perpSettlementQuote(pair string) (string, error) {
+	symbol := strings.ToUpper(strings.TrimSpace(pair))
+	if i := strings.IndexByte(symbol, '/'); i > 0 && i < len(symbol)-1 {
+		return strings.TrimSpace(symbol[i+1:]), nil
+	}
+	if i := strings.LastIndexByte(symbol, '-'); i > 0 && i < len(symbol)-1 {
+		return strings.TrimSpace(symbol[i+1:]), nil
+	}
+	return "", fmt.Errorf("listing %q has no quote asset to settle in", pair)
+}
+
+// resolveSettlementFromConfig resolves a listing's settlement asset from the
+// chain token registry. It is wired as the engine's default resolver so the
+// asset is read from real configuration rather than assumed.
+func resolveSettlementFromConfig(chainID int64) func(pair string) (perpSettlement, error) {
+	return func(pair string) (perpSettlement, error) {
+		quote, err := perpSettlementQuote(pair)
+		if err != nil {
+			return perpSettlement{}, err
+		}
+		address, ok := config.TokenAddress(chainID, quote)
+		if !ok {
+			return perpSettlement{}, fmt.Errorf("settlement asset %s for %s is not configured on chain %d", quote, pair, chainID)
+		}
+		decimals, ok := config.TokenDecimals(chainID, address)
+		if !ok {
+			return perpSettlement{}, fmt.Errorf("settlement asset %s for %s has no configured decimals on chain %d", quote, pair, chainID)
+		}
+		return perpSettlement{Symbol: quote, ChainID: chainID, Address: address, Decimals: decimals}, nil
+	}
+}
+
+// scaleToBaseUnits converts an exact decimal amount into the token's smallest
+// unit, truncating any remainder. Truncation (never rounding up) means the
+// ledger can never be credited more than the exact amount owed.
+func scaleToBaseUnits(value *big.Rat, decimals int) *big.Int {
+	if value == nil {
+		return big.NewInt(0)
+	}
+	scaled := new(big.Rat).Mul(value, new(big.Rat).SetInt(pow10(decimals)))
+	return new(big.Int).Quo(scaled.Num(), scaled.Denom())
+}
+
+// perpFeeAccount is the platform ledger account that receives perp liquidation
+// fees. It is a sentinel, not a real user id, so no account can collide with it
+// and no user can spend the collected fees.
+const perpFeeAccount = "__perp_fee__"
+
+// settlementFor resolves the settlement asset for a listing. It requires both a
+// ledger to escrow against and a resolver to name the asset, so a deployment
+// that forgets either refuses to open a position rather than opening one that
+// moves no funds.
+func (e *PerpetualEngine) settlementFor(pair string) (perpSettlement, error) {
+	if e.ledger == nil {
+		return perpSettlement{}, errors.New("perpetual engine has no ledger configured; positions cannot be escrowed")
+	}
+	if e.settlementResolver == nil {
+		return perpSettlement{}, fmt.Errorf("no settlement asset resolver configured for %s", pair)
+	}
+	settlement, err := e.settlementResolver(pair)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if settlement.Symbol == "" || settlement.Address == "" {
+		return perpSettlement{}, fmt.Errorf("listing %s has no resolvable settlement asset", pair)
+	}
+	if settlement.Decimals < 0 || settlement.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("settlement asset %s has invalid decimals %d", settlement.Symbol, settlement.Decimals)
+	}
+	return settlement, nil
+}
+
+// settlementPayout is the exact amount a trader receives when a position closes:
+// the escrowed margin plus PnL, floored at zero. A loss larger than the margin
+// leaves nothing to return rather than a negative payout that would debit the
+// trader again.
+func settlementPayout(collateral, pnl *big.Rat) *big.Rat {
+	payout := new(big.Rat).Add(collateral, pnl)
+	if payout.Sign() < 0 {
+		return new(big.Rat)
+	}
+	return payout
 }

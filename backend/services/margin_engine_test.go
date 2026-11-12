@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -41,6 +42,7 @@ func (s *stubPriceAggregator) GetRealPrice(_ context.Context, symbol string) (*P
 type marginTestEnv struct {
 	db     *gorm.DB
 	engine *MarginEngine
+	ledger *LedgerService
 }
 
 func newMarginTestEnv(t *testing.T, prices map[string]float64) *marginTestEnv {
@@ -60,11 +62,60 @@ func newMarginTestEnv(t *testing.T, prices map[string]float64) *marginTestEnv {
 	if err := db.AutoMigrate(
 		&models.MarginMarket{}, &models.MarginAccount{},
 		&models.MarginCollateral{}, &models.MarginBorrow{},
+		&models.AccountBalance{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	return &marginTestEnv{db: db, engine: NewMarginEngine(db, &stubPriceAggregator{prices: prices})}
+	engine := NewMarginEngine(db, &stubPriceAggregator{prices: prices})
+	ledger := NewLedgerService(db)
+	engine.SetLedger(ledger, 1)
+	// Tests use a fixed registry: BTC, ETH and RUSD all live on chain 1. The
+	// ledger asset for each is the symbol's own address so a deposit and a
+	// borrow cannot be confused for one another.
+	engine.SetAssetResolver(func(asset string) (perpSettlement, error) {
+		symbol := strings.ToUpper(strings.TrimSpace(asset))
+		switch symbol {
+		case "BTC", "ETH", "RUSD":
+			return perpSettlement{
+				Symbol:   symbol,
+				ChainID:  1,
+				Address:  "0x00000000000000000000000000000000000000" + fmt.Sprintf("%02x", len(symbol)),
+				Decimals: 8,
+			}, nil
+		default:
+			return perpSettlement{}, fmt.Errorf("asset %s is not in the test registry", asset)
+		}
+	})
+
+	env := &marginTestEnv{db: db, engine: engine, ledger: ledger}
+	// Every standard test user starts funded so a deposit or repayment has a
+	// balance to escrow from. The engine's escrow is what the tests assert on.
+	for _, user := range marginTestUsers {
+		env.fundTestUser(t, user)
+	}
+	return env
+}
+
+// marginTestUsers are the fixed user ids the margin tests act as. They are
+// funded up front so a collateral deposit or a repayment always has a balance to
+// draw on; the engine's own escrow is what the tests then assert on.
+var marginTestUsers = []string{"user-1", "user-2", "owner", "attacker", "trader-1", "trader-2"}
+
+// fundTestUser credits a user a whole-number balance of every asset the margin
+// tests use, so a collateral deposit or a repayment has funds to draw on.
+func (env *marginTestEnv) fundTestUser(t *testing.T, userID string) {
+	t.Helper()
+	whole := new(big.Int).Mul(big.NewInt(1000000), pow10(8))
+	for _, symbol := range []string{"BTC", "ETH", "RUSD"} {
+		settled, err := env.engine.assetLedger(symbol)
+		if err != nil {
+			t.Fatalf("resolve %s: %v", symbol, err)
+		}
+		if err := env.ledger.Credit(userID, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, whole); err != nil {
+			t.Fatalf("fund %s: %v", userID, err)
+		}
+	}
 }
 
 // seedMarginMarket inserts an active listing with the given risk parameters.
@@ -209,7 +260,7 @@ func TestMarginHealthAndLiquidation(t *testing.T) {
 		t.Fatalf("expected 1 liquidatable account, got %d", len(candidates))
 	}
 
-	if _, err := env.engine.Liquidate(ctx, account.ID); err != nil {
+	if _, err := env.engine.Liquidate(ctx, account.ID, "liquidator"); err != nil {
 		t.Fatalf("liquidate: %v", err)
 	}
 
@@ -239,7 +290,7 @@ func TestMarginHealthyAccountCannotBeLiquidated(t *testing.T) {
 	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
 		t.Fatalf("deposit: %v", err)
 	}
-	if _, err := env.engine.Liquidate(ctx, account.ID); err == nil {
+	if _, err := env.engine.Liquidate(ctx, account.ID, "liquidator"); err == nil {
 		t.Fatal("a solvent account must not be liquidatable")
 	}
 }

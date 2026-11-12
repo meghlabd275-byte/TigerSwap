@@ -37,6 +37,19 @@ type PerpetualEngine struct {
 	// markets caches the active listings by symbol. It is rebuilt from the
 	// database by RefreshMarkets and read on the trading path.
 	markets map[string]*perpMarketConfig
+
+	// ledger, when set, is the platform ledger that holds the trader's
+	// settlement-asset balance. Opening a position escrows the posted margin
+	// from that balance; closing or liquidating it settles the position back to
+	// the balance. settlementChainID is the chain whose token registry defines
+	// the settlement asset for a listing's quote side.
+	ledger            *LedgerService
+	settlementChainID int64
+
+	// settlementResolver maps a listing symbol to the asset its margin and PnL
+	// are denominated in. It is a field so a test can supply a fixed registry
+	// without a live chain config; production wires the config-backed resolver.
+	settlementResolver func(pair string) (perpSettlement, error)
 }
 
 // PerpetualPosition represents a real perpetual position
@@ -160,6 +173,24 @@ func (e *PerpetualEngine) SetDB(db *gorm.DB) error {
 	return e.RestoreOpenOrders()
 }
 
+// SetLedger wires the platform ledger that holds settlement-asset balances and
+// the chain whose token registry names a listing's settlement asset. With it
+// set, opening a position escrows the posted margin and closing or liquidating
+// pays it back. Without it the engine refuses to open a position, because a
+// position that moves no real funds is not a position.
+func (e *PerpetualEngine) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	e.ledger = ledger
+	e.settlementChainID = settlementChainID
+	e.settlementResolver = resolveSettlementFromConfig(settlementChainID)
+}
+
+// SetSettlementResolver overrides how a listing's settlement asset is resolved.
+// Tests use it to supply a fixed registry; production leaves the config-backed
+// resolver wired by SetLedger.
+func (e *PerpetualEngine) SetSettlementResolver(resolver func(pair string) (perpSettlement, error)) {
+	e.settlementResolver = resolver
+}
+
 // RestoreOpenOrders reloads every live order from the database into the
 // in-memory book. A pending order that is not restored can never be filled or
 // cancelled, so it would sit in the database as "pending" forever.
@@ -192,6 +223,12 @@ func (e *PerpetualEngine) persistPosition(position *PerpetualPosition) error {
 	if e.db == nil {
 		return nil
 	}
+	return e.persistPositionWithin(e.db, position)
+}
+
+// persistPositionWithin writes a position using the caller's transaction so a
+// margin escrow debit and the position row commit together.
+func (e *PerpetualEngine) persistPositionWithin(tx *gorm.DB, position *PerpetualPosition) error {
 	id, err := uuid.Parse(position.ID)
 	if err != nil {
 		return fmt.Errorf("position %s has an invalid id: %w", position.ID, err)
@@ -212,7 +249,7 @@ func (e *PerpetualEngine) persistPosition(position *PerpetualPosition) error {
 		OpenedAt:    position.OpenedAt,
 		ClosedAt:    position.ClosedAt,
 	}
-	if err := e.db.Save(&row).Error; err != nil {
+	if err := tx.Save(&row).Error; err != nil {
 		return fmt.Errorf("persist position %s: %w", position.ID, err)
 	}
 	return nil
@@ -587,17 +624,36 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 		BlockNumber:      0,
 	}
 
-	// Store position
+	// Escrow the posted margin before the position is recorded. The debit and the
+	// position row commit in one transaction, so a position can never exist
+	// without its margin escrowed and a debit can never be stranded by a failed
+	// insert. A position whose margin is not backed by real ledger balance would
+	// let a trader open exposure the platform cannot settle.
+	if e.db == nil {
+		return nil, errors.New("perpetual engine has no database configured; positions cannot be escrowed")
+	}
+	settlement, err := e.settlementFor(pair)
+	if err != nil {
+		return nil, err
+	}
+	marginUnits := scaleToBaseUnits(collateralRat, settlement.Decimals)
+	if marginUnits.Sign() <= 0 {
+		return nil, fmt.Errorf("collateral %s is below one base unit of %s", collateral, settlement.Symbol)
+	}
+
+	store := func(tx *gorm.DB) error {
+		if err := e.ledger.debitWithin(tx, ownerID, settlement.ChainID, settlement.Address, marginUnits); err != nil {
+			return err
+		}
+		return e.persistPositionWithin(tx, position)
+	}
+	if err := e.db.Transaction(store); err != nil {
+		return nil, err
+	}
+
 	e.mu.Lock()
 	e.positions[position.ID] = position
 	e.mu.Unlock()
-
-	if err := e.persistPosition(position); err != nil {
-		e.mu.Lock()
-		delete(e.positions, position.ID)
-		e.mu.Unlock()
-		return nil, err
-	}
 
 	return clonePosition(position), nil
 }
@@ -649,16 +705,41 @@ func (e *PerpetualEngine) ClosePosition(ctx context.Context, ownerID, positionID
 		return nil, fmt.Errorf("position %s is no longer open", positionID)
 	}
 
-	// Calculate PNL
-	pnl := e.calculatePNL(position, markPrice)
+	// PnL is computed as an exact value: the string form is stored on the row and
+	// the rational form drives the settlement credit. Both must come from the same
+	// computation so the amount paid matches the amount reported.
+	pnlRat, err := notionalPNL(position.EntryPrice, markPrice, position.Size, position.Side)
+	if err != nil {
+		return nil, err
+	}
+	collateralRat, err := parseDecimal(position.Collateral)
+	if err != nil {
+		return nil, fmt.Errorf("position %s has unreadable collateral %q: %w", positionID, position.Collateral, err)
+	}
+	settlement, err := e.settlementFor(pair)
+	if err != nil {
+		return nil, err
+	}
+	payoutUnits := scaleToBaseUnits(settlementPayout(collateralRat, pnlRat), settlement.Decimals)
 
 	now := time.Now()
 	position.Status = "closed"
 	position.ClosedAt = &now
 	position.MarkPrice = markPrice
-	position.UnrealizedPNL = pnl
+	position.UnrealizedPNL = formatDecimal(pnlRat, 8)
 
-	if err := e.persistPosition(position); err != nil {
+	// The settlement credit and the position's terminal status commit together:
+	// a closed position is always backed by its returned margin, and a credit is
+	// never paid for a position that is still open.
+	settle := func(tx *gorm.DB) error {
+		if payoutUnits.Sign() > 0 {
+			if err := e.ledger.creditWithin(tx, position.UserAddress, settlement.ChainID, settlement.Address, settlement.Symbol, settlement.Decimals, payoutUnits); err != nil {
+				return err
+			}
+		}
+		return e.persistPositionWithin(tx, position)
+	}
+	if err := e.db.Transaction(settle); err != nil {
 		return nil, err
 	}
 
@@ -869,7 +950,34 @@ func (e *PerpetualEngine) LiquidatePosition(ctx context.Context, positionID stri
 	position.ClosedAt = &now
 	position.UnrealizedPNL = formatDecimal(pnl, 8)
 
-	if err := e.persistPosition(position); err != nil {
+	// The trader's remaining margin (collateral + PnL, floored at zero) and the
+	// liquidator's fee are both real ledger movements. The trader is paid the
+	// remainder and the fee is credited to the platform fee account, in one
+	// transaction with the position's terminal status. Paying the trader out of
+	// the aggregate balance instead of the escrowed margin is what a per-account
+	// escrow avoids.
+	settlement, err := e.settlementFor(position.Pair)
+	if err != nil {
+		return nil, err
+	}
+	remaining := settlementPayout(collateral, pnl)
+	traderUnits := scaleToBaseUnits(new(big.Rat).Sub(remaining, fee), settlement.Decimals)
+	feeUnits := scaleToBaseUnits(fee, settlement.Decimals)
+
+	settle := func(tx *gorm.DB) error {
+		if traderUnits.Sign() > 0 {
+			if err := e.ledger.creditWithin(tx, position.UserAddress, settlement.ChainID, settlement.Address, settlement.Symbol, settlement.Decimals, traderUnits); err != nil {
+				return err
+			}
+		}
+		if feeUnits.Sign() > 0 {
+			if err := e.ledger.creditWithin(tx, perpFeeAccount, settlement.ChainID, settlement.Address, settlement.Symbol, settlement.Decimals, feeUnits); err != nil {
+				return err
+			}
+		}
+		return e.persistPositionWithin(tx, position)
+	}
+	if err := e.db.Transaction(settle); err != nil {
 		return nil, err
 	}
 

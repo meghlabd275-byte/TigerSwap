@@ -13,14 +13,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// p1ID is a valid position UUID; the engine persists positions, so a synthetic
+// non-UUID id can no longer be stored.
+const p1ID = "11111111-1111-4111-8111-111111111111"
+
 // newLiquidatablePerpEngine builds an engine with one listed market whose mark
 // has already crossed a long position's liquidation price, so the liquidation
 // entry point has real work to do.
-func newLiquidatablePerpEngine() *PerpetualEngine {
-	engine := newMarkedPerpEngine(map[string]float64{"BTC": 90})
+func newLiquidatablePerpEngine(t *testing.T) *PerpetualEngine {
+	t.Helper()
+	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 90})
+	fundTrader(t, ledger, "0xabc", 5000)
 	engine.markets["BTC/RUSD"].LiquidationFeeRate = 0.005
-	engine.positions["p1"] = &PerpetualPosition{
-		ID:               "p1",
+	engine.positions[p1ID] = &PerpetualPosition{
+		ID:               p1ID,
 		UserAddress:      "0xabc",
 		Pair:             "BTC/RUSD",
 		Side:             "long",
@@ -37,15 +43,16 @@ func newLiquidatablePerpEngine() *PerpetualEngine {
 // ClosePosition took the write lock and then called getMarkPrice, which takes
 // the read lock through market(). Every real close hung forever.
 func TestClosePositionDoesNotDeadlock(t *testing.T) {
-	engine := newMarkedPerpEngine(map[string]float64{"BTC": 110})
-	engine.positions["p1"] = &PerpetualPosition{
-		ID: "p1", UserAddress: "0xabc", Pair: "BTC/RUSD", Side: "long",
+	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 110})
+	fundTrader(t, ledger, "0xabc", 5000)
+	engine.positions[p1ID] = &PerpetualPosition{
+		ID: p1ID, UserAddress: "0xabc", Pair: "BTC/RUSD", Side: "long",
 		Size: "10000", Collateral: "2000", EntryPrice: 100, LiquidationPrice: 50, Status: "open",
 	}
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := engine.ClosePosition(context.Background(), "0xabc", "p1")
+		_, err := engine.ClosePosition(context.Background(), "0xabc", p1ID)
 		done <- err
 	}()
 
@@ -58,8 +65,8 @@ func TestClosePositionDoesNotDeadlock(t *testing.T) {
 		t.Fatal("ClosePosition did not return; it deadlocked on the engine lock")
 	}
 
-	if engine.positions["p1"].Status != "closed" {
-		t.Fatalf("position should be closed, got %q", engine.positions["p1"].Status)
+	if engine.positions[p1ID].Status != "closed" {
+		t.Fatalf("position should be closed, got %q", engine.positions[p1ID].Status)
 	}
 }
 
@@ -67,11 +74,11 @@ func TestClosePositionDoesNotDeadlock(t *testing.T) {
 // settlement path, which called market() and getMarkPrice() under the write
 // lock.
 func TestLiquidatePositionDoesNotDeadlock(t *testing.T) {
-	engine := newLiquidatablePerpEngine()
+	engine := newLiquidatablePerpEngine(t)
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := engine.LiquidatePosition(context.Background(), "p1")
+		_, err := engine.LiquidatePosition(context.Background(), p1ID)
 		done <- err
 	}()
 
@@ -84,23 +91,23 @@ func TestLiquidatePositionDoesNotDeadlock(t *testing.T) {
 		t.Fatal("LiquidatePosition did not return; it deadlocked on the engine lock")
 	}
 
-	if engine.positions["p1"].Status != "liquidated" {
-		t.Fatalf("position should be settled, got %q", engine.positions["p1"].Status)
+	if engine.positions[p1ID].Status != "liquidated" {
+		t.Fatalf("position should be settled, got %q", engine.positions[p1ID].Status)
 	}
 }
 
 // TestLiquidatePositionHandlerSettlesFlaggedPosition verifies the operator
 // endpoint settles a genuinely liquidatable position and reports the fee.
 func TestLiquidatePositionHandlerSettlesFlaggedPosition(t *testing.T) {
-	engine := newLiquidatablePerpEngine()
+	engine := newLiquidatablePerpEngine(t)
 
 	status, body := callHandler(t, engine.LiquidatePositionHandler, "1", http.MethodPost,
-		"/perps/positions/p1/liquidate", "", gin.Params{{Key: "id", Value: "p1"}})
+		"/perps/positions/"+p1ID+"/liquidate", "", gin.Params{{Key: "id", Value: p1ID}})
 	if status != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", status, body)
 	}
-	if engine.positions["p1"].Status != "liquidated" {
-		t.Fatalf("position should be settled, got status %q", engine.positions["p1"].Status)
+	if engine.positions[p1ID].Status != "liquidated" {
+		t.Fatalf("position should be settled, got status %q", engine.positions[p1ID].Status)
 	}
 	var resp map[string]any
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
@@ -114,26 +121,27 @@ func TestLiquidatePositionHandlerSettlesFlaggedPosition(t *testing.T) {
 // TestLiquidatePositionHandlerRefusesHealthyPosition verifies the endpoint
 // cannot be used to close a healthy position and seize its margin.
 func TestLiquidatePositionHandlerRefusesHealthyPosition(t *testing.T) {
-	engine := newMarkedPerpEngine(map[string]float64{"BTC": 110})
-	engine.positions["p1"] = &PerpetualPosition{
-		ID: "p1", UserAddress: "0xabc", Pair: "BTC/RUSD", Side: "long",
+	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 110})
+	fundTrader(t, ledger, "0xabc", 5000)
+	engine.positions[p1ID] = &PerpetualPosition{
+		ID: p1ID, UserAddress: "0xabc", Pair: "BTC/RUSD", Side: "long",
 		Size: "10000", EntryPrice: 100, LiquidationPrice: 50, Status: "open",
 	}
 
 	status, _ := callHandler(t, engine.LiquidatePositionHandler, "1", http.MethodPost,
-		"/perps/positions/p1/liquidate", "", gin.Params{{Key: "id", Value: "p1"}})
+		"/perps/positions/"+p1ID+"/liquidate", "", gin.Params{{Key: "id", Value: p1ID}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("a healthy position must not be liquidated, got %d", status)
 	}
-	if engine.positions["p1"].Status != "open" {
-		t.Fatalf("a refused liquidation must leave the position untouched, got %q", engine.positions["p1"].Status)
+	if engine.positions[p1ID].Status != "open" {
+		t.Fatalf("a refused liquidation must leave the position untouched, got %q", engine.positions[p1ID].Status)
 	}
 }
 
 // TestListLiquidatablePositionsHandlerReportsFlaggedOnly verifies the operator
 // list contains exactly the positions the risk engine has flagged.
 func TestListLiquidatablePositionsHandlerReportsFlaggedOnly(t *testing.T) {
-	engine := newLiquidatablePerpEngine()
+	engine := newLiquidatablePerpEngine(t)
 
 	status, body := callHandler(t, engine.ListLiquidatablePositionsHandler, "1", http.MethodGet,
 		"/perps/liquidatable", "", nil)
@@ -149,7 +157,7 @@ func TestListLiquidatablePositionsHandlerReportsFlaggedOnly(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if resp.Count != 1 || len(resp.Positions) != 1 || resp.Positions[0].ID != "p1" {
+	if resp.Count != 1 || len(resp.Positions) != 1 || resp.Positions[0].ID != p1ID {
 		t.Fatalf("expected only position p1, got %s", body)
 	}
 }

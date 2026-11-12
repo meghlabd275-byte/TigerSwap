@@ -320,7 +320,7 @@ func (r *BotRunner) runLiquidationBot(ctx context.Context, bot models.BotInstanc
 			log.Printf("bot runner: bot %d account id %q is not a uuid: %v", bot.ID, candidate.AccountID, err)
 			continue
 		}
-		result, err := r.margin.Liquidate(ctx, accountID)
+		result, err := r.margin.Liquidate(ctx, accountID, bot.UserID)
 		if err != nil {
 			log.Printf("bot runner: bot %d could not liquidate account %s: %v", bot.ID, candidate.AccountID, err)
 			continue

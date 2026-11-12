@@ -60,7 +60,7 @@ func TestMarginLiquidationIsAtomic(t *testing.T) {
 		t.Fatalf("register failure injection: %v", err)
 	}
 
-	if _, err := env.engine.Liquidate(ctx, account.ID); !errors.Is(err, injected) {
+	if _, err := env.engine.Liquidate(ctx, account.ID, "liquidator"); !errors.Is(err, injected) {
 		t.Fatalf("a settlement whose debt reduction fails must return the injected error, got %v", err)
 	}
 
