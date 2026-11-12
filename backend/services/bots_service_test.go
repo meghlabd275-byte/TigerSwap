@@ -866,3 +866,47 @@ func TestRecordBotOrderRejectsBadSideAndKind(t *testing.T) {
 		t.Fatal("a limit order must carry a positive price")
 	}
 }
+
+// TestAvailableStrategiesIsDeterministicAndMatchesEngine pins the strategy list
+// to the engines the Rust crate implements. The endpoint must also be stable
+// across calls: Go randomises map iteration, so an unordered response would
+// differ between two identical requests.
+func TestAvailableStrategiesIsDeterministicAndMatchesEngine(t *testing.T) {
+	service := &BotsService{}
+
+	_, first := callHandler(t, service.AvailableStrategies, "1", http.MethodGet, "/bots/strategies", "", nil)
+	_, second := callHandler(t, service.AvailableStrategies, "1", http.MethodGet, "/bots/strategies", "", nil)
+	if first != second {
+		t.Fatalf("strategy listing is not deterministic:\n%s\n%s", first, second)
+	}
+
+	var rows []struct {
+		Strategy   string            `json:"strategy"`
+		ConfigKeys map[string]string `json:"config_keys"`
+	}
+	if err := json.Unmarshal([]byte(first), &rows); err != nil {
+		t.Fatalf("decode strategies: %v", err)
+	}
+
+	// The Rust engine's build_entry dispatches exactly these strategies.
+	want := map[string]bool{
+		"market_maker": true, "grid": true, "dca": true, "twap": true,
+		"arbitrage": true, "sniper": true, "rebalance": true,
+		"liquidation": true, "copy": true,
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("strategy count = %d, want %d: %s", len(rows), len(want), first)
+	}
+	for _, row := range rows {
+		if !want[row.Strategy] {
+			t.Errorf("endpoint exposes %q, which the engine does not implement", row.Strategy)
+		}
+		if len(row.ConfigKeys) == 0 {
+			t.Errorf("strategy %q exposes no config keys", row.Strategy)
+		}
+		delete(want, row.Strategy)
+	}
+	for missing := range want {
+		t.Errorf("strategy %q is implemented by the engine but not exposed", missing)
+	}
+}

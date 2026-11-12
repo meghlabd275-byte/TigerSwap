@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -823,14 +824,23 @@ func (s *BotsService) BotsSummary(c *gin.Context) {
 // availableStrategies lists the strategies a client may create, with the
 // configuration keys each accepts.
 func (s *BotsService) AvailableStrategies(c *gin.Context) {
-	response := make([]gin.H, 0, len(strategyConfigKeys))
-	for strategy, schema := range strategyConfigKeys {
+	names := make([]string, 0, len(strategyConfigKeys))
+	for strategy := range strategyConfigKeys {
+		names = append(names, string(strategy))
+	}
+	// Go randomises map iteration, so without this the response order changes
+	// between identical requests and a client cannot diff or cache it.
+	sort.Strings(names)
+
+	response := make([]gin.H, 0, len(names))
+	for _, name := range names {
+		schema := strategyConfigKeys[models.BotStrategy(name)]
 		keys := make(map[string]string, len(schema))
 		for key, kind := range schema {
 			keys[key] = kind
 		}
 		response = append(response, gin.H{
-			"strategy":    strategy,
+			"strategy":    name,
 			"config_keys": keys,
 		})
 	}
