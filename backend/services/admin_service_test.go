@@ -127,6 +127,36 @@ func TestGetSettingsCreatesDefaultRowOnFirstUse(t *testing.T) {
 	}
 }
 
+// TestUpdateConfigCanDisableEverySwitch pins that an operator can turn a
+// runtime switch off. The columns carry `gorm:"default:true"`; the settings row
+// is created explicitly with all-true values, so the defaults must not win and
+// re-enable a switch the operator disabled.
+func TestUpdateConfigCanDisableEverySwitch(t *testing.T) {
+	db := newAdminTestDB(t)
+	svc := NewAdminService(db)
+
+	// Create the settings row, then turn everything off.
+	getJSON(t, svc.GetSettings, "/api/v1/admin/settings")
+	body := map[string]interface{}{
+		"trading_enabled":               false,
+		"withdrawal_enabled":            false,
+		"deposit_enabled":               false,
+		"new_user_registration_enabled": false,
+	}
+	rec := postJSON(t, svc.UpdateConfig, "/api/v1/admin/settings", body, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var stored models.SystemSettings
+	if err := db.Where("key = ?", "default").First(&stored).Error; err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	if stored.TradingEnabled || stored.WithdrawalEnabled || stored.DepositEnabled || stored.NewUserRegistration {
+		t.Fatalf("a disabled switch was persisted as enabled: %+v", stored)
+	}
+}
+
 func TestGetLogsReturnsNewestFirst(t *testing.T) {
 	db := newAdminTestDB(t)
 	svc := NewAdminService(db)
