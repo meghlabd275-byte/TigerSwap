@@ -45,6 +45,39 @@ func TestLoadChainRPCsRegistersStoredEndpoints(t *testing.T) {
 	}
 }
 
+// TestLoadChainRPCsUnregistersRetiredChain pins the refresh semantics: a chain
+// that is deactivated after the first load must stop being dialled, so a retired
+// node is not kept alive until the next restart.
+func TestLoadChainRPCsUnregistersRetiredChain(t *testing.T) {
+	db := newStatsTestDB(t)
+	if err := db.Create(&models.Blockchain{
+		ChainID: 6666, Name: "TigerSmartChain", Symbol: "TGR", Type: "evm",
+		RPCURL: "https://rpc.tigerswap.io/6666", IsActive: true,
+	}).Error; err != nil {
+		t.Fatalf("seed chain: %v", err)
+	}
+
+	client := NewBlockchainClient()
+	if err := client.LoadChainRPCs(db); err != nil {
+		t.Fatalf("LoadChainRPCs: %v", err)
+	}
+	if _, err := client.RPCURLForChain(6666); err != nil {
+		t.Fatalf("chain 6666 should be registered: %v", err)
+	}
+
+	// Deactivate the chain, then refresh: the endpoint must be gone.
+	if err := db.Model(&models.Blockchain{}).Where("chain_id = ?", 6666).
+		Update("is_active", false).Error; err != nil {
+		t.Fatalf("deactivate chain: %v", err)
+	}
+	if err := client.LoadChainRPCs(db); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if _, err := client.RPCURLForChain(6666); err == nil {
+		t.Fatalf("deactivated chain must be unregistered after refresh")
+	}
+}
+
 // TestChainDTOExposesStoredRPCURL pins the wire contract: when the environment
 // has no endpoint, the chain's stored endpoint is exposed so the wallet can add
 // the network.

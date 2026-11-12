@@ -146,7 +146,22 @@ func (b *BlockchainClient) RPCURLForChain(chainID int64) (string, error) {
 func (b *BlockchainClient) SetRPCURL(chainID int64, url string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.setRPCURLLocked(chainID, url)
+}
 
+// UnregisterChainRPC forgets a chain's endpoint and closes its cached client, so
+// a chain the operator has deactivated is no longer dialled.
+func (b *BlockchainClient) UnregisterChainRPC(chainID int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if existing, ok := b.clients[chainID]; ok {
+		existing.Close()
+		delete(b.clients, chainID)
+	}
+	delete(b.rpcURLs, chainID)
+}
+
+func (b *BlockchainClient) setRPCURLLocked(chainID int64, url string) {
 	if existing, ok := b.clients[chainID]; ok {
 		existing.Close()
 		delete(b.clients, chainID)
@@ -159,20 +174,48 @@ func (b *BlockchainClient) SetRPCURL(chainID int64, url string) {
 // admin panel is actually dialled. It is best-effort: a chain whose row cannot
 // be read is skipped, and an endpoint already present in the environment takes
 // precedence over the stored value.
+//
+// It is also a full refresh: a chain that has been deactivated or had its
+// endpoint cleared since the last load is unregistered, so the live client stops
+// dialling a node the operator has retired.
 func (b *BlockchainClient) LoadChainRPCs(db *gorm.DB) error {
 	var rows []models.Blockchain
-	if err := db.Where("is_active = ?", true).Find(&rows).Error; err != nil {
+	if err := db.Find(&rows).Error; err != nil {
 		return fmt.Errorf("load chain rpc endpoints: %w", err)
 	}
+
+	desired := make(map[int64]string, len(rows))
 	for _, row := range rows {
 		url := strings.TrimSpace(row.RPCURL)
-		if url == "" {
+		if url == "" || !row.IsActive {
 			continue
 		}
-		if rpcFromEnv(row.ChainID) != "" {
+		// An endpoint present in the environment overrides the stored value, but the
+		// chain still counts as configured so it is not unregistered below.
+		if env := rpcFromEnv(row.ChainID); env != "" {
+			desired[row.ChainID] = env
 			continue
 		}
-		b.SetRPCURL(row.ChainID, url)
+		desired[row.ChainID] = url
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for chainID, url := range desired {
+		if current, ok := b.rpcURLs[chainID]; ok && current == url {
+			continue
+		}
+		b.setRPCURLLocked(chainID, url)
+	}
+	for chainID := range b.rpcURLs {
+		if _, ok := desired[chainID]; !ok {
+			if existing, ok := b.clients[chainID]; ok {
+				existing.Close()
+				delete(b.clients, chainID)
+			}
+			delete(b.rpcURLs, chainID)
+		}
 	}
 	return nil
 }
@@ -187,19 +230,21 @@ func (b *BlockchainClient) GetClient(chainID int64) (*ethclient.Client, error) {
 		return client, nil
 	}
 
+	// The endpoint is resolved before the lock: RPCURLForChain only reads maps
+	// under an RLock, so calling it while holding the write lock would deadlock.
+	rpcURL, err := b.RPCURLForChain(chainID)
+	if err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// Double check after acquiring write lock
+	// Another caller may have dialled this chain while we resolved the endpoint.
+	// Returning its client keeps a single connection per chain and avoids leaking
+	// the one we would otherwise dial.
 	if client, exists := b.clients[chainID]; exists {
 		return client, nil
-	}
-
-	b.mu.Unlock()
-	rpcURL, err := b.RPCURLForChain(chainID)
-	b.mu.Lock()
-	if err != nil {
-		return nil, err
 	}
 
 	dialed, err := ethclient.Dial(rpcURL)

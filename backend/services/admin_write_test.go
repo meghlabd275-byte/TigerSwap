@@ -192,6 +192,39 @@ func TestCreateChainPersistsInactiveFlag(t *testing.T) {
 	}
 }
 
+// TestCreateChainRefreshesLiveRPCClient pins that a chain created through the
+// admin endpoint is dialled without a restart: the stored endpoint reaches the
+// live on-chain client immediately.
+func TestCreateChainRefreshesLiveRPCClient(t *testing.T) {
+	db := newAdminWriteTestDB(t)
+	client := NewBlockchainClient()
+	svc := NewAdminService(db)
+	svc.SetBlockchainClient(client)
+
+	body := `{"chain_id":6666,"name":"TigerSmartChain","symbol":"TGR","type":"evm","rpc_url":"https://rpc.tigerswap.io/6666","is_active":true}`
+	rec := postJSONBody(t, svc.CreateChain, "/api/v1/admin/chains", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if _, err := client.RPCURLForChain(6666); err != nil {
+		t.Fatalf("created chain endpoint not registered with the live client: %v", err)
+	}
+
+	// Deactivating the chain must drop it from the live client too.
+	gin.SetMode(gin.TestMode)
+	rec2 := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec2)
+	c.Request = httptest.NewRequest(http.MethodDelete, "/api/v1/admin/chains/1", nil)
+	c.Params = gin.Params{{Key: "id", Value: "1"}}
+	svc.DeleteChain(c)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("deactivate: expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+	if _, err := client.RPCURLForChain(6666); err == nil {
+		t.Fatalf("deactivated chain must be unregistered from the live client")
+	}
+}
+
 // TestCreateTokenPersistsInactiveFlag is the token counterpart.
 func TestCreateTokenPersistsInactiveFlag(t *testing.T) {
 	db := newAdminWriteTestDB(t)

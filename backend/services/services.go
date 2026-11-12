@@ -1166,10 +1166,32 @@ func (s *AuthService) RevokeUserSessions(userID string) error {
 type AdminService struct {
 	db   *gorm.DB
 	auth *AuthService
+	// chainRPCs is the live on-chain client. When set, a chain create, update or
+	// deactivate re-registers the stored endpoints so the change takes effect
+	// without a restart.
+	chainRPCs *BlockchainClient
 }
 
 func NewAdminService(db *gorm.DB) *AdminService {
 	return &AdminService{db: db}
+}
+
+// SetBlockchainClient attaches the live on-chain client so chain RPC changes
+// made in the admin panel are dialled immediately.
+func (s *AdminService) SetBlockchainClient(client *BlockchainClient) {
+	s.chainRPCs = client
+}
+
+// refreshChainRPCs re-reads the chain table into the live client. It is
+// best-effort: a failure is logged, and the startup load still applies on the
+// next restart.
+func (s *AdminService) refreshChainRPCs() {
+	if s.chainRPCs == nil {
+		return
+	}
+	if err := s.chainRPCs.LoadChainRPCs(s.db); err != nil {
+		log.Printf("admin: refresh chain RPC endpoints: %v", err)
+	}
 }
 
 // SetAuthService attaches the auth service so an admin action that deactivates
@@ -1440,6 +1462,7 @@ func (s *AdminService) CreateChain(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to load created chain"})
 		return
 	}
+	s.refreshChainRPCs()
 	s.logAdminAction(c, "create_chain", "chain", chain.Name, nil)
 	c.JSON(http.StatusCreated, chain)
 }
@@ -1492,6 +1515,7 @@ func (s *AdminService) UpdateChain(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Chain not found"})
 		return
 	}
+	s.refreshChainRPCs()
 	s.logAdminAction(c, "update_chain", "chain", id, updates)
 	c.JSON(http.StatusOK, chain)
 }
@@ -1510,6 +1534,7 @@ func (s *AdminService) DeleteChain(c *gin.Context) {
 		return
 	}
 
+	s.refreshChainRPCs()
 	s.logAdminAction(c, "deactivate_chain", "chain", id, nil)
 	c.JSON(http.StatusOK, gin.H{"success": true, "id": id})
 }

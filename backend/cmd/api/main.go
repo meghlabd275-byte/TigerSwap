@@ -167,6 +167,7 @@ func main() {
 	swapExecutor := services.NewSwapExecutor(blockchainClient, priceAggregator, redis)
 	services.SetSwapExecutor(swapExecutor)
 	services.SetBlockchainClient(blockchainClient)
+	adminService.SetBlockchainClient(blockchainClient)
 	// The swap quote and price endpoints read the aggregator through this
 	// package-level handle; without it they can only answer 503.
 	services.SetPriceAggregator(priceAggregator)

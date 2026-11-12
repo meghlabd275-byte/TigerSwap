@@ -162,6 +162,23 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   with no balance is rejected with 409 and never reaches the signer.
 - Chain selection for the watcher comes from `DEPOSIT_WATCH_CHAINS`.
 
+## On-chain RPC endpoints
+
+- TigerSwap dials only its own nodes; no third-party endpoint is baked in. An
+  endpoint comes from `TIGERSWAP_RPC_<chainID>` (or `TIGERSWAP_RPC_URL_<chainID>`),
+  which takes precedence, or from the `rpc_url` an operator stored on the
+  `blockchains` row.
+- `BlockchainClient.LoadChainRPCs(db)` is a full refresh, not a merge: it
+  registers every active chain's endpoint and unregisters a chain that was
+  deactivated or had its endpoint cleared. It runs at startup and again from the
+  chain admin handlers (`SetBlockchainClient` wires it), so a change made in the
+  admin panel is dialled without a restart.
+- `GetClient` resolves the endpoint before taking the write lock — calling
+  `RPCURLForChain` while holding it would deadlock, because that method takes the
+  same lock for reading. It re-checks the cache after acquiring the lock so two
+  callers cannot each dial the same chain and leak one connection.
+
+
 ## Required environment variables
 
 Database (`DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`) is required;
