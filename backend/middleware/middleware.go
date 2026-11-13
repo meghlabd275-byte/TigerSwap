@@ -1,7 +1,11 @@
 package middleware
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -66,6 +70,45 @@ func setAuthContext(c *gin.Context, claims jwt.MapClaims) {
 	c.Set("role", claims["role"])
 }
 
+// RequestIDKey is the gin context key holding the per-request correlation id.
+const RequestIDKey = "request_id"
+
+// RequestID attaches a correlation id to every request. The id an upstream
+// proxy or client already supplied in X-Request-ID is kept so a request can be
+// traced across services; otherwise a fresh random id is generated. The id is
+// echoed in the response header and stored in the context, and RequestLogger
+// prints it, so a log line can be tied back to the response a client saw.
+func RequestID() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		requestID := strings.TrimSpace(c.GetHeader("X-Request-ID"))
+		if requestID == "" || len(requestID) > 128 {
+			requestID = newRequestID()
+		}
+		c.Set(RequestIDKey, requestID)
+		c.Header("X-Request-ID", requestID)
+		c.Next()
+	}
+}
+
+// RequestIDFromContext returns the correlation id attached by RequestID, or the
+// empty string when the middleware did not run.
+func RequestIDFromContext(c *gin.Context) string {
+	if id, ok := c.Get(RequestIDKey); ok {
+		if s, ok := id.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func newRequestID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 10)
+	}
+	return hex.EncodeToString(b)
+}
+
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -76,13 +119,18 @@ func RequestLogger() gin.HandlerFunc {
 
 		latency := time.Since(start)
 		statusCode := c.Writer.Status()
-
-		if statusCode >= 400 {
-			// Log errors
-			println("[ERROR]", method, path, statusCode, latency)
-		} else {
-			println("[INFO]", method, path, statusCode, latency)
+		level := "INFO"
+		if statusCode >= 500 {
+			level = "ERROR"
+		} else if statusCode >= 400 {
+			level = "WARN"
 		}
+
+		// log.Printf writes a timestamped, single line per request, including the
+		// correlation id and client IP, so a production log pipeline can join a
+		// response to the request that produced it.
+		log.Printf("[%s] %s %s %d %s ip=%s request_id=%s",
+			level, method, path, statusCode, latency, c.ClientIP(), RequestIDFromContext(c))
 	}
 }
 

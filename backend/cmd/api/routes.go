@@ -84,6 +84,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 	}))
 
 	// Global middleware
+	router.Use(middleware.RequestID())
 	router.Use(middleware.RequestLogger())
 	if deps.metrics != nil {
 		router.Use(deps.metrics.Middleware())

@@ -109,6 +109,11 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   `false` value inserts a `map[string]interface{}` instead — which also means
   `created_at`/`updated_at` are no longer filled automatically and have to be
   set explicitly. Reads and `Update`/`Update("col", false)` calls are unaffected.
+- Every request passes through `middleware.RequestID()` then
+  `middleware.RequestLogger()`. The logger prints one line per request with the
+  correlation id (`X-Request-ID`, generated if absent) and client IP, so a log
+  line joins to the response a client saw. Read the id inside a handler with
+  `middleware.RequestIDFromContext(c)` when it must be echoed or logged.
 
 ## Contracts
 
