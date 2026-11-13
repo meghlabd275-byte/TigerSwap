@@ -94,8 +94,9 @@ does not yet contain.
    paths have not been independently audited. A global DEX launch requires this
    before real funds are at risk.
 3. **No production secrets management.** Keys and the wallet seed are read from
-   environment variables. A production deployment should source them from a
-   secrets manager / KMS, not a plain `.env`.
+   environment variables or a mounted secret file (`config.Secret`, via the
+   `_FILE` sibling), but not from a secrets manager / KMS. Sourcing them from a
+   managed vault rather than a plain `.env` or a mounted file is still open.
 4. **No horizontal-scale story.** The API keeps in-process state (the WebSocket
    hub, the perp engine registry, the bots engine). Running more than one API
    replica needs a shared bus and a leader/ownership model that is not present.
@@ -118,9 +119,11 @@ does not yet contain.
    `TIGERBRIDGE_VALIDATOR_KEYS` in-process and signs the supermajority itself, so
    the supermajority is produced by one process. A production bridge needs
    independent validators.
-3. **Non-EVM chains cannot be watched.** `deposit_watcher.go` and
-   `BlockchainClient` are EVM-only; an admin can mark a non-EVM chain active but
-   no deposit on it will ever be credited. Multichain is EVM-multichain only.
+3. **Non-EVM chains cannot be watched (fails closed).** `deposit_watcher.go` and
+   `BlockchainClient` are EVM-only; `LoadChainRPCs` now refuses to register a
+   chain whose `blockchains.type` is not EVM, so an admin marking a non-EVM chain
+   active leaves it inert rather than dialling it with an `ethclient`. Multichain
+   is EVM-multichain only.
 
 ## Previously recorded gaps now fixed on `main`
 
