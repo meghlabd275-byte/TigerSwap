@@ -100,7 +100,7 @@ func TestOnChainLiquidation(t *testing.T) {
 	h := newPerpsHarness(t)
 	ctx := context.Background()
 
-	size := OneUnit         // $60,000 notional at the $60,000 mark
+	size := OneUnit          // $60,000 notional at the $60,000 mark
 	collateral := wad(12000) // 5x
 	openCall, err := h.client.BuildOpenPosition(h.marketID, size, collateral, true)
 	if err != nil {

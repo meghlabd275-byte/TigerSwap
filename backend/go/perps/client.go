@@ -356,22 +356,22 @@ func (c *Client) CalculatePnL(ctx context.Context, p *Position, currentPrice *bi
 
 // positionTuple shapes a Position for the contract's struct parameter.
 func positionTuple(p *Position) struct {
-	MarketID   [32]byte
-	Trader     common.Address
-	Size       *big.Int
-	Collateral *big.Int
-	EntryPrice *big.Int
+	MarketID    [32]byte
+	Trader      common.Address
+	Size        *big.Int
+	Collateral  *big.Int
+	EntryPrice  *big.Int
 	LastUpdated *big.Int
-	IsLong     bool
+	IsLong      bool
 } {
 	return struct {
-		MarketID   [32]byte
-		Trader     common.Address
-		Size       *big.Int
-		Collateral *big.Int
-		EntryPrice *big.Int
+		MarketID    [32]byte
+		Trader      common.Address
+		Size        *big.Int
+		Collateral  *big.Int
+		EntryPrice  *big.Int
 		LastUpdated *big.Int
-		IsLong     bool
+		IsLong      bool
 	}{
 		MarketID:    p.MarketID,
 		Trader:      p.Trader,
