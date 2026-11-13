@@ -76,6 +76,10 @@ type WithdrawalRequest struct {
 	ToAddress    string    `gorm:"size:42" json:"to_address"`
 	// Amount is an exact integer string in the token's smallest unit.
 	Amount string `gorm:"size:78" json:"amount"`
+	// Fee is the platform fee reserved alongside the amount, in the token's
+	// smallest unit. It is charged to the ledger when the request is queued and
+	// released to the platform fee account when the request is approved.
+	Fee    string `gorm:"size:78" json:"fee"`
 	Status string `gorm:"index;size:20;default:'pending'" json:"status"`
 	// Reason records why an operator refused the request.
 	Reason    string    `json:"reason,omitempty"`

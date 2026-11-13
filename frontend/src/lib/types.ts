@@ -2866,6 +2866,9 @@ export interface WithdrawalResult {
   tx_hash: string;
   request_id: string;
   message: string;
+  amount: string;
+  fee: string;
+  total: string;
 }
 
 export const withdrawalResultValidator = object<WithdrawalResult>({
@@ -2874,6 +2877,9 @@ export const withdrawalResultValidator = object<WithdrawalResult>({
   tx_hash: withDefault(string, ""),
   request_id: withDefault(string, ""),
   message: withDefault(string, ""),
+  amount: withDefault(string, ""),
+  fee: withDefault(string, ""),
+  total: withDefault(string, ""),
 });
 
 /** The verification status of an account's identity record. */

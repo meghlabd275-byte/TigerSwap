@@ -44,6 +44,9 @@ type WalletService struct {
 	// compliance screens a withdrawal destination against the sanctions denylist
 	// and the geographic policy. It is nil only in a test that does not use it.
 	compliance *ComplianceService
+	// feeCollector supplies the withdrawal fee so the platform's cut is charged to
+	// the ledger rather than only recorded. It is nil in a test that does not use it.
+	feeCollector *FeeCollectorService
 	masterKeys       map[string]*ecdsa.PrivateKey
 	encryptionKey    []byte
 	hdSeed           []byte
@@ -95,6 +98,12 @@ func (s *WalletService) SetWithdrawalPolicy(policy *WithdrawalService) {
 // checked against the sanctions denylist and the geographic policy.
 func (s *WalletService) SetCompliance(compliance *ComplianceService) {
 	s.compliance = compliance
+}
+
+// SetFeeCollector wires the fee configuration the withdrawal path charges to the
+// ledger. Without it a withdrawal charges no fee.
+func (s *WalletService) SetFeeCollector(collector *FeeCollectorService) {
+	s.feeCollector = collector
 }
 
 // SignWithdrawalKey exposes the platform signer to the withdrawal service so the
@@ -830,9 +839,27 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		return
 	}
 
+	// The platform's withdrawal fee is charged to the ledger together with the
+	// amount. Without a configured collector the fee is zero rather than guessed.
+	var fee *big.Int
+	if s.feeCollector != nil {
+		computed, err := s.feeCollector.WithdrawalFeeExact(amount)
+		if err != nil {
+			log.Printf("wallet: withdrawal fee computation failed: %v", err)
+			c.JSON(500, gin.H{"error": "withdrawal fee unavailable"})
+			return
+		}
+		fee = computed
+	}
+	if fee == nil {
+		fee = big.NewInt(0)
+	}
+	total := new(big.Int).Add(amount, fee)
+
 	// Debit first: this is the authorization gate. It fails closed if the user
-	// does not hold enough on the platform.
-	if err := s.ledger.Debit(userID, req.ChainID, req.Token, amount); err != nil {
+	// does not hold enough on the platform. The fee is moved to the platform fee
+	// account in the same transaction as the amount debit.
+	if err := s.ledger.ChargeWithFee(userID, req.ChainID, req.Token, amount, fee); err != nil {
 		if errors.Is(err, ErrInsufficientBalance) {
 			c.JSON(409, gin.H{"error": "Insufficient balance"})
 			return
@@ -851,8 +878,8 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		// A failed reversal would strand the funds, so it is logged loudly; the
 		// debit already happened, so the caller is told the withdrawal failed
 		// regardless.
-		if creditErr := s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount); creditErr != nil {
-			log.Printf("CRITICAL: failed to reverse withdrawal debit for user %s: %v", userID, creditErr)
+		if refundErr := s.ledger.RefundWithFee(userID, req.ChainID, req.Token, amount, fee); refundErr != nil {
+			log.Printf("CRITICAL: failed to reverse withdrawal debit for user %s: %v", userID, refundErr)
 		}
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
@@ -867,8 +894,8 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		req.ToAddress, amount, req.Token, nil,
 	)
 	if err != nil {
-		if creditErr := s.ledger.Credit(userID, req.ChainID, req.Token, "", 0, amount); creditErr != nil {
-			log.Printf("failed to reverse withdrawal debit for user %s: %v", userID, creditErr)
+		if refundErr := s.ledger.RefundWithFee(userID, req.ChainID, req.Token, amount, fee); refundErr != nil {
+			log.Printf("failed to reverse withdrawal debit for user %s: %v", userID, refundErr)
 		}
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
@@ -890,7 +917,22 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		Timestamp:  time.Now(),
 	})
 
-	c.JSON(200, gin.H{"success": true, "tx_hash": txHash, "status": "processing"})
+	// Record the fee for the revenue report. A persistence failure must not fail a
+	// withdrawal that already went out, so it is logged and the transfer stands.
+	if fee.Sign() > 0 && s.feeCollector != nil {
+		if _, recordErr := s.feeCollector.RecordWithdrawFee(req.Token, fee.String(), txHash, req.ChainID, req.ToAddress); recordErr != nil {
+			log.Printf("wallet: failed to record withdrawal fee: %v", recordErr)
+		}
+	}
+
+	c.JSON(200, gin.H{
+		"success": true,
+		"tx_hash": txHash,
+		"status":  "processing",
+		"amount":  amount.String(),
+		"fee":     fee.String(),
+		"total":   total.String(),
+	})
 }
 
 // parseUserUUID converts a session user id into a UUID, returning the nil UUID

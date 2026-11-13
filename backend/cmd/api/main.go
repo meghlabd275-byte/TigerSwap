@@ -395,6 +395,8 @@ func main() {
 		// Screen a withdrawal destination against the sanctions denylist and the
 		// geographic policy before the policy or the signer is reached.
 		walletService.SetCompliance(complianceService)
+		// Charge the configured withdrawal fee to the ledger and record it.
+		walletService.SetFeeCollector(feeCollector)
 	}
 
 	// Credit user balances from confirmed on-chain deposits. The watcher owns

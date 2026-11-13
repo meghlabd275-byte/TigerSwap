@@ -158,6 +158,49 @@ func (s *FeeCollectorService) GetConfig() *FeeConfig {
 	return &copied
 }
 
+// WithdrawalFeeExact returns the withdrawal fee in the token's smallest unit as
+// an exact integer. The configured percent is applied with integer arithmetic
+// (amount * percent / 100) and floored, so the fee never exceeds the configured
+// rate and no float64 ever touches a monetary value. A configured fixed minimum
+// is applied when it is larger, and the fee is clamped to the withdrawn amount.
+func (s *FeeCollectorService) WithdrawalFeeExact(amount *big.Int) (*big.Int, error) {
+	s.mu.RLock()
+	config := s.config
+	s.mu.RUnlock()
+	if config == nil {
+		return nil, fmt.Errorf("fee configuration is unavailable")
+	}
+	if amount == nil || amount.Sign() <= 0 {
+		return nil, fmt.Errorf("fee amount must be positive")
+	}
+
+	// Percent is stored as a float64 percent (0.1 means 0.1%). Convert to basis
+	// points with an exact decimal parse so 0.1 does not become 0.099999....
+	percent, err := parseDecimal(strconv.FormatFloat(config.WithdrawFeePercent, 'f', -1, 64))
+	if err != nil {
+		return nil, fmt.Errorf("withdraw fee percent: %w", err)
+	}
+	// fee = floor(amount * percent / 100)
+	fee := new(big.Rat).Mul(new(big.Rat).SetInt(amount), percent)
+	fee.Quo(fee, big.NewRat(100, 1))
+	feeInt := new(big.Int).Quo(fee.Num(), fee.Denom())
+
+	fixed, err := parseDecimal(strconv.FormatFloat(config.WithdrawFeeFixed, 'f', -1, 64))
+	if err != nil {
+		return nil, fmt.Errorf("withdraw fee fixed: %w", err)
+	}
+	fixedInt := new(big.Int).Quo(fixed.Num(), fixed.Denom())
+
+	if fixedInt.Cmp(feeInt) > 0 {
+		feeInt = fixedInt
+	}
+	// A fee can never exceed the withdrawn amount.
+	if feeInt.Cmp(amount) > 0 {
+		feeInt = new(big.Int).Set(amount)
+	}
+	return feeInt, nil
+}
+
 // CollectSwapFee calculates and records swap fee
 func (s *FeeCollectorService) CollectSwapFee(tokenIn, tokenOut, amount, txHash string, chainID int64, userAddress string, priceIn, priceOut float64) (*FeeRecord, error) {
 	s.mu.Lock()
@@ -266,6 +309,40 @@ func (s *FeeCollectorService) CollectWalletFee(token, amount, txHash string, cha
 	s.walletFees[record.ID] = record
 	s.totalRevenue.Add(s.totalRevenue, big.NewFloat(feeUSD))
 	s.updateDailyRevenue("wallet", feeUSD)
+
+	return record, nil
+}
+
+// RecordWithdrawFee records a withdrawal fee that was already charged to the
+// ledger. The amount is the exact integer the charge moved, so the recorded
+// figure cannot drift from the balance change.
+func (s *FeeCollectorService) RecordWithdrawFee(token, amount, txHash string, chainID int64, userAddress string) (*FeeRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	feeExact, err := parseDecimal(amount)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fee amount: %w", err)
+	}
+	feeAmount := feeAmountFloat(feeExact)
+
+	record := &FeeRecord{
+		ID:            "withdraw_" + uuid.NewString(),
+		Type:          "withdraw",
+		Amount:        amount,
+		Token:         token,
+		ChainID:       chainID,
+		UserAddress:   userAddress,
+		TxHash:        txHash,
+		FeeCharged:    feeAmount,
+		Timestamp:     time.Now(),
+		Status:        "collected",
+	}
+
+	if err := s.persistFeeRecord(record); err != nil {
+		return nil, err
+	}
+	s.withdrawFees[record.ID] = record
 
 	return record, nil
 }

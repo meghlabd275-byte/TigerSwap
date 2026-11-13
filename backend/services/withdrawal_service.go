@@ -62,9 +62,27 @@ type WithdrawalService struct {
 	ledger     *LedgerService
 	blockchain *BlockchainClient
 	signer     func() (*ecdsa.PrivateKey, error)
+	// feeCollector supplies the withdrawal fee charged when a request is queued.
+	// It is nil only in a test that does not charge a fee.
+	feeCollector *FeeCollectorService
 
 	requireAllowlist bool
 	cooldown         time.Duration
+}
+
+// SetFeeCollector wires the fee configuration the queued-withdrawal path charges.
+// Without it a queued withdrawal charges no fee.
+func (s *WithdrawalService) SetFeeCollector(collector *FeeCollectorService) {
+	s.feeCollector = collector
+}
+
+// withdrawalFee returns the fee for an amount, or zero when no collector is
+// configured. It never fabricates a fee.
+func (s *WithdrawalService) withdrawalFee(amount *big.Int) (*big.Int, error) {
+	if s.feeCollector == nil {
+		return big.NewInt(0), nil
+	}
+	return s.feeCollector.WithdrawalFeeExact(amount)
 }
 
 // NewWithdrawalService builds the policy from configuration. The allow-list is
@@ -146,9 +164,13 @@ func (s *WithdrawalService) limitFor(chainID int64, tokenAddress string) (*model
 // transaction. The debit is the reservation: an approved request already holds
 // the funds and a refused one returns them.
 func (s *WithdrawalService) CreatePendingRequest(userID string, chainID int64, tokenAddress, toAddress string, amount *big.Int) (uuid.UUID, error) {
+	fee, err := s.withdrawalFee(amount)
+	if err != nil {
+		return uuid.Nil, err
+	}
 	var request models.WithdrawalRequest
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := s.ledger.debitWithin(tx, userID, chainID, tokenAddress, amount); err != nil {
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.ledger.chargeWithFeeWithin(tx, userID, chainID, tokenAddress, amount, fee); err != nil {
 			return err
 		}
 		request = models.WithdrawalRequest{
@@ -157,6 +179,7 @@ func (s *WithdrawalService) CreatePendingRequest(userID string, chainID int64, t
 			TokenAddress: normalizeTokenAddress(tokenAddress),
 			ToAddress:    strings.ToLower(toAddress),
 			Amount:       amount.String(),
+			Fee:          fee.String(),
 			Status:       models.WithdrawalStatusPending,
 		}
 		return tx.Create(&request).Error
@@ -348,6 +371,19 @@ func (s *WithdrawalService) ApproveRequest(c *gin.Context) {
 		return
 	}
 
+	// The fee was moved to the platform fee account when the request was queued,
+	// so approving only releases the amount. The fee is reported back but not
+	// charged again.
+	fee := strings.TrimSpace(request.Fee)
+	if fee == "" {
+		fee = "0"
+	}
+	if _, ok := new(big.Int).SetString(fee, 10); !ok {
+		s.releaseClaim(request.ID)
+		respondInternalError(c, fmt.Errorf("stored fee %q is not a number", request.Fee))
+		return
+	}
+
 	txHash, err := s.blockchain.SendTransaction(
 		c.Request.Context(), request.ChainID, hex.EncodeToString(crypto.FromECDSA(key)), request.ToAddress, amount, request.TokenAddress, nil,
 	)
@@ -363,7 +399,7 @@ func (s *WithdrawalService) ApproveRequest(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": models.WithdrawalStatusApproved, "tx_hash": txHash})
+	c.JSON(http.StatusOK, gin.H{"status": models.WithdrawalStatusApproved, "tx_hash": txHash, "fee": fee})
 }
 
 // RefuseRequest returns a queued withdrawal's funds to the caller and closes it.
@@ -387,7 +423,18 @@ func (s *WithdrawalService) RefuseRequest(c *gin.Context) {
 		if !ok {
 			return fmt.Errorf("stored amount %q is not a number", request.Amount)
 		}
-		if err := s.ledger.creditWithin(tx, request.UserID, request.ChainID, request.TokenAddress, "", 0, amount); err != nil {
+		// The fee reserved at queue time returns with the amount, so the payer is
+		// made whole and the fee account no longer holds a fee for a withdrawal
+		// that never happened.
+		fee := big.NewInt(0)
+		if strings.TrimSpace(request.Fee) != "" {
+			parsed, ok := new(big.Int).SetString(request.Fee, 10)
+			if !ok || parsed.Sign() < 0 {
+				return fmt.Errorf("stored fee %q is not a number", request.Fee)
+			}
+			fee = parsed
+		}
+		if err := s.ledger.refundWithFeeWithin(tx, request.UserID, request.ChainID, request.TokenAddress, amount, fee); err != nil {
 			return err
 		}
 		return tx.Model(&models.WithdrawalRequest{}).Where("id = ?", request.ID).

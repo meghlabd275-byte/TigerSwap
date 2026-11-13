@@ -63,6 +63,59 @@ func (s *LedgerService) Debit(userID string, chainID int64, tokenAddress string,
 	})
 }
 
+// FeeAccountID is the ledger account the platform's collected fees accrue to.
+// It is a synthetic account: fees are credited here and settled out to the
+// treasury wallet by an operator.
+const FeeAccountID = "platform-fees"
+
+// ChargeWithFee debits the amount plus the fee from the payer and credits the
+// fee to the platform fee account, all in one transaction. Either the whole
+// move lands or none of it does, so a failed charge cannot leave the fee
+// account credited for a transfer that never happened. A zero fee behaves like
+// a plain debit.
+func (s *LedgerService) ChargeWithFee(userID string, chainID int64, tokenAddress string, amount, fee *big.Int) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return s.chargeWithFeeWithin(tx, userID, chainID, tokenAddress, amount, fee)
+	})
+}
+
+// chargeWithFeeWithin is the in-transaction form of ChargeWithFee, so a caller
+// can commit the charge together with its own bookkeeping record.
+func (s *LedgerService) chargeWithFeeWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress string, amount, fee *big.Int) error {
+	if err := s.debitWithin(tx, userID, chainID, tokenAddress, amount); err != nil {
+		return err
+	}
+	if fee == nil || fee.Sign() == 0 {
+		return nil
+	}
+	if err := s.debitWithin(tx, userID, chainID, tokenAddress, fee); err != nil {
+		return err
+	}
+	return s.creditWithin(tx, FeeAccountID, chainID, tokenAddress, "", 0, fee)
+}
+
+// RefundWithFee reverses a ChargeWithFee: the amount and the fee return to the
+// payer and the fee is taken back out of the fee account, in one transaction.
+func (s *LedgerService) RefundWithFee(userID string, chainID int64, tokenAddress string, amount, fee *big.Int) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return s.refundWithFeeWithin(tx, userID, chainID, tokenAddress, amount, fee)
+	})
+}
+
+// refundWithFeeWithin is the in-transaction form of RefundWithFee.
+func (s *LedgerService) refundWithFeeWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress string, amount, fee *big.Int) error {
+	if err := s.creditWithin(tx, userID, chainID, tokenAddress, "", 0, amount); err != nil {
+		return err
+	}
+	if fee == nil || fee.Sign() == 0 {
+		return nil
+	}
+	if err := s.debitWithin(tx, FeeAccountID, chainID, tokenAddress, fee); err != nil {
+		return err
+	}
+	return s.creditWithin(tx, userID, chainID, tokenAddress, "", 0, fee)
+}
+
 // debitWithin debits a balance using an existing transaction, so a caller can
 // commit the debit together with its own bookkeeping record. Either both land or
 // neither does, which removes the need for a compensating credit.
