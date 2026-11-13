@@ -218,8 +218,9 @@ environment-variable secret.
 
 - **No versioned migrations.** GORM `AutoMigrate` at startup only; no reviewable
   migration history and no rollback path.
-- **No distributed tracing or alerting.** Metrics and probes exist; there is no
-  trace and no page-on-error integration (no PagerDuty/Slack-on-error).
+- **No distributed tracing or alerting.** Metrics, probes and per-request
+  correlation logging (`X-Request-ID` + one structured line per request) exist;
+  there is no trace and no page-on-error integration (no PagerDuty/Slack-on-error).
 - **No horizontal scale.** The WebSocket hub, perp engine registry and bots
   engine are in-process. A second API replica double-books, double-broadcasts and
   desynchronises the hub. Either a shared bus + leader/ownership model or an
@@ -228,10 +229,13 @@ environment-variable secret.
 
 ### 4.4 Test depth
 
-- No contract fork tests, no fuzz tests and no invariant tests
-  (grep: zero `testFuzz`, zero `invariant_`, zero fork tests).
+- Fuzz and invariant tests now exist for the xyK pool
+  (`contracts/test/TigerSwapPoolFuzz.t.sol`, `TigerSwapPoolInvariant.t.sol`).
+  Still absent: contract fork tests (a test that reads a live fork), and fuzz /
+  invariant coverage for the stable, weighted and concentrated pool families.
 - No end-to-end test that boots the API against a chain and a DB and trades
-  through the stack.
+  through the stack. Per-service integration tests run against a real database
+  and a real in-process chain harness (`perps/perpstest`, `go/orders`).
 
 ### 4.5 Orphaned layers (built, tested, not consumed by the API)
 
