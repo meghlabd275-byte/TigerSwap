@@ -18,6 +18,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 
 import {
   useBuildPerpBookCancel,
+  useBuildPerpBookClaimUnpaid,
   useBuildPerpBookDeposit,
   useBuildPerpBookInsurance,
   useBuildPerpBookLiquidity,
@@ -121,6 +122,7 @@ export function PerpOrderBook() {
   const cancelOrder = useBuildPerpBookCancel();
   const liquidity = useBuildPerpBookLiquidity();
   const insurance = useBuildPerpBookInsurance();
+  const claimUnpaid = useBuildPerpBookClaimUnpaid();
 
   const run = async (action: () => Promise<string>) => {
     setFormError(null);
@@ -253,13 +255,24 @@ export function PerpOrderBook() {
     );
   };
 
+  const handleClaimUnpaid = (position: PerpBookPosition) => {
+    void run(() =>
+      claimUnpaid.mutateAsync({
+        chain_id: position.chain_id,
+        market_id: position.market_id,
+        send: sendCall,
+      }),
+    );
+  };
+
   const busy =
     deposit.isPending ||
     withdraw.isPending ||
     placeOrder.isPending ||
     cancelOrder.isPending ||
     liquidity.isPending ||
-    insurance.isPending;
+    insurance.isPending ||
+    claimUnpaid.isPending;
 
   if (marketsQuery.error) {
     return (
@@ -559,6 +572,17 @@ export function PerpOrderBook() {
                   PnL {formatScaled(p.unrealized_pnl)}
                 </span>
                 <span className="text-gray-400">equity {formatScaled(p.equity)}</span>
+                {BigInt(p.unpaid_credit) > 0n && (
+                  <button
+                    type="button"
+                    onClick={() => handleClaimUnpaid(p)}
+                    disabled={busy}
+                    className="px-2 py-1 rounded bg-yellow-600/80 hover:bg-yellow-500 disabled:opacity-50 text-white"
+                    title="A profit the pool could not pay when it was realised. Claiming pays it from the pool's free liquidity."
+                  >
+                    Claim {formatScaled(p.unpaid_credit)}
+                  </button>
+                )}
               </div>
             ))}
           </div>

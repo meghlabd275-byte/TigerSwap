@@ -364,6 +364,20 @@ func (c *Client) PoolLiquidity(ctx context.Context, id common.Hash) (*big.Int, e
 	return v, nil
 }
 
+// UnpaidCredit reads the profit a trader is still owed because the pool could
+// not pay it when the profit was realised.
+func (c *Client) UnpaidCredit(ctx context.Context, id common.Hash, trader common.Address) (*big.Int, error) {
+	out, err := c.call(ctx, "unpaidCredit", id, trader)
+	if err != nil {
+		return nil, err
+	}
+	var v *big.Int
+	if err := orderBookABI.UnpackIntoInterface(&v, "unpaidCredit", out); err != nil {
+		return nil, fmt.Errorf("decode unpaidCredit: %w", err)
+	}
+	return v, nil
+}
+
 // ErrNoSigner is returned by a write method when the client has no signer.
 var ErrNoSigner = errors.New("orderbook: no signer configured")
 
@@ -445,6 +459,12 @@ func (c *Client) BuildDepositInsurance(marketID common.Hash, amount *big.Int) (C
 		return Call{}, errors.New("amount must be positive")
 	}
 	return c.pack("depositInsurance", marketID, amount)
+}
+
+// BuildClaimUnpaid encodes claimUnpaid(marketId), which pays down a deferred
+// profit from the pool's free liquidity.
+func (c *Client) BuildClaimUnpaid(marketID common.Hash) (Call, error) {
+	return c.pack("claimUnpaid", marketID)
 }
 
 // BuildCreateMarket encodes createMarket(...). Owner-only on-chain.

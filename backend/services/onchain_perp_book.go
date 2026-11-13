@@ -396,9 +396,16 @@ func (s *OnChainPerpBookService) OrdersHandler(c *gin.Context) {
 		if !order.Active && order.Filled.Sign() == 0 {
 			continue
 		}
+		// getOrder does not carry the market id, so read it from the
+		// contract's own orderMarket mapping.
+		marketID, err := client.OrderMarket(ctx, id)
+		if err != nil {
+			continue
+		}
 		out = append(out, gin.H{
 			"order_id":    id.String(),
-			"market_id":   orderbook.MarketID(s.symbolFor(orderbook.MarketID(""))).Hex(),
+			"market_id":   marketID.Hex(),
+			"symbol":      s.symbolFor(marketID),
 			"trader":      order.Trader.Hex(),
 			"price":       order.Price.String(),
 			"quantity":    order.Quantity.String(),
@@ -469,6 +476,12 @@ func (s *OnChainPerpBookService) positionView(ctx context.Context, client *order
 	} else if pos.Size.Sign() < 0 {
 		side = "short"
 	}
+	// A deferred profit is money the pool owes the trader; report it so the UI
+	// can offer the claim rather than hiding it.
+	unpaid := new(big.Int)
+	if credit, err := client.UnpaidCredit(ctx, marketID, trader); err == nil && credit != nil {
+		unpaid = credit
+	}
 	return gin.H{
 		"chain_id":       chainID,
 		"symbol":         symbol,
@@ -480,6 +493,7 @@ func (s *OnChainPerpBookService) positionView(ctx context.Context, client *order
 		"margin":         pos.Margin.String(),
 		"unrealized_pnl": pos.UnrealizedPnL.String(),
 		"equity":         pos.Equity.String(),
+		"unpaid_credit":  unpaid.String(),
 	}
 }
 
@@ -602,6 +616,14 @@ func (s *OnChainPerpBookService) BuildDepositInsuranceHandler(c *gin.Context) {
 			return orderbook.Call{}, err
 		}
 		return client.BuildDepositInsurance(marketID, amount)
+	})
+}
+
+// BuildClaimUnpaidHandler returns calldata that pays down the caller's deferred
+// profit from the pool's free liquidity.
+func (s *OnChainPerpBookService) BuildClaimUnpaidHandler(c *gin.Context) {
+	s.buildCall(c, func(client *orderbook.Client, marketID common.Hash) (orderbook.Call, error) {
+		return client.BuildClaimUnpaid(marketID)
 	})
 }
 

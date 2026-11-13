@@ -131,6 +131,10 @@ contract TigerSwapPerpOrderBook {
     mapping(bytes32 => uint256) public poolLiquidity;
     mapping(bytes32 => uint256) public reservedLiquidity;
     mapping(bytes32 => uint256) public unpaidProfits;
+    /// @dev marketId => trader => profit that the pool could not pay at the time
+    ///      it was realised. It is paid down from the pool's free liquidity as
+    ///      it becomes available, so a profit is deferred, never lost.
+    mapping(bytes32 => mapping(address => uint256)) public unpaidCredit;
     mapping(bytes32 => uint256) public insuranceFund;
     mapping(bytes32 => uint256) public protocolFees;
 
@@ -170,6 +174,7 @@ contract TigerSwapPerpOrderBook {
     event LiquidityAdded(bytes32 indexed marketId, address indexed provider, uint256 amount);
     event LiquidityRemoved(bytes32 indexed marketId, address indexed provider, uint256 amount);
     event ProtocolFeesWithdrawn(bytes32 indexed marketId, address indexed to, uint256 amount);
+    event UnpaidProfitPaid(bytes32 indexed marketId, address indexed trader, uint256 amount);
     event OracleUpdated(address indexed oracle);
     event TradingEnabledSet(bool enabled);
     event OwnershipCommitted(address indexed pendingOwner);
@@ -340,6 +345,8 @@ contract TigerSwapPerpOrderBook {
         market.token.safeTransferFrom(msg.sender, address(this), amount);
         _settleFunding(marketId, msg.sender);
         balances[marketId][msg.sender] += amount;
+        // New margin can also settle a deferred profit of the same trader.
+        _payUnpaid(marketId, msg.sender);
         emit PositionChanged(marketId, msg.sender, positions[marketId][msg.sender].size, _entryPrice(marketId, msg.sender), balances[marketId][msg.sender]);
     }
 
@@ -552,6 +559,10 @@ contract TigerSwapPerpOrderBook {
             require(equity >= 0 && uint256(equity) >= _initialMarginRequirement(marketId, trader), "TigerSwap: INSUFFICIENT_MARGIN");
         }
 
+        // A fee or a closing loss adds to the pool; use any of it, and any
+        // liquidity an LP has since added, to settle a deferred profit.
+        _payUnpaid(marketId, trader);
+
         emit OrderFilled(fillOrderId, marketId, trader, price, quantity, !isTaker, fee);
         emit PositionChanged(marketId, trader, newSize, _entryPrice(marketId, trader), balances[marketId][trader]);
     }
@@ -638,6 +649,23 @@ contract TigerSwapPerpOrderBook {
         pos.fundingIndex = current;
     }
 
+    /// @dev Pay down a trader's deferred profit from the pool's free liquidity.
+    ///      The free amount already excludes reserved liquidity, protocol fees
+    ///      and the total deferred profit, so paying a trader can never spend
+    ///      liquidity that backs an open position or another trader's claim.
+    function _payUnpaid(bytes32 marketId, address trader) private {
+        uint256 owed = unpaidCredit[marketId][trader];
+        if (owed == 0) return;
+        uint256 free = _freeLiquidity(marketId);
+        if (free == 0) return;
+        uint256 pay = owed < free ? owed : free;
+        unpaidCredit[marketId][trader] = owed - pay;
+        unpaidProfits[marketId] -= pay;
+        poolLiquidity[marketId] -= pay;
+        balances[marketId][trader] += pay;
+        emit UnpaidProfitPaid(marketId, trader, pay);
+    }
+
     /// @dev Apply a realised PnL. A loss leaves the balance (clamped at zero); a
     ///      profit is paid from the pool, capped at what the pool can pay, with
     ///      the remainder recorded as an unpaid obligation.
@@ -648,6 +676,7 @@ contract TigerSwapPerpOrderBook {
             uint256 pool = poolLiquidity[marketId];
             if (profit > pool) {
                 unpaidProfits[marketId] += profit - pool;
+                unpaidCredit[marketId][trader] += profit - pool;
                 profit = pool;
             }
             poolLiquidity[marketId] = pool - profit;
@@ -736,6 +765,9 @@ contract TigerSwapPerpOrderBook {
         require(amount > 0, "TigerSwap: ZERO_AMOUNT");
         markets[marketId].token.safeTransferFrom(msg.sender, address(this), amount);
         poolLiquidity[marketId] += amount;
+        // Fresh liquidity is free, so it can settle profits the pool could not
+        // pay when they were realised.
+        _payUnpaid(marketId, msg.sender);
         emit LiquidityAdded(marketId, msg.sender, amount);
     }
 
@@ -746,6 +778,19 @@ contract TigerSwapPerpOrderBook {
         poolLiquidity[marketId] -= amount;
         markets[marketId].token.safeTransfer(msg.sender, amount);
         emit LiquidityRemoved(marketId, msg.sender, amount);
+    }
+
+    /// @notice Pays down the caller's deferred profit from the pool's free
+    ///         liquidity. Anyone may pay a trader by calling it, but only the
+    ///         trader's own balance is credited.
+    function claimUnpaid(bytes32 marketId) external nonReentrant returns (uint256 paid) {
+        uint256 owed = unpaidCredit[marketId][msg.sender];
+        require(owed > 0, "TigerSwap: NOTHING_OWED");
+        uint256 before = balances[marketId][msg.sender];
+        _payUnpaid(marketId, msg.sender);
+        paid = balances[marketId][msg.sender] - before;
+        require(paid > 0, "TigerSwap: NO_FREE_LIQUIDITY");
+        emit PositionChanged(marketId, msg.sender, positions[marketId][msg.sender].size, _entryPrice(marketId, msg.sender), balances[marketId][msg.sender]);
     }
 
     function withdrawProtocolFees(bytes32 marketId, address to) external onlyOwner nonReentrant returns (uint256 amount) {

@@ -714,6 +714,31 @@ export function useBuildPerpBookInsurance() {
   });
 }
 
+/**
+ * Builds, signs and broadcasts a claim of the caller's deferred profit on an
+ * on-chain perp market. The contract pays it from the pool's free liquidity, so
+ * the call reverts until that liquidity exists.
+ */
+export function useBuildPerpBookClaimUnpaid() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookClaimUnpaid({
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
 /** The risk view of one margin account, refreshed while it is open. */
 export function useMarginAccount(accountId: string | null): UseQueryResult<MarginAccountView, Error> {
   return useQuery<MarginAccountView, Error>({

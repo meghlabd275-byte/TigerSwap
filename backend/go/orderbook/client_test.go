@@ -36,6 +36,8 @@ func TestSelectorsMatchDeployedContract(t *testing.T) {
 		"balances(bytes32,address)":              "d93d7361",
 		"poolLiquidity(bytes32)":                 "c55ed851",
 		"orderMarket(uint256)":                   "cf549c8a",
+		"claimUnpaid(bytes32)":                   "479a3d80",
+		"unpaidCredit(bytes32,address)":          "2e31af06",
 	}
 	for sig, hexSel := range want {
 		got := orderBookABI.Methods[methodName(sig)].ID

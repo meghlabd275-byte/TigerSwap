@@ -2644,6 +2644,8 @@ export interface PerpBookPosition {
   margin: string;
   unrealized_pnl: string;
   equity: string;
+  /** Profit the pool could not pay when it was realised, still owed to the trader. */
+  unpaid_credit: string;
 }
 
 export const perpBookPositionValidator = object<PerpBookPosition>({
@@ -2657,6 +2659,7 @@ export const perpBookPositionValidator = object<PerpBookPosition>({
   margin: string,
   unrealized_pnl: string,
   equity: string,
+  unpaid_credit: withDefault(string, '0'),
 });
 
 export const perpBookPositionListValidator = listingArray(perpBookPositionValidator);

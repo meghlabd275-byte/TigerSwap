@@ -661,6 +661,19 @@ export const endpoints = {
   },
 
   /**
+   * Unsigned calldata that claims the caller's deferred profit on an on-chain
+   * market. A profit the pool could not pay when it was realised is credited to
+   * `unpaidCredit`; this pays it down from the pool's free liquidity.
+   */
+  async buildPerpBookClaimUnpaid(payload: {
+    chain_id: number;
+    market_id: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/claim", payload);
+    return onChainCallValidator(body);
+  },
+
+  /**
    * Unsigned calldata that creates an advanced order (limit, stop, TWAP, GTC,
    * IOC, post-only) on the deployed `TigerSwapAdvancedOrders` contract. The
    * caller's wallet signs it; the condition is evaluated on-chain against the

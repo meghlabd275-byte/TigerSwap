@@ -440,6 +440,55 @@ contract TigerSwapPerpOrderBookTest is Test {
         assertGt(book.unpaidProfits(BTC), 0, "unpaid profit recorded");
     }
 
+    function testDeferredProfitIsPaidWhenLiquidityReturns() public {
+        book.removeLiquidity(BTC, book.poolLiquidity(BTC));
+        _openPosition(alice, 1e18, true);
+        _deposit(bob, 10_000e18);
+        book.updatePrice(BTC, 61_000e18, 61_000e18);
+        _place(bob, 1e18, 61_000e18, true, 0, false);
+        _place(alice, 1e18, 61_000e18, false, 0, true); // alice closes at +1k
+
+        uint256 owed = book.unpaidProfits(BTC);
+        assertGt(owed, 0, "profit deferred, not lost");
+
+        // An LP funds the pool, then alice claims what she was owed.
+        book.addLiquidity(BTC, owed * 3);
+        uint256 before = book.balances(BTC, alice);
+        vm.prank(alice);
+        uint256 paid = book.claimUnpaid(BTC);
+        assertGt(paid, 0, "deferred profit paid");
+        assertEq(book.balances(BTC, alice), before + paid, "balance credited");
+        assertLt(book.unpaidProfits(BTC), owed, "obligation reduced");
+    }
+
+    function testClaimUnpaidRejectsNothingOwed() public {
+        _deposit(alice, 1_000e18);
+        vm.prank(alice);
+        vm.expectRevert(bytes("TigerSwap: NOTHING_OWED"));
+        book.claimUnpaid(BTC);
+    }
+
+    function testClaimUnpaidPaysFromLaterFees() public {
+        book.removeLiquidity(BTC, book.poolLiquidity(BTC));
+        _openPosition(alice, 1e18, true);
+        _deposit(bob, 10_000e18);
+        book.updatePrice(BTC, 61_000e18, 61_000e18);
+        _place(bob, 1e18, 61_000e18, true, 0, false);
+        _place(alice, 1e18, 61_000e18, false, 0, true);
+        uint256 owed = book.unpaidProfits(BTC);
+        assertGt(owed, 0, "profit deferred");
+
+        // Another trader's round trip pays fees into the pool, which the
+        // creditor can then draw on.
+        _deposit(carol, 10_000e18);
+        _place(carol, 1e18, 61_000e18, true, 1, false);
+        _place(carol, 1e18, 61_000e18, false, 1, false);
+
+        vm.prank(alice);
+        uint256 paid = book.claimUnpaid(BTC);
+        assertGt(paid, 0, "paid from later fees");
+    }
+
     // ---- Funding ----
 
     function testFundingChargesLongs() public {

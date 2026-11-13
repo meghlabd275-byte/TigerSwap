@@ -779,6 +779,7 @@ const SERVER_PERP_BOOK_POSITIONS = [
     margin: "5000000000000000000",
     unrealized_pnl: "-250000000000000000",
     equity: "4750000000000000000",
+    unpaid_credit: "300000000000000000",
   },
 ];
 
@@ -791,6 +792,7 @@ test("live /onchain/perp-book/positions payload satisfies perpBookPositionListVa
   assert.equal(positions.length, 1);
   assert.equal(positions[0].side, "long");
   assert.equal(positions[0].unrealized_pnl, "-250000000000000000");
+  assert.equal(positions[0].unpaid_credit, "300000000000000000");
 });
 
 const SERVER_PERP_BOOK_ORDERS = {

@@ -237,6 +237,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.POST("/onchain/perp-book/liquidity/add", tradingGate(deps.onChainPerpBook.BuildAddLiquidityHandler))
 				protected.POST("/onchain/perp-book/liquidity/remove", tradingGate(deps.onChainPerpBook.BuildRemoveLiquidityHandler))
 				protected.POST("/onchain/perp-book/insurance", tradingGate(deps.onChainPerpBook.BuildDepositInsuranceHandler))
+				protected.POST("/onchain/perp-book/claim", tradingGate(deps.onChainPerpBook.BuildClaimUnpaidHandler))
 			}
 
 			// Liquidity pool read routes
