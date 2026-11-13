@@ -46,6 +46,7 @@ type apiDeps struct {
 	nftService         *services.NFTMarketplaceService
 	analyticsService   *services.AnalyticsService
 	portfolioService   *services.PortfolioService
+	platformGate       *services.PlatformGate
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -133,6 +134,23 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		// Protected routes
 		protected := v1.Group("")
 		protected.Use(middleware.AuthRequired(deps.authService))
+
+		// Trading and withdrawal switches are enforced here, on the mutating
+		// routes, rather than on reads: an operator halting trading must not make
+		// the portfolio or position views unreachable.
+		tradingGate := func(h gin.HandlerFunc) gin.HandlerFunc {
+			if deps.platformGate == nil {
+				return h
+			}
+			gate := deps.platformGate.RequireTrading()
+			return func(c *gin.Context) {
+				gate(c)
+				if c.IsAborted() {
+					return
+				}
+				h(c)
+			}
+		}
 		{
 			// User routes
 			protected.GET("/user/profile", deps.authService.GetProfile)
@@ -148,40 +166,40 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/wallet/disconnect", deps.authService.DisconnectWallet)
 
 			// Swap routes
-			protected.POST("/swap/execute", deps.swapService.ExecuteSwap)
+			protected.POST("/swap/execute", tradingGate(deps.swapService.ExecuteSwap))
 			protected.POST("/swap/approve", deps.swapService.ApproveToken)
 
 			// Order routes
-			protected.POST("/orders/create", deps.swapService.CreateOrder)
+			protected.POST("/orders/create", tradingGate(deps.swapService.CreateOrder))
 			protected.GET("/orders", deps.swapService.GetOrders)
-			protected.DELETE("/orders/:id", deps.swapService.CancelOrder)
+			protected.DELETE("/orders/:id", tradingGate(deps.swapService.CancelOrder))
 
 			// Liquidity routes
-			protected.POST("/liquidity/add", deps.swapService.AddLiquidity)
-			protected.POST("/liquidity/remove", deps.swapService.RemoveLiquidity)
+			protected.POST("/liquidity/add", tradingGate(deps.swapService.AddLiquidity))
+			protected.POST("/liquidity/remove", tradingGate(deps.swapService.RemoveLiquidity))
 			protected.GET("/liquidity/positions", deps.swapService.GetPositions)
 
 			// Copy trading routes (follower is the authenticated user)
 			protected.POST("/copy-trading/traders", deps.copyTradingEngine.RegisterTraderHandler)
-			protected.POST("/copy-trading/follow", deps.copyTradingEngine.StartFollowingHandler)
-			protected.DELETE("/copy-trading/follow", deps.copyTradingEngine.StopFollowingHandler)
+			protected.POST("/copy-trading/follow", tradingGate(deps.copyTradingEngine.StartFollowingHandler))
+			protected.DELETE("/copy-trading/follow", tradingGate(deps.copyTradingEngine.StopFollowingHandler))
 			protected.GET("/copy-trading/positions", deps.copyTradingEngine.GetPositionsHandler)
-			protected.DELETE("/copy-trading/positions/:id", deps.copyTradingEngine.ClosePositionHandler)
+			protected.DELETE("/copy-trading/positions/:id", tradingGate(deps.copyTradingEngine.ClosePositionHandler))
 
 			// Perpetual engine routes
-			protected.POST("/perpetual/open", deps.perpetualEngine.OpenPositionHandler)
-			protected.DELETE("/perpetual/positions/:id", deps.perpetualEngine.ClosePositionHandler)
+			protected.POST("/perpetual/open", tradingGate(deps.perpetualEngine.OpenPositionHandler))
+			protected.DELETE("/perpetual/positions/:id", tradingGate(deps.perpetualEngine.ClosePositionHandler))
 			protected.GET("/perpetual/positions", deps.perpetualEngine.GetPositionsHandler)
 
 			// Spot margin: accounts, collateral, borrow/repay.
-			protected.POST("/margin/accounts", deps.marginEngine.OpenMarginAccountHandler)
+			protected.POST("/margin/accounts", tradingGate(deps.marginEngine.OpenMarginAccountHandler))
 			protected.GET("/margin/accounts/:id", deps.marginEngine.GetMarginAccountHandler)
-			protected.POST("/margin/collateral", deps.marginEngine.DepositMarginCollateralHandler)
-			protected.POST("/margin/borrow", deps.marginEngine.BorrowMarginHandler)
-			protected.POST("/margin/repay", deps.marginEngine.RepayMarginHandler)
-			protected.POST("/perpetual/orders", deps.perpetualEngine.CreateOrderHandler)
+			protected.POST("/margin/collateral", tradingGate(deps.marginEngine.DepositMarginCollateralHandler))
+			protected.POST("/margin/borrow", tradingGate(deps.marginEngine.BorrowMarginHandler))
+			protected.POST("/margin/repay", tradingGate(deps.marginEngine.RepayMarginHandler))
+			protected.POST("/perpetual/orders", tradingGate(deps.perpetualEngine.CreateOrderHandler))
 			protected.GET("/perpetual/orders", deps.perpetualEngine.GetOrdersHandler)
-			protected.DELETE("/perpetual/orders/:id", deps.perpetualEngine.CancelOrderHandler)
+			protected.DELETE("/perpetual/orders/:id", tradingGate(deps.perpetualEngine.CancelOrderHandler))
 
 			// On-chain perpetuals: the deployed TigerSwapPerpetuals contract is the
 			// settlement layer. Order-building endpoints return unsigned calldata the
@@ -189,11 +207,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			if deps.onChainPerps != nil {
 				protected.GET("/onchain/perps/positions", deps.onChainPerps.PositionsHandler)
 				protected.GET("/onchain/perps/positions/:id", deps.onChainPerps.PositionHandler)
-				protected.POST("/onchain/perps/open", deps.onChainPerps.BuildOpenPositionHandler)
-				protected.POST("/onchain/perps/positions/:id/close", deps.onChainPerps.BuildClosePositionHandler)
-				protected.POST("/onchain/perps/margin/add", deps.onChainPerps.BuildAddMarginHandler)
-				protected.POST("/onchain/perps/margin/remove", deps.onChainPerps.BuildRemoveMarginHandler)
-				protected.POST("/onchain/perps/liquidity", deps.onChainPerps.BuildLiquidityHandler)
+				protected.POST("/onchain/perps/open", tradingGate(deps.onChainPerps.BuildOpenPositionHandler))
+				protected.POST("/onchain/perps/positions/:id/close", tradingGate(deps.onChainPerps.BuildClosePositionHandler))
+				protected.POST("/onchain/perps/margin/add", tradingGate(deps.onChainPerps.BuildAddMarginHandler))
+				protected.POST("/onchain/perps/margin/remove", tradingGate(deps.onChainPerps.BuildRemoveMarginHandler))
+				protected.POST("/onchain/perps/liquidity", tradingGate(deps.onChainPerps.BuildLiquidityHandler))
 			}
 
 			// Liquidity pool read routes
@@ -202,88 +220,88 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 			// Bridge routes
 			protected.POST("/bridge/quote", deps.bridgeService.GetQuoteHandler)
-			protected.POST("/bridge/transfer", deps.bridgeService.InitiateTransferHandler)
+			protected.POST("/bridge/transfer", tradingGate(deps.bridgeService.InitiateTransferHandler))
 			protected.GET("/bridge/transfers", deps.bridgeService.GetUserTransfersHandler)
 			protected.GET("/bridge/transfers/:id", deps.bridgeService.GetTransferHandler)
 
 			// Launchpad routes
 			protected.POST("/launchpad/projects", deps.launchpadService.CreateProjectHandler)
-			protected.POST("/launchpad/projects/:id/participate", deps.launchpadService.ParticipateHandler)
-			protected.POST("/launchpad/projects/:id/claim", deps.launchpadService.ClaimTokensHandler)
+			protected.POST("/launchpad/projects/:id/participate", tradingGate(deps.launchpadService.ParticipateHandler))
+			protected.POST("/launchpad/projects/:id/claim", tradingGate(deps.launchpadService.ClaimTokensHandler))
 
 			// Wallet custody routes (only when a wallet encryption key is set)
 			if deps.walletService != nil {
 				protected.POST("/wallet/master/create", deps.walletService.CreateMasterWallet)
 				protected.GET("/wallet/master", deps.walletService.GetMasterWallet)
 				protected.GET("/wallet/balances", deps.walletService.GetBalances)
-				protected.POST("/wallet/autosign", deps.walletService.AutoSignTransaction)
-				protected.POST("/wallet/deposit", deps.walletService.Deposit)
-				protected.POST("/wallet/withdraw", deps.walletService.Withdraw)
-				protected.POST("/wallet/swap", deps.walletService.ExecuteSwap)
+				protected.POST("/wallet/autosign", tradingGate(deps.walletService.AutoSignTransaction))
+				protected.POST("/wallet/deposit", deps.platformGate.RequireDeposits(), deps.walletService.Deposit)
+				protected.POST("/wallet/withdraw", deps.platformGate.RequireWithdrawals(), deps.walletService.Withdraw)
+				protected.POST("/wallet/swap", tradingGate(deps.walletService.ExecuteSwap))
 				protected.POST("/wallet/swap/quote", deps.walletService.GetSwapQuote)
-				protected.POST("/wallet/perpetual/open", deps.walletService.CreatePerpetualPosition)
-				protected.POST("/wallet/perpetual/close", deps.walletService.ClosePerpetualPosition)
+				protected.POST("/wallet/perpetual/open", tradingGate(deps.walletService.CreatePerpetualPosition))
+				protected.POST("/wallet/perpetual/close", tradingGate(deps.walletService.ClosePerpetualPosition))
 				protected.GET("/wallet/perpetual/positions", deps.walletService.GetPerpetualPositions)
-				protected.POST("/wallet/copy-trade", deps.walletService.CreateCopyTrade)
+				protected.POST("/wallet/copy-trade", tradingGate(deps.walletService.CreateCopyTrade))
 				protected.GET("/wallet/copy-trades", deps.walletService.GetCopyTrades)
 			}
 
 			// Governance routes: veTGR locks, gauge voting and the bribe market
-			protected.POST("/governance/locks", deps.governanceService.CreateLock)
+			protected.POST("/governance/locks", tradingGate(deps.governanceService.CreateLock))
 			protected.GET("/governance/locks", deps.governanceService.GetLocks)
 			protected.POST("/governance/locks/:id/withdraw", deps.governanceService.WithdrawLock)
 			protected.GET("/governance/gauges", deps.governanceService.GetGauges)
-			protected.POST("/governance/vote", deps.governanceService.Vote)
-			protected.POST("/governance/bribes", deps.governanceService.AddBribe)
+			protected.POST("/governance/vote", tradingGate(deps.governanceService.Vote))
+			protected.POST("/governance/bribes", tradingGate(deps.governanceService.AddBribe))
 			protected.GET("/governance/bribes", deps.governanceService.GetBribes)
 			protected.POST("/governance/bribes/:id/claim", deps.governanceService.ClaimBribe)
 			protected.GET("/governance/boost", deps.governanceService.GetBoost)
 
 			// OTC private block trades. The caller is always the maker or the
 			// taker; identity comes from the token, never the body.
-			protected.POST("/otc/orders", deps.otcService.CreateOrder)
+			protected.POST("/otc/orders", tradingGate(deps.otcService.CreateOrder))
 			protected.GET("/otc/orders", deps.otcService.ListOrders)
 			protected.GET("/otc/orders/open", deps.otcService.ListOpenOrders)
 			protected.POST("/otc/orders/:id/take", deps.otcService.TakeOrder)
-			protected.DELETE("/otc/orders/:id", deps.otcService.CancelOrder)
+			protected.DELETE("/otc/orders/:id", tradingGate(deps.otcService.CancelOrder))
 
 			// TWAMM schedules: large orders sliced over time to remove the
 			// single transaction a sandwich attack needs.
-			protected.POST("/twamm/orders", deps.twammService.CreateOrder)
+			protected.POST("/twamm/orders", tradingGate(deps.twammService.CreateOrder))
 			protected.GET("/twamm/orders", deps.twammService.ListOrders)
-			protected.DELETE("/twamm/orders/:id", deps.twammService.CancelOrder)
+			protected.DELETE("/twamm/orders/:id", tradingGate(deps.twammService.CancelOrder))
 
 			// Trading bots: each strategy is an engine in the Rust bots crate.
-			protected.POST("/bots", deps.botsService.CreateBot)
+			protected.POST("/bots", tradingGate(deps.botsService.CreateBot))
 			protected.GET("/bots", deps.botsService.ListBots)
 			protected.GET("/bots/summary", deps.botsService.BotsSummary)
 			protected.GET("/bots/strategies", deps.botsService.AvailableStrategies)
 			protected.GET("/bots/:id", deps.botsService.GetBot)
 			protected.PUT("/bots/:id/status", deps.botsService.UpdateBotStatus)
-			protected.DELETE("/bots/:id", deps.botsService.DeleteBot)
+			protected.DELETE("/bots/:id", tradingGate(deps.botsService.DeleteBot))
 			protected.GET("/bots/:id/orders", deps.botsService.ListBotOrders)
 			protected.GET("/bots/:id/performance", deps.botsService.BotPerformanceSummary)
 
 			// Farms: stake a token and earn one or more reward streams. A stake
 			// escrows a real ledger balance and rewards are funded before they can
 			// be claimed.
-			protected.POST("/farms/:id/stake", deps.farmService.Stake)
-			protected.POST("/farms/:id/unstake", deps.farmService.Unstake)
-			protected.POST("/farms/:id/claim", deps.farmService.Claim)
-			protected.POST("/farms/:id/fund", deps.farmService.FundFarmReward)
+			protected.POST("/farms/:id/stake", tradingGate(deps.farmService.Stake))
+			protected.POST("/farms/:id/unstake", tradingGate(deps.farmService.Unstake))
+			protected.POST("/farms/:id/claim", tradingGate(deps.farmService.Claim))
+			protected.POST("/farms/:id/fund", tradingGate(deps.farmService.FundFarmReward))
 			protected.GET("/farms/stakes", deps.farmService.GetStakes)
 
 			// Airdrops: an admin allocates and funds, the user claims.
-			protected.POST("/airdrops/:id/claim", deps.airdropService.ClaimAirdrop)
+			protected.POST("/airdrops/:id/claim", tradingGate(deps.airdropService.ClaimAirdrop))
 			protected.GET("/airdrops/allocations", deps.airdropService.GetMyAllocations)
 
 			// Options: buy a long position, provide or withdraw series liquidity,
 			// and exercise a settled position. Every leg moves a real ledger
 			// balance, and a series can only pay out what it holds.
-			protected.POST("/options/series/:id/buy", deps.optionService.Buy)
-			protected.POST("/options/series/:id/collateral", deps.optionService.AddCollateral)
-			protected.POST("/options/series/:id/collateral/remove", deps.optionService.RemoveCollateral)
-			protected.POST("/options/series/:id/exercise", deps.optionService.Exercise)
+			protected.POST("/options/series/:id/buy", tradingGate(deps.optionService.Buy))
+			protected.POST("/options/series/:id/collateral", tradingGate(deps.optionService.AddCollateral))
+			protected.POST("/options/series/:id/collateral/remove", tradingGate(deps.optionService.RemoveCollateral))
+			protected.POST("/options/series/:id/exercise", tradingGate(deps.optionService.Exercise))
 			protected.POST("/options/series/:id/withdraw", deps.optionService.WithdrawLiquidity)
 			protected.GET("/options/positions", deps.optionService.GetMyPositions)
 

@@ -817,6 +817,15 @@ type AuthService struct {
 	jwtSecret    []byte
 	accessExpiry time.Duration
 	revocations  *revocationStore
+	// gate enforces the operator's registration switch; a nil gate leaves
+	// registration open, which is the behaviour before the switch existed.
+	gate *PlatformGate
+}
+
+// SetPlatformGate wires the runtime-switch cache so the registration toggle is
+// enforced on the public register endpoint.
+func (s *AuthService) SetPlatformGate(gate *PlatformGate) {
+	s.gate = gate
 }
 
 // minJWTSecretLength is the shortest HS256 secret accepted at startup. A short
@@ -915,6 +924,11 @@ func validateUsername(raw string) (string, error) {
 }
 
 func (s *AuthService) Register(c *gin.Context) {
+	if s.gate != nil && !s.gate.RegistrationAllowed() {
+		c.JSON(http.StatusForbidden, gin.H{"error": "registration is currently closed"})
+		return
+	}
+
 	var req struct {
 		Email    string `json:"email" binding:"required,email"`
 		Password string `json:"password" binding:"required,min=8"`
@@ -1214,10 +1228,19 @@ type AdminService struct {
 	// deactivate re-registers the stored endpoints so the change takes effect
 	// without a restart.
 	chainRPCs *BlockchainClient
+	// gate mirrors the platform switches into a cache the trading paths read, so
+	// an admin change here invalidates it and takes effect at once.
+	gate *PlatformGate
 }
 
 func NewAdminService(db *gorm.DB) *AdminService {
 	return &AdminService{db: db}
+}
+
+// SetPlatformGate wires the runtime-switch cache so an admin write invalidates
+// it and a halt is enforced on the next request rather than after the TTL.
+func (s *AdminService) SetPlatformGate(gate *PlatformGate) {
+	s.gate = gate
 }
 
 // SetBlockchainClient attaches the live on-chain client so chain RPC changes
@@ -1882,6 +1905,9 @@ func (s *AdminService) UpdateConfig(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to persist settings"})
 		return
 	}
+	if s.gate != nil {
+		s.gate.Invalidate()
+	}
 
 	s.logAdminAction(c, "update_config", "system", settings.Key, nil)
 	c.JSON(http.StatusOK, settings)
@@ -1937,7 +1963,13 @@ func (s *AdminService) setMaintenance(enabled bool) error {
 		return err
 	}
 	settings.MaintenanceMode = enabled
-	return s.db.Save(settings).Error
+	if err := s.db.Save(settings).Error; err != nil {
+		return err
+	}
+	if s.gate != nil {
+		s.gate.Invalidate()
+	}
+	return nil
 }
 
 // logAdminAction records an immutable audit entry for a privileged action.

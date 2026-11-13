@@ -157,6 +157,9 @@ func main() {
 	authService := services.NewAuthService(db)
 	adminService := services.NewAdminService(db)
 	adminService.SetAuthService(authService)
+	platformGate := services.NewPlatformGate(db)
+	adminService.SetPlatformGate(platformGate)
+	authService.SetPlatformGate(platformGate)
 	listingService := services.NewListingService(db)
 	governanceService := services.NewGovernanceService(db)
 
@@ -306,6 +309,9 @@ func main() {
 	services.StartMarketFeed(realtimeCtx, priceAggregator, services.DefaultMarketFeedInterval)
 	services.StartPositionMaintenance(realtimeCtx, perpetualEngine, copyTradingEngine, services.DefaultPositionRefreshInterval)
 	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
+	// Reconcile pending withdrawals against their on-chain receipt so a reverted
+	// transaction reverses the debit instead of leaving the user charged forever.
+	services.StartWithdrawalReconciler(realtimeCtx, db, blockchainClient, ledgerService, services.DefaultWithdrawalReconcileInterval)
 	// Index on-chain perp events and liquidate unhealthy positions. Started only
 	// when a deployment is configured; otherwise it is a no-op.
 	onChainPerps.Start(realtimeCtx)
@@ -357,6 +363,7 @@ func main() {
 		nftService:         nftService,
 		analyticsService:   analyticsService,
 		portfolioService:   portfolioService,
+		platformGate:       platformGate,
 	})
 
 	// Get port from environment or default
