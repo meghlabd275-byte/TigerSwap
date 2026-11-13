@@ -724,6 +724,15 @@ type AuthService struct {
 	// gate enforces the operator's registration switch; a nil gate leaves
 	// registration open, which is the behaviour before the switch existed.
 	gate *PlatformGate
+	// mailer delivers account-recovery mail. It is a disabled mailer when SMTP is
+	// not configured, and the recovery endpoints then report that they cannot
+	// send rather than pretending to.
+	mailer *Mailer
+}
+
+// SetMailer wires the transactional mailer for account recovery.
+func (s *AuthService) SetMailer(mailer *Mailer) {
+	s.mailer = mailer
 }
 
 // SetPlatformGate wires the runtime-switch cache so the registration toggle is
@@ -891,6 +900,10 @@ func (s *AuthService) Register(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "Failed to create user"})
 		return
 	}
+
+	// Send a verification link. A mail failure must not fail registration: the
+	// account exists and the user can request the link again from the profile.
+	s.sendVerificationEmail(&user)
 
 	// A signing failure must not hand the client a user record with an empty
 	// token: the client would treat the registration as successful and then fail

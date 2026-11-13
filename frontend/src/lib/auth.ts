@@ -200,6 +200,34 @@ export async function register(
   return login(email, password);
 }
 
+/** Requests a password-reset link. The server always answers 200. */
+export async function requestPasswordReset(email: string): Promise<void> {
+  await api.post("/auth/password/forgot", { email }, { authenticated: false });
+}
+
+/** Completes a password reset with the token from the email link. */
+export async function resetPassword(token: string, newPassword: string): Promise<void> {
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    throw new Error(passwordError);
+  }
+  await api.post(
+    "/auth/password/reset",
+    { token, new_password: newPassword },
+    { authenticated: false },
+  );
+}
+
+/** Completes email verification with the token from the email link. */
+export async function verifyEmail(token: string): Promise<void> {
+  await api.post("/auth/email/verify", { token }, { authenticated: false });
+}
+
+/** Asks the server to (re)send the verification link for the current account. */
+export async function requestEmailVerification(): Promise<void> {
+  await api.post("/user/email/verify");
+}
+
 export async function logout(): Promise<void> {
   try {
     await api.post("/auth/logout");

@@ -135,6 +135,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// guard and the signature is recovered and matched to the account.
 			auth.POST("/wallet/nonce", deps.authService.RequestWalletNonce)
 			auth.POST("/wallet/verify", deps.authService.VerifyWalletSignature)
+			// Account recovery. The reset request always answers 200 so it cannot
+			// be used to enumerate accounts; redemption is a single-use token.
+			auth.POST("/password/forgot", deps.authService.RequestPasswordReset)
+			auth.POST("/password/reset", deps.authService.ResetPassword)
+			auth.POST("/email/verify", deps.authService.VerifyEmail)
 		}
 
 		// Protected routes
@@ -168,6 +173,8 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/user/2fa/setup", deps.authService.SetupTOTP)
 			protected.POST("/user/2fa/confirm", deps.authService.ConfirmTOTP)
 			protected.POST("/user/2fa/disable", deps.authService.DisableTOTP)
+			// Ask for (or resend) an email-verification link.
+			protected.POST("/user/email/verify", deps.authService.RequestEmailVerification)
 			// Portfolio and transaction history. Both are served as camelCase
 			// DTOs from the caller's own ledger rows, so the frontend validators
 			// pass against the real server rather than a hand-written shape.

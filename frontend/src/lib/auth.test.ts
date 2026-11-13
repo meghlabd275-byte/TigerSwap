@@ -2,7 +2,18 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 
-import { getCurrentUser, isTOTPRequired, login, logout, register, validatePassword, validateUsername } from "./auth";
+import {
+  getCurrentUser,
+  isTOTPRequired,
+  login,
+  logout,
+  register,
+  requestPasswordReset,
+  resetPassword,
+  validatePassword,
+  validateUsername,
+  verifyEmail,
+} from "./auth";
 import { setSessionToken } from "./apiClient";
 
 let server: Server;
@@ -44,6 +55,21 @@ before(async () => {
         send(200, { token: "login-token", user: { id: "u1", email: body.email, role: "user" } });
       } else if (path.endsWith("/auth/logout")) {
         send(200, { ok: true });
+      } else if (path.endsWith("/auth/password/forgot")) {
+        // The server never reveals whether the address exists.
+        send(200, { message: "If that address has an account, a reset link has been sent." });
+      } else if (path.endsWith("/auth/password/reset")) {
+        if (body.token !== "valid-reset-token") {
+          send(400, { error: "token is invalid or has expired" });
+          return;
+        }
+        send(200, { message: "Your password has been reset." });
+      } else if (path.endsWith("/auth/email/verify")) {
+        if (body.token !== "valid-verify-token") {
+          send(400, { error: "token is invalid or has expired" });
+          return;
+        }
+        send(200, { verified: true });
       } else if (path.endsWith("/user/profile")) {
         send(200, { id: "u1", email: "trader@tigerswap.local", role: "user" });
       } else {
@@ -142,4 +168,40 @@ test("login sends the code on the second attempt and succeeds", async () => {
   assert.equal(attempt?.body.totp_code, "123456");
   assert.equal(attempt?.body.email, "two@tigerswap.local");
   setSessionToken(null);
+});
+
+test("requestPasswordReset posts the address and never leaks account existence", async () => {
+  requests.length = 0;
+  await requestPasswordReset("trader@tigerswap.local");
+  const attempt = requests.find((entry) => entry.path.endsWith("/auth/password/forgot"));
+  assert.ok(attempt, "the forgot request was not sent");
+  assert.equal(attempt.body.email, "trader@tigerswap.local");
+});
+
+test("resetPassword refuses a weak password before calling the server", async () => {
+  requests.length = 0;
+  await assert.rejects(() => resetPassword("valid-reset-token", "short1A"));
+  assert.equal(requests.length, 0, "no request should reach the server");
+});
+
+test("resetPassword sends the token and new password", async () => {
+  requests.length = 0;
+  await resetPassword("valid-reset-token", "Str0ng-Passw0rd!2026");
+  const attempt = requests.find((entry) => entry.path.endsWith("/auth/password/reset"));
+  assert.ok(attempt, "the reset request was not sent");
+  assert.equal(attempt.body.token, "valid-reset-token");
+  assert.equal(attempt.body.new_password, "Str0ng-Passw0rd!2026");
+});
+
+test("resetPassword surfaces a rejected token", async () => {
+  await assert.rejects(() => resetPassword("stale-token", "Str0ng-Passw0rd!2026"));
+});
+
+test("verifyEmail sends the token and reports a rejected one", async () => {
+  requests.length = 0;
+  await verifyEmail("valid-verify-token");
+  const attempt = requests.find((entry) => entry.path.endsWith("/auth/email/verify"));
+  assert.equal(attempt?.body.token, "valid-verify-token");
+
+  await assert.rejects(() => verifyEmail("stale-token"));
 });

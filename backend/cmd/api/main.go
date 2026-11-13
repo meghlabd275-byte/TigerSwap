@@ -149,6 +149,7 @@ func main() {
 		&models.OnChainBookFill{},
 		&models.WalletLoginNonce{},
 		&models.RefreshToken{},
+		&models.AccountToken{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -161,6 +162,7 @@ func main() {
 	tokenService := services.NewTokenService(db)
 	swapService := services.NewSwapService(db, redis)
 	authService := services.NewAuthService(db)
+	authService.SetMailer(services.NewMailer())
 	adminService := services.NewAdminService(db)
 	adminService.SetAuthService(authService)
 	platformGate := services.NewPlatformGate(db)

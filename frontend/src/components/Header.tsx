@@ -117,6 +117,12 @@ export function Header() {
                     >
                       My Wallet
                     </Link>
+                    <Link
+                      href="/settings"
+                      className="block px-4 py-2 text-left text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+                    >
+                      Account settings
+                    </Link>
                     <button
                       onClick={() => void logout()}
                       className="w-full flex items-center space-x-2 px-4 py-2 text-left text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"

@@ -2,9 +2,9 @@
 
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
-import { login, logout, register, loginWithWallet, isTOTPRequired, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
+import { login, logout, register, loginWithWallet, isTOTPRequired, requestPasswordReset, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
 
-type Mode = 'signin' | 'register';
+type Mode = 'signin' | 'register' | 'forgot';
 
 /**
  * Email/password sign-in and registration.
@@ -23,15 +23,31 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const [totpNeeded, setTotpNeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const submit = async () => {
     setError(null);
+    setNotice(null);
 
     const emailError = validateEmail(email);
     if (emailError) {
       setError(emailError);
       return;
     }
+
+    if (mode === 'forgot') {
+      setBusy(true);
+      try {
+        await requestPasswordReset(email);
+        setNotice('If that address has an account, a reset link has been sent.');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not send the reset link');
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+
     const passwordError = validatePassword(password);
     if (passwordError) {
       setError(passwordError);
@@ -73,12 +89,14 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
         <div className="flex items-start justify-between mb-4">
           <div>
             <h2 className="text-xl font-display font-bold text-white">
-              {mode === 'signin' ? 'Sign in' : 'Create account'}
+              {mode === 'signin' ? 'Sign in' : mode === 'register' ? 'Create account' : 'Reset password'}
             </h2>
             <p className="text-sm text-gray-500 mt-1">
               {mode === 'signin'
                 ? 'Use the email and password on your TigerSwap account.'
-                : 'Your password is never stored in the browser.'}
+                : mode === 'register'
+                  ? 'Your password is never stored in the browser.'
+                  : 'We will email you a single-use link to set a new password.'}
             </p>
           </div>
           <button onClick={onClose} className="p-1 text-gray-400 hover:text-white" aria-label="Close">
@@ -117,21 +135,23 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
-          <div>
-            <label className="text-gray-400 text-sm mb-1 block">Password</label>
-            <input
-              type="password"
-              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
-            />
-            {mode === 'register' && (
-              <p className="text-xs text-gray-500 mt-1">
-                At least 12 characters, with upper and lower case and a digit.
-              </p>
-            )}
-          </div>
+          {mode !== 'forgot' && (
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Password</label>
+              <input
+                type="password"
+                autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-tiger-orange"
+              />
+              {mode === 'register' && (
+                <p className="text-xs text-gray-500 mt-1">
+                  At least 12 characters, with upper and lower case and a digit.
+                </p>
+              )}
+            </div>
+          )}
 
           {mode === 'signin' && totpNeeded && (
             <div>
@@ -149,7 +169,22 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
+          {notice && <p className="text-green-400 text-sm">{notice}</p>}
           {error && <p className="text-red-400 text-sm">{error}</p>}
+
+          {mode === 'signin' && (
+            <button
+              type="button"
+              onClick={() => {
+                setMode('forgot');
+                setError(null);
+                setNotice(null);
+              }}
+              className="text-sm text-gray-400 hover:text-white text-left"
+            >
+              Forgot password?
+            </button>
+          )}
 
           <button
             type="submit"
@@ -157,42 +192,51 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-gradient-to-r from-tiger-orange to-tiger-accent rounded-xl text-white font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
           >
             {busy && <Loader2 className="w-4 h-4 animate-spin" />}
-            <span>{mode === 'signin' ? 'Sign in' : 'Create account'}</span>
+            <span>
+              {mode === 'signin' ? 'Sign in' : mode === 'register' ? 'Create account' : 'Send reset link'}
+            </span>
           </button>
         </form>
 
-        <div className="flex items-center gap-3 my-4">
-          <div className="h-px flex-1 bg-white/10" />
-          <span className="text-xs text-gray-500">or</span>
-          <div className="h-px flex-1 bg-white/10" />
-        </div>
+        {mode !== 'forgot' && (
+          <>
+            <div className="flex items-center gap-3 my-4">
+              <div className="h-px flex-1 bg-white/10" />
+              <span className="text-xs text-gray-500">or</span>
+              <div className="h-px flex-1 bg-white/10" />
+            </div>
 
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            setError(null);
-            setBusy(true);
-            void loginWithWallet()
-              .then(() => onClose())
-              .catch((err) => setError(err instanceof Error ? err.message : 'Wallet sign-in failed'))
-              .finally(() => setBusy(false));
-          }}
-          className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white font-semibold hover:bg-white/10 transition-colors disabled:opacity-50"
-        >
-          <span>Sign in with wallet</span>
-        </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                setBusy(true);
+                void loginWithWallet()
+                  .then(() => onClose())
+                  .catch((err) => setError(err instanceof Error ? err.message : 'Wallet sign-in failed'))
+                  .finally(() => setBusy(false));
+              }}
+              className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white font-semibold hover:bg-white/10 transition-colors disabled:opacity-50"
+            >
+              <span>Sign in with wallet</span>
+            </button>
+          </>
+        )}
 
         <button
           onClick={() => {
             setMode(mode === 'signin' ? 'register' : 'signin');
             setError(null);
+            setNotice(null);
           }}
           className="w-full text-center text-sm text-gray-400 hover:text-white mt-4"
         >
           {mode === 'signin'
             ? 'No account? Create one'
-            : 'Already have an account? Sign in'}
+            : mode === 'register'
+              ? 'Already have an account? Sign in'
+              : 'Back to sign in'}
         </button>
       </div>
     </div>
