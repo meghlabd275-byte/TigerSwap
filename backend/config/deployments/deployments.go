@@ -77,11 +77,29 @@ var Dir = func() string {
 	return "deployments"
 }()
 
+// resolveDir returns the directory to read, falling back to the repository
+// layout the deploy script writes into. The script runs from `contracts/`, so it
+// emits `contracts/deployments/<id>.json`; a server started from `backend/` would
+// otherwise look in the wrong place. An explicit TIGERSWAP_DEPLOYMENTS_DIR always
+// wins, and a caller that set Dir directly is honoured as-is.
+func resolveDir() string {
+	if strings.TrimSpace(os.Getenv("TIGERSWAP_DEPLOYMENTS_DIR")) != "" {
+		return Dir
+	}
+	candidates := []string{Dir, filepath.Join("contracts", "deployments"), filepath.Join("..", "contracts", "deployments")}
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && info.IsDir() {
+			return c
+		}
+	}
+	return Dir
+}
+
 // Load reads the registry for one chain id. A missing file is reported as
 // os.ErrNotExist so a caller can distinguish "this chain is not deployed here"
 // from "the registry is corrupt".
 func Load(chainID int64) (Registry, error) {
-	path := filepath.Join(Dir, strconv.FormatInt(chainID, 10)+".json")
+	path := filepath.Join(resolveDir(), strconv.FormatInt(chainID, 10)+".json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Registry{}, err
@@ -100,7 +118,7 @@ func Load(chainID int64) (Registry, error) {
 // LoadAll reads every `<chainId>.json` in Dir. A malformed file is an error, not
 // a silently skipped chain, so a bad deploy cannot leave a chain half-registered.
 func LoadAll() ([]Registry, error) {
-	entries, err := os.ReadDir(Dir)
+	entries, err := os.ReadDir(resolveDir())
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil

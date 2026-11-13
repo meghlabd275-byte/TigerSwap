@@ -772,4 +772,47 @@ contract TigerSwapPerpetualsTest is Test {
         // The reserve accounting must still be consistent.
         assertGe(perps.freeLiquidity(address(rusd)), 0, "free liquidity never negative");
     }
+
+    /// @dev Adding margin settles accrued funding first. Without that, a deposit
+    ///      would reset lastUpdated and silently forgive the funding the position
+    ///      already owed.
+    function testAddMarginSettlesAccruedFundingFirst() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
+
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 100, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE);
+        vm.warp(block.timestamp + 1 hours);
+
+        uint256 poolBefore = perps.poolLiquidity(address(rusd));
+        vm.prank(trader);
+        perps.addMargin(id, 1_000e18);
+
+        // The 600e18 owed at the moment of deposit is collected before the new
+        // margin lands; the deposit itself does not enter poolLiquidity.
+        assertEq(
+            perps.poolLiquidity(address(rusd)),
+            poolBefore + 600e18,
+            "accrued funding is collected on deposit"
+        );
+        (, , , uint256 collateral, , , ) = perps.getPosition(id);
+        assertEq(collateral, 100_000e18 - 600e18 + 1_000e18, "collateral nets funding then adds margin");
+    }
+
+    /// @dev Removing margin measures the remaining margin against post-funding
+    ///      collateral, so a withdrawal cannot escape funding the position owes.
+    function testRemoveMarginAccountsForAccruedFunding() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
+
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 100, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE);
+        vm.warp(block.timestamp + 1 hours);
+
+        vm.prank(trader);
+        perps.removeMargin(id, 1_000e18);
+
+        (, , , uint256 collateral, , , ) = perps.getPosition(id);
+        assertEq(collateral, 100_000e18 - 600e18 - 1_000e18, "funding is settled before the withdrawal");
+    }
 }

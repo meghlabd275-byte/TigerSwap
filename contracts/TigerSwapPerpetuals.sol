@@ -560,6 +560,9 @@ contract TigerSwapPerpetuals {
         address token = markets[marketId].token;
 
         require(TigerSwapSafeERC20.safeTransferFrom(token, msg.sender, address(this), amount), "TigerSwap: TRANSFER_FAILED");
+        // Settle accrued funding before the new deposit, so adding margin does
+        // not retroactively forgive funding the position already owed.
+        _applyFunding(position, marketId);
         position.collateral += amount;
         position.lastUpdated = block.timestamp;
     }
@@ -573,6 +576,11 @@ contract TigerSwapPerpetuals {
         bytes32 marketId = position.marketId;
         Market storage market = markets[marketId];
         uint256 currentPrice = getMarkPrice(marketId);
+
+        // Settle accrued funding first, so margin is measured against the
+        // position's real collateral rather than a pre-funding figure.
+        _applyFunding(position, marketId);
+        require(amount < position.collateral, "TigerSwap: INVALID_AMOUNT");
 
         uint256 newCollateral = position.collateral - amount;
         uint256 notional = position.size * position.entryPrice / PRICE_PRECISION;
