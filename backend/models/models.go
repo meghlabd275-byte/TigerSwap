@@ -202,20 +202,24 @@ func (a *APIKey) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// Webhook represents webhooks for notifications
+// Webhook represents webhooks for notifications. The signing secret is stored
+// encrypted (AES-256-GCM under WALLET_ENCRYPTION_KEY); it is never serialised,
+// so a client cannot read back the value it must use to verify a signature.
 type Webhook struct {
-	ID          uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
-	UserID      uuid.UUID      `gorm:"type:uuid;index" json:"user_id"`
-	URL         string         `gorm:"size:500" json:"url"`
-	Events      string         `gorm:"type:jsonb" json:"events"` // swap_completed, order_filled, etc.
-	Secret      string         `gorm:"size:64" json:"secret"`
-	IsActive    bool           `gorm:"default:true" json:"is_active"`
-	RetryCount  int            `gorm:"default:3" json:"retry_count"`
-	LastSuccess *time.Time     `json:"last_success"`
-	LastFailure *time.Time     `json:"last_failure"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
-	DeletedAt   gorm.DeletedAt `gorm:"index" json:"-"`
+	ID     uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID string    `gorm:"index;size:100" json:"user_id"`
+	URL    string    `gorm:"size:500" json:"url"`
+	// Events is a comma-separated list of subscribed event names, or "*" for all.
+	Events string `gorm:"size:255" json:"events"`
+	// SecretEncrypted holds the hex-encoded AES-256-GCM ciphertext of the signing
+	// secret. It is never sent to a client.
+	SecretEncrypted string         `gorm:"size:255" json:"-"`
+	IsActive        bool           `gorm:"default:true" json:"is_active"`
+	LastSuccess     *time.Time     `json:"last_success"`
+	LastFailure     *time.Time     `json:"last_failure"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	DeletedAt       gorm.DeletedAt `gorm:"index" json:"-"`
 }
 
 func (w *Webhook) BeforeCreate(tx *gorm.DB) error {

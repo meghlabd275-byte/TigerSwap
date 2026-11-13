@@ -174,6 +174,8 @@ func main() {
 		&models.SanctionsEntry{},
 		&models.ComplianceSettings{},
 		&models.DeveloperAPIKey{},
+		&models.Webhook{},
+		&models.WebhookDelivery{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -197,6 +199,7 @@ func main() {
 	// withdraw and a screened destination or jurisdiction is refused.
 	complianceService := services.NewComplianceService(db)
 	apiKeyService := services.NewAPIKeyService(db)
+	webhookService := services.NewWebhookService(db)
 	listingService := services.NewListingService(db)
 	governanceService := services.NewGovernanceService(db)
 
@@ -406,6 +409,7 @@ func main() {
 	// Credit user balances from confirmed on-chain deposits. The watcher owns
 	// the only path that creates platform credit.
 	depositWatcher := services.NewDepositWatcher(db, blockchainClient, ledgerService)
+	depositWatcher.SetWebhooks(webhookService)
 	depositCtx, stopDepositWatcher := context.WithCancel(context.Background())
 	defer stopDepositWatcher()
 	if err := depositWatcher.Start(depositCtx, depositWatcherChains()); err != nil {
@@ -423,7 +427,7 @@ func main() {
 	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
 	// Reconcile pending withdrawals against their on-chain receipt so a reverted
 	// transaction reverses the debit instead of leaving the user charged forever.
-	services.StartWithdrawalReconciler(realtimeCtx, db, blockchainClient, ledgerService, services.DefaultWithdrawalReconcileInterval)
+	services.StartWithdrawalReconciler(realtimeCtx, db, blockchainClient, ledgerService, webhookService, services.DefaultWithdrawalReconcileInterval)
 	// Index on-chain perp events and liquidate unhealthy positions. Started only
 	// when a deployment is configured; otherwise it is a no-op.
 	onChainPerps.Start(realtimeCtx)
@@ -433,6 +437,8 @@ func main() {
 	onChainOrders.Start(realtimeCtx)
 	onChainPerpBook.Start(realtimeCtx)
 	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
+	// Deliver queued webhook events to subscribers with bounded retries.
+	services.StartWebhookDispatcher(realtimeCtx, webhookService, services.DefaultWebhookDispatchInterval)
 
 	// Drive every active bot against live market data. The Rust engine is the
 	// strategy layer; when the server is built without it the runner reports
@@ -513,6 +519,7 @@ func main() {
 		platformGate:       platformGate,
 		complianceService:  complianceService,
 		apiKeyService:      apiKeyService,
+		webhookService:     webhookService,
 		metrics:            metrics,
 	})
 

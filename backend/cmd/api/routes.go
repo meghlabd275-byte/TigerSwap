@@ -51,6 +51,7 @@ type apiDeps struct {
 	platformGate       *services.PlatformGate
 	complianceService  *services.ComplianceService
 	apiKeyService      *services.APIKeyService
+	webhookService     *services.WebhookService
 	metrics            *services.Metrics
 }
 
@@ -234,6 +235,16 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/developer/api-keys", deps.apiKeyService.ListAPIKeys)
 				protected.POST("/developer/api-keys", deps.apiKeyService.CreateAPIKey)
 				protected.DELETE("/developer/api-keys/:id", deps.apiKeyService.RevokeAPIKey)
+			}
+
+			// Outbound webhooks. A subscriber registers an endpoint and a set of
+			// events; the delivery queue is drained by the dispatcher with signed,
+			// retried POSTs.
+			if deps.webhookService != nil {
+				protected.GET("/developer/webhooks", deps.webhookService.ListWebhooks)
+				protected.POST("/developer/webhooks", deps.webhookService.CreateWebhook)
+				protected.PUT("/developer/webhooks/:id", deps.webhookService.UpdateWebhook)
+				protected.DELETE("/developer/webhooks/:id", deps.webhookService.DeleteWebhook)
 			}
 
 			// Wallet routes

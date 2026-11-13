@@ -23,7 +23,7 @@ const DefaultWithdrawalReconcileInterval = 30 * time.Second
 // confirmed receipt the row is marked confirmed, and on a reverted receipt the
 // debit is reversed and the row is marked failed. Without it a mined-and-reverted
 // withdrawal would leave the user debited with a pending row forever.
-func StartWithdrawalReconciler(ctx context.Context, db *gorm.DB, blockchain *BlockchainClient, ledger *LedgerService, interval time.Duration) {
+func StartWithdrawalReconciler(ctx context.Context, db *gorm.DB, blockchain *BlockchainClient, ledger *LedgerService, webhooks *WebhookService, interval time.Duration) {
 	if db == nil || blockchain == nil || ledger == nil {
 		log.Printf("withdrawal reconciler disabled: db, blockchain or ledger not configured")
 		return
@@ -31,7 +31,7 @@ func StartWithdrawalReconciler(ctx context.Context, db *gorm.DB, blockchain *Blo
 	if interval <= 0 {
 		interval = DefaultWithdrawalReconcileInterval
 	}
-	reconciler := &withdrawalReconciler{db: db, blockchain: blockchain, ledger: ledger}
+	reconciler := &withdrawalReconciler{db: db, blockchain: blockchain, ledger: ledger, webhooks: webhooks}
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -50,6 +50,7 @@ type withdrawalReconciler struct {
 	db         *gorm.DB
 	blockchain *BlockchainClient
 	ledger     *LedgerService
+	webhooks   *WebhookService
 }
 
 // sweep reconciles every pending withdrawal row once. A receipt that is not yet
@@ -112,11 +113,24 @@ func (r *withdrawalReconciler) markConfirmed(ctx context.Context, tx *models.Tra
 		if row.Status != "pending" {
 			return nil
 		}
-		return db.Model(&models.Transaction{}).Where("id = ?", row.ID).
+		if err := db.Model(&models.Transaction{}).Where("id = ?", row.ID).
 			Updates(map[string]interface{}{
 				"status":       "confirmed",
 				"block_number": blockNumber,
-			}).Error
+			}).Error; err != nil {
+			return err
+		}
+		if r.webhooks != nil {
+			return r.webhooks.publishWithin(db, row.UserID.String(), WebhookEventWithdrawalSent, map[string]interface{}{
+				"chain_id":     row.ChainID,
+				"tx_hash":      row.Hash,
+				"token":        row.FromToken,
+				"amount":       row.FromAmount,
+				"to_address":   row.ToAddress,
+				"block_number": blockNumber,
+			})
+		}
+		return nil
 	})
 }
 
@@ -142,7 +156,20 @@ func (r *withdrawalReconciler) reverse(ctx context.Context, tx *models.Transacti
 		if err := r.ledger.creditWithin(db, row.UserID.String(), row.ChainID, row.FromToken, "", 0, amount); err != nil {
 			return err
 		}
-		return db.Model(&models.Transaction{}).Where("id = ?", row.ID).
-			Update("status", "failed").Error
+		if err := db.Model(&models.Transaction{}).Where("id = ?", row.ID).
+			Update("status", "failed").Error; err != nil {
+			return err
+		}
+		if r.webhooks != nil {
+			return r.webhooks.publishWithin(db, row.UserID.String(), WebhookEventWithdrawalFailed, map[string]interface{}{
+				"chain_id":   row.ChainID,
+				"tx_hash":    row.Hash,
+				"token":      row.FromToken,
+				"amount":     row.FromAmount,
+				"to_address": row.ToAddress,
+				"reason":     "transaction reverted on-chain",
+			})
+		}
+		return nil
 	})
 }

@@ -41,12 +41,19 @@ type DepositWatcher struct {
 	db            *gorm.DB
 	blockchain    *BlockchainClient
 	ledger        *LedgerService
+	webhooks      *WebhookService
 	confirmations uint64
 	pollInterval  time.Duration
 
 	mu      sync.Mutex
 	running bool
 	cancel  context.CancelFunc
+}
+
+// SetWebhooks attaches the webhook publisher so a credited deposit emits a
+// `deposit.confirmed` event in the same transaction as the credit.
+func (w *DepositWatcher) SetWebhooks(webhooks *WebhookService) {
+	w.webhooks = webhooks
 }
 
 func NewDepositWatcher(db *gorm.DB, blockchain *BlockchainClient, ledger *LedgerService) *DepositWatcher {
@@ -309,6 +316,22 @@ func (w *DepositWatcher) creditDeposit(
 		}
 		if result.RowsAffected == 0 {
 			return nil
+		}
+
+		// Publish the event in the same transaction, so a notification is only
+		// queued if the credit commits. A failure to enqueue rolls the credit back
+		// rather than confirming a deposit whose webhook was never queued.
+		if w.webhooks != nil {
+			if err := w.webhooks.publishWithin(dbTx, ownerID, WebhookEventDepositConfirmed, map[string]interface{}{
+				"chain_id":      chainID,
+				"tx_hash":       record.TxHash,
+				"token_address": record.TokenAddress,
+				"symbol":        symbol,
+				"amount":        amount.String(),
+				"block_number":  blockNumber,
+			}); err != nil {
+				return err
+			}
 		}
 
 		return w.ledger.creditWithin(dbTx, ownerID, chainID, tokenAddress, symbol, decimals, amount)

@@ -474,6 +474,39 @@ pricing and settlement layer; `services/option_math.go` and
   collateral/remove,exercise,withdraw}`, `GET /options/positions`; admin CRUD
   and `settle`/`refresh-price` under `/admin/options/series`.
 
+## Outbound webhooks
+
+`services/webhook_service.go` and `models/webhook.go` are the developer
+notification surface: a subscriber registers an endpoint and a set of events,
+and a dispatcher POSTs a signed payload when an event fires.
+
+- Delivery is at-least-once and durable. An event is written to
+  `webhook_deliveries` in the same transaction as the business write that
+  produced it (`publishWithin`), so a credit or a withdrawal state change and
+  its notification commit together — a deposit whose webhook could not be queued
+  is rolled back rather than confirmed. The receiver must treat
+  `X-TigerSwap-Delivery` as an idempotency key.
+- The dispatcher claims a row by moving it `pending → sending` under a
+  conditional update, so two replicas cannot both send it. A non-2xx response or
+  a transport error retries with exponential backoff (30s…30m) up to
+  `MaxAttempts`, then marks the row failed.
+- The signing secret is generated server-side, returned once at creation and
+  stored only as AES-256-GCM ciphertext under `WALLET_ENCRYPTION_KEY`. The
+  signature is `sha256=` + hex HMAC-SHA256 of the raw body under that secret.
+- The endpoint URL is validated before every attempt and on every redirect:
+  only `http`/`https`, and the host must resolve to a public address. Loopback,
+  private, link-local (including `169.254.169.254`) and carrier-grade-NAT ranges
+  are refused, so a subscriber cannot point a webhook at an internal service or
+  the cloud metadata endpoint. `WEBHOOK_ALLOW_PRIVATE=true` re-enables a
+  loopback target for local development only.
+- Only events the platform actually emits are subscribable
+  (`deposit.confirmed`, `withdrawal.sent`, `withdrawal.failed`); a
+  subscribable-but-never-fired event is not offered. `deposit.confirmed` fires
+  from `DepositWatcher.creditDeposit`; the withdrawal events fire from
+  `withdrawal_reconciler` when a receipt confirms or reverts.
+- Routes: protected `GET/POST /developer/webhooks`,
+  `PUT/DELETE /developer/webhooks/:id`.
+
 ## Analytics
 
 `services/analytics_service.go` and `models/analytics.go` are the protocol and
