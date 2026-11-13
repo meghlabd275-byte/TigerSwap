@@ -557,6 +557,31 @@ contract TigerSwapPerpOrderBookTest is Test {
         book.liquidate(BTC, alice);
     }
 
+    /// A liquidated position's unrealized loss must reach the pool, exactly as a
+    /// normal close does; otherwise the pool bleeds on every liquidation while
+    /// the trader keeps margin that is owed to it.
+    function testLiquidationSettlesLossToPool() public {
+        _openLeveraged(alice, 1e18, true, 6_100e18);
+        book.updatePrice(BTC, 56_500e18, 56_500e18);
+        uint256 poolBefore = book.poolLiquidity(BTC);
+        vm.prank(liquidator);
+        book.liquidate(BTC, alice);
+        // Loss is (60_000 - 56_500) * 1e18 / 1e18 = 3_500e18.
+        assertEq(book.poolLiquidity(BTC) - poolBefore, 3_500e18, "pool collected exactly the loss");
+    }
+
+    /// A liquidated trader with margin left over keeps the remainder after the
+    /// liquidator fee, so the margin is not stranded in the contract.
+    function testLiquidationReturnsRemainderToTrader() public {
+        _openLeveraged(alice, 1e18, true, 6_100e18);
+        book.updatePrice(BTC, 56_500e18, 56_500e18);
+        uint256 traderBefore = usdc.balanceOf(alice);
+        vm.prank(liquidator);
+        book.liquidate(BTC, alice);
+        assertGt(usdc.balanceOf(alice), traderBefore, "remainder returned to trader");
+        assertEq(book.balances(BTC, alice), 0, "margin cleared");
+    }
+
     // ---- Liquidity ----
 
     function testAddRemoveLiquidity() public {

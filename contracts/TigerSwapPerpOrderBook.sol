@@ -712,6 +712,12 @@ contract TigerSwapPerpOrderBook {
 
         int256 size = pos.size;
         uint256 balance = balances[marketId][trader];
+        // The position's unrealized PnL must be settled against the pool, exactly
+        // as a normal close does; otherwise a liquidated trader keeps the loss the
+        // pool is owed, and the pool bleeds on every liquidation. Read it before
+        // the position is zeroed.
+        int256 pnl = _unrealizedPnL(marketId, trader);
+
         pos.size = 0;
         pos.entryNotional = 0;
         pos.fundingIndex = fundingInfo[marketId].cumulativeIndex;
@@ -719,31 +725,61 @@ contract TigerSwapPerpOrderBook {
         _releaseReserve(marketId, notional);
         balances[marketId][trader] = 0;
 
-        int256 badDebt = 0;
         uint256 fee = 0;
-        if (equity < 0) {
-            badDebt = -equity;
-            uint256 debt = uint256(badDebt);
-            uint256 insurance = insuranceFund[marketId];
-            if (debt <= insurance) {
-                insuranceFund[marketId] = insurance - debt;
-                emit InsuranceFundUsed(marketId, debt);
-                badDebt = 0;
-            } else {
-                emit InsuranceFundUsed(marketId, insurance);
-                uint256 remainingDebt = debt - insurance;
-                insuranceFund[marketId] = 0;
-                uint256 pool = poolLiquidity[marketId];
-                poolLiquidity[marketId] = remainingDebt >= pool ? 0 : pool - remainingDebt;
-                badDebt = 0;
+        int256 badDebt = 0;
+
+        if (pnl >= 0) {
+            // The pool pays the trader's profit, capped at what it can pay; the
+            // remainder is recorded as deferred credit rather than dropped.
+            uint256 profit = uint256(pnl);
+            uint256 pool = poolLiquidity[marketId];
+            if (profit > pool) {
+                uint256 shortfall = profit - pool;
+                unpaidProfits[marketId] += shortfall;
+                unpaidCredit[marketId][trader] += shortfall;
+                profit = pool;
             }
-        } else {
-            fee = uint256(equity) * market.liquidationFee / WAD;
-            uint256 payout = balance;
+            poolLiquidity[marketId] = pool - profit;
+
+            uint256 payout = balance + profit;
+            fee = balance * market.liquidationFee / WAD;
             uint256 feePaid = fee > payout ? payout : fee;
             if (feePaid > 0) market.token.safeTransfer(msg.sender, feePaid);
             uint256 remainder = payout - feePaid;
             if (remainder > 0) market.token.safeTransfer(trader, remainder);
+        } else {
+            uint256 loss = uint256(-pnl);
+            if (loss >= balance) {
+                // The trader is wiped out: the pool keeps the margin, and the
+                // loss beyond it is bad debt absorbed by the insurance fund first
+                // and by the pool's liquidity for any remainder.
+                poolLiquidity[marketId] += balance;
+                uint256 shortfall = loss - balance;
+                if (shortfall > 0) {
+                    badDebt = int256(shortfall);
+                    uint256 insurance = insuranceFund[marketId];
+                    uint256 fromInsurance = shortfall <= insurance ? shortfall : insurance;
+                    if (fromInsurance > 0) {
+                        insuranceFund[marketId] = insurance - fromInsurance;
+                        emit InsuranceFundUsed(marketId, fromInsurance);
+                    }
+                    uint256 uncovered = shortfall - fromInsurance;
+                    if (uncovered > 0) {
+                        uint256 pool = poolLiquidity[marketId];
+                        poolLiquidity[marketId] = uncovered >= pool ? 0 : pool - uncovered;
+                    }
+                }
+            } else {
+                // The margin covers the loss; the pool gains it and the trader
+                // receives the remainder, less the liquidator's fee.
+                uint256 remainder = balance - loss;
+                poolLiquidity[marketId] += loss;
+                fee = balance * market.liquidationFee / WAD;
+                uint256 feePaid = fee > remainder ? remainder : fee;
+                if (feePaid > 0) market.token.safeTransfer(msg.sender, feePaid);
+                uint256 toTrader = remainder - feePaid;
+                if (toTrader > 0) market.token.safeTransfer(trader, toTrader);
+            }
         }
 
         emit Liquidation(marketId, trader, msg.sender, size, fee, badDebt);
