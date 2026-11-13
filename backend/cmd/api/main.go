@@ -8,8 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -171,6 +173,7 @@ func main() {
 		&models.KycProfile{},
 		&models.SanctionsEntry{},
 		&models.ComplianceSettings{},
+		&models.DeveloperAPIKey{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -193,6 +196,7 @@ func main() {
 	// restriction. The service is wired so an unverified account cannot trade or
 	// withdraw and a screened destination or jurisdiction is refused.
 	complianceService := services.NewComplianceService(db)
+	apiKeyService := services.NewAPIKeyService(db)
 	listingService := services.NewListingService(db)
 	governanceService := services.NewGovernanceService(db)
 
@@ -508,6 +512,7 @@ func main() {
 		portfolioService:   portfolioService,
 		platformGate:       platformGate,
 		complianceService:  complianceService,
+		apiKeyService:      apiKeyService,
 		metrics:            metrics,
 	})
 
@@ -532,8 +537,41 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 	}
 
-	log.Printf("TigerSwap API Server starting on port %s", port)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("Failed to start server: %v", err)
+	// Serve in the background so a signal can trigger a graceful shutdown: the
+	// listener stops accepting, in-flight requests are given a bounded window to
+	// finish, and then the process exits. Without this an orchestrator's SIGTERM
+	// would kill in-flight withdrawals mid-flight.
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Printf("TigerSwap API Server starting on port %s", port)
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	shutdown := make(chan os.Signal, 1)
+	signal.Notify(shutdown, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	case sig := <-shutdown:
+		log.Printf("received %s, shutting down gracefully", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown did not complete: %v", err)
+			_ = server.Close()
+		}
+		// Wait for the serve goroutine to observe the close so the process does
+		// not exit while a handler is still running.
+		if err := <-serveErr; err != nil {
+			log.Printf("server stopped with error: %v", err)
+		}
+		log.Printf("TigerSwap API Server stopped")
 	}
 }

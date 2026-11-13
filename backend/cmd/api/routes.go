@@ -50,6 +50,7 @@ type apiDeps struct {
 	portfolioService   *services.PortfolioService
 	platformGate       *services.PlatformGate
 	complianceService  *services.ComplianceService
+	apiKeyService      *services.APIKeyService
 	metrics            *services.Metrics
 }
 
@@ -225,6 +226,15 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// pass against the real server rather than a hand-written shape.
 			protected.GET("/user/portfolio", deps.portfolioService.GetPortfolioHandler)
 			protected.GET("/user/transactions", deps.portfolioService.GetTransactionsHandler)
+
+			// Developer API keys. The plaintext is returned once at creation and
+			// only its hash is stored; a key then authenticates programmatic
+			// requests through the /api/v1/dev group below.
+			if deps.apiKeyService != nil {
+				protected.GET("/developer/api-keys", deps.apiKeyService.ListAPIKeys)
+				protected.POST("/developer/api-keys", deps.apiKeyService.CreateAPIKey)
+				protected.DELETE("/developer/api-keys/:id", deps.apiKeyService.RevokeAPIKey)
+			}
 
 			// Wallet routes
 			protected.POST("/wallet/connect", deps.authService.ConnectWallet)
@@ -671,6 +681,22 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 		// Liquidity: add to a pool (protected, reads live pool state).
 		protected.POST("/liquidity/pool/add", deps.liquidityService.AddLiquidityHandler)
+	}
+
+	// Programmatic API. Authenticated with a developer API key rather than a
+	// session, so a trading bot or an integrator can read the caller's own data.
+	// The key sets the same context the session middleware sets, so the handlers
+	// below work unchanged; a per-key rate limiter bounds abuse.
+	if deps.apiKeyService != nil {
+		dev := v1.Group("/dev")
+		dev.Use(middleware.APIKeyRequired(deps.apiKeyService))
+		dev.Use(middleware.APIKeyRateLimiter(deps.apiKeyService, 600))
+		{
+			dev.GET("/portfolio", middleware.RequireAPIKeyScope("read"), deps.portfolioService.GetPortfolioHandler)
+			dev.GET("/transactions", middleware.RequireAPIKeyScope("read"), deps.portfolioService.GetTransactionsHandler)
+			dev.GET("/farms/stakes", middleware.RequireAPIKeyScope("read"), deps.farmService.GetStakes)
+			dev.GET("/airdrops/allocations", middleware.RequireAPIKeyScope("read"), deps.airdropService.GetMyAllocations)
+		}
 	}
 
 	// WebSocket for real-time updates
