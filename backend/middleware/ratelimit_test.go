@@ -231,3 +231,44 @@ func TestLocalRateLimiterStillLimitsTrackedKey(t *testing.T) {
 		t.Fatal("third request from the same client should be rejected")
 	}
 }
+
+// TestAccountRateLimiterKeysByAccountNotIP proves the account limiter counts a
+// session, not a source address: two accounts behind one address get independent
+// budgets, and one account cannot exceed its own by rotating its address.
+func TestAccountRateLimiterKeysByAccountNotIP(t *testing.T) {
+gin.SetMode(gin.TestMode)
+router := gin.New()
+router.Use(func(c *gin.Context) {
+c.Set("user_id", c.GetHeader("X-Test-User"))
+c.Next()
+})
+router.Use(AccountRateLimiter(nil, "rl_test:", 3, time.Minute))
+router.POST("/act", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+call := func(user, addr string) int {
+req := httptest.NewRequest(http.MethodPost, "/act", nil)
+req.RemoteAddr = addr
+req.Header.Set("X-Test-User", user)
+rec := httptest.NewRecorder()
+router.ServeHTTP(rec, req)
+return rec.Code
+}
+
+// One account exhausts its budget from one address.
+for i := 0; i < 3; i++ {
+if code := call("alice", "203.0.113.1:1000"); code != http.StatusOK {
+t.Fatalf("alice request %d should be allowed, got %d", i+1, code)
+}
+}
+if code := call("alice", "203.0.113.1:1000"); code != http.StatusTooManyRequests {
+t.Fatalf("alice should be limited after 3, got %d", code)
+}
+// Rotating the source address must not reset the account's budget.
+if code := call("alice", "203.0.113.99:1000"); code != http.StatusTooManyRequests {
+t.Fatalf("alice must stay limited from a new address, got %d", code)
+}
+// A different account behind the same address has its own budget.
+if code := call("bob", "203.0.113.1:1000"); code != http.StatusOK {
+t.Fatalf("bob must not be limited by alice, got %d", code)
+}
+}

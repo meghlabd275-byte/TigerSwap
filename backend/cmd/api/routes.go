@@ -161,6 +161,13 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		protected := v1.Group("")
 		protected.Use(middleware.AuthRequired(deps.authService))
 
+		// Per-account limits for the two actions that move funds or create
+		// on-chain work. A per-IP limit couples unrelated accounts behind one NAT
+		// and does not stop a single account hammering the endpoint; these are
+		// keyed by the authenticated user id.
+		withdrawRateLimit := middleware.AccountRateLimiter(deps.redis, "rl_withdraw:", 5, time.Minute)
+		orderRateLimit := middleware.AccountRateLimiter(deps.redis, "rl_order:", 60, time.Minute)
+
 		// Trading and withdrawal switches are enforced here, on the mutating
 		// routes, rather than on reads: an operator halting trading must not make
 		// the portfolio or position views unreachable.
@@ -205,6 +212,19 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		// then the operator's trading switch.
 		trading := func(h gin.HandlerFunc) gin.HandlerFunc {
 			return kycGate(tradingGate(h))
+		}
+
+		// tradingLimited is trading plus the per-account order limit, used on the
+		// endpoints that create an order or an on-chain transaction.
+		tradingLimited := func(h gin.HandlerFunc) gin.HandlerFunc {
+			inner := trading(h)
+			return func(c *gin.Context) {
+				orderRateLimit(c)
+				if c.IsAborted() {
+					return
+				}
+				inner(c)
+			}
 		}
 		{
 			// User routes
@@ -283,7 +303,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/margin/collateral", trading(deps.marginEngine.DepositMarginCollateralHandler))
 			protected.POST("/margin/borrow", trading(deps.marginEngine.BorrowMarginHandler))
 			protected.POST("/margin/repay", trading(deps.marginEngine.RepayMarginHandler))
-			protected.POST("/perpetual/orders", trading(deps.perpetualEngine.CreateOrderHandler))
+			protected.POST("/perpetual/orders", tradingLimited(deps.perpetualEngine.CreateOrderHandler))
 			protected.GET("/perpetual/orders", deps.perpetualEngine.GetOrdersHandler)
 			protected.DELETE("/perpetual/orders/:id", trading(deps.perpetualEngine.CancelOrderHandler))
 
@@ -304,7 +324,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// and fill on-chain. Build endpoints return unsigned calldata the
 			// caller's wallet signs; reads come from chain state.
 			if deps.onChainOrders != nil {
-				protected.POST("/onchain/orders", trading(deps.onChainOrders.BuildOrderHandler))
+				protected.POST("/onchain/orders", tradingLimited(deps.onChainOrders.BuildOrderHandler))
 				protected.GET("/onchain/orders", deps.onChainOrders.ListOrdersHandler)
 				protected.POST("/onchain/orders/:id/cancel", trading(deps.onChainOrders.CancelOrderHandler))
 				protected.POST("/onchain/twamm", trading(deps.onChainOrders.BuildTWAMMOrderHandler))
@@ -321,7 +341,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/onchain/perp-book/fills", deps.onChainPerpBook.FillsHandler)
 				protected.POST("/onchain/perp-book/deposit", trading(deps.onChainPerpBook.BuildDepositHandler))
 				protected.POST("/onchain/perp-book/withdraw", trading(deps.onChainPerpBook.BuildWithdrawHandler))
-				protected.POST("/onchain/perp-book/orders", trading(deps.onChainPerpBook.BuildPlaceOrderHandler))
+				protected.POST("/onchain/perp-book/orders", tradingLimited(deps.onChainPerpBook.BuildPlaceOrderHandler))
 				protected.POST("/onchain/perp-book/orders/:id/cancel", trading(deps.onChainPerpBook.BuildCancelOrderHandler))
 				protected.POST("/onchain/perp-book/liquidity/add", trading(deps.onChainPerpBook.BuildAddLiquidityHandler))
 				protected.POST("/onchain/perp-book/liquidity/remove", trading(deps.onChainPerpBook.BuildRemoveLiquidityHandler))
@@ -351,7 +371,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/wallet/balances", deps.walletService.GetBalances)
 				protected.POST("/wallet/autosign", trading(deps.walletService.AutoSignTransaction))
 				protected.POST("/wallet/deposit", deps.platformGate.RequireDeposits(), deps.walletService.Deposit)
-				withdrawGates := []gin.HandlerFunc{deps.platformGate.RequireWithdrawals()}
+				withdrawGates := []gin.HandlerFunc{withdrawRateLimit, deps.platformGate.RequireWithdrawals()}
 				if deps.complianceService != nil {
 					withdrawGates = append(withdrawGates, deps.complianceService.RequireVerifiedWithdrawal())
 				}
@@ -362,7 +382,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.POST("/wallet/withdraw/addresses", deps.withdrawalService.AddAddress)
 				protected.GET("/wallet/withdraw/addresses", deps.withdrawalService.ListAddresses)
 				protected.DELETE("/wallet/withdraw/addresses/:id", deps.withdrawalService.DeleteAddress)
-				protected.POST("/wallet/swap", trading(deps.walletService.ExecuteSwap))
+				protected.POST("/wallet/swap", tradingLimited(deps.walletService.ExecuteSwap))
 				protected.POST("/wallet/swap/quote", deps.walletService.GetSwapQuote)
 				protected.POST("/wallet/perpetual/open", trading(deps.walletService.CreatePerpetualPosition))
 				protected.POST("/wallet/perpetual/close", trading(deps.walletService.ClosePerpetualPosition))
@@ -384,7 +404,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 			// OTC private block trades. The caller is always the maker or the
 			// taker; identity comes from the token, never the body.
-			protected.POST("/otc/orders", trading(deps.otcService.CreateOrder))
+			protected.POST("/otc/orders", tradingLimited(deps.otcService.CreateOrder))
 			protected.GET("/otc/orders", deps.otcService.ListOrders)
 			protected.GET("/otc/orders/open", deps.otcService.ListOpenOrders)
 			protected.POST("/otc/orders/:id/take", deps.otcService.TakeOrder)

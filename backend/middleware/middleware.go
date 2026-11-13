@@ -223,10 +223,33 @@ func AuthRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 	return rateLimiter(redisClient, "auth_rate_limit:", 10, time.Minute)
 }
 
+// AccountRateLimiter bounds a sensitive action per authenticated account rather
+// than per IP. A per-IP limit does not stop one account from hammering
+// withdrawal or order placement, and it couples unrelated accounts behind a
+// shared NAT. When no session is present (for example a route registered before
+// the auth middleware) the key falls back to the client address, so the limiter
+// still applies.
+func AccountRateLimiter(redisClient *redis.Client, prefix string, limit int, window time.Duration) gin.HandlerFunc {
+	return rateLimiterKeyed(redisClient, prefix, limit, window, func(c *gin.Context) string {
+		if uid := c.GetString("user_id"); uid != "" {
+			return "user:" + uid
+		}
+		return "ip:" + c.ClientIP()
+	})
+}
+
 // rateLimiter builds a fixed-window per-IP limiter. The key prefix lets the
 // global and auth limits count independently, so a burst of ordinary API traffic
 // cannot consume an account's sign-in budget and vice versa.
 func rateLimiter(redisClient *redis.Client, prefix string, limit int, window time.Duration) gin.HandlerFunc {
+	return rateLimiterKeyed(redisClient, prefix, limit, window, func(c *gin.Context) string {
+		return c.ClientIP()
+	})
+}
+
+// rateLimiterKeyed builds a fixed-window limiter whose key is derived by keyFn.
+// The prefix lets independent limits count the same caller separately.
+func rateLimiterKeyed(redisClient *redis.Client, prefix string, limit int, window time.Duration, keyFn func(*gin.Context) string) gin.HandlerFunc {
 	fallback := newLocalRateLimiter(limit, window)
 
 	return func(c *gin.Context) {
@@ -238,8 +261,7 @@ func rateLimiter(redisClient *redis.Client, prefix string, limit int, window tim
 			return
 		}
 
-		ip := c.ClientIP()
-		key := prefix + ip
+		key := prefix + keyFn(c)
 
 		if redisClient != nil {
 			count, err := redisClient.Incr(c.Request.Context(), key).Result()
