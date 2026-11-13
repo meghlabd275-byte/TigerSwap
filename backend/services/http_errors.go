@@ -175,12 +175,12 @@ func respondBadRequestError(c *gin.Context, err error) {
 // The detail is logged for the operator and a fixed message is returned, so an
 // ownership check never discloses whether the target exists.
 func respondForbiddenError(c *gin.Context, err error) {
-log.Printf("forbidden on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
-c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+	log.Printf("forbidden on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
 }
 
 // respondNotFoundError answers a request for a resource that does not exist.
 func respondNotFoundError(c *gin.Context, err error) {
-log.Printf("not found on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
-c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	log.Printf("not found on %s %s: %v", c.Request.Method, c.Request.URL.Path, err)
+	c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 }

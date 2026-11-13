@@ -114,9 +114,9 @@ type OtcOrder struct {
 	Quantity string  `gorm:"size:78;not null" json:"quantity"`
 	Price    string  `gorm:"size:78;not null" json:"price"`
 	// Status is open, matched, settled or cancelled.
-	Status       string    `gorm:"size:16;index;not null;default:open" json:"status"`
-	MinFill      string    `gorm:"size:78;not null;default:0" json:"min_fill"`
-	Counterparty string    `gorm:"size:42" json:"counterparty,omitempty"`
+	Status       string `gorm:"size:16;index;not null;default:open" json:"status"`
+	MinFill      string `gorm:"size:78;not null;default:0" json:"min_fill"`
+	Counterparty string `gorm:"size:42" json:"counterparty,omitempty"`
 	// EscrowAsset and EscrowAmount record what the maker posted when the order
 	// was created: the base asset for a sell, the quote cost for a buy. They are
 	// the amounts released to the taker and refunded on cancel or expiry.
