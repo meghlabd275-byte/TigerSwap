@@ -30,6 +30,7 @@ type apiDeps struct {
 	liquidityService   *services.LiquidityPoolService
 	marginEngine       *services.MarginEngine
 	perpetualEngine    *services.PerpetualEngine
+	onChainPerps       *services.OnChainPerpsService
 	copyTradingEngine  *services.CopyTradingEngine
 	bridgeService      *services.BridgeService
 	launchpadService   *services.LaunchpadService
@@ -181,6 +182,19 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/perpetual/orders", deps.perpetualEngine.CreateOrderHandler)
 			protected.GET("/perpetual/orders", deps.perpetualEngine.GetOrdersHandler)
 			protected.DELETE("/perpetual/orders/:id", deps.perpetualEngine.CancelOrderHandler)
+
+			// On-chain perpetuals: the deployed TigerSwapPerpetuals contract is the
+			// settlement layer. Order-building endpoints return unsigned calldata the
+			// caller's own wallet signs, so the server never holds a user key.
+			if deps.onChainPerps != nil {
+				protected.GET("/onchain/perps/positions", deps.onChainPerps.PositionsHandler)
+				protected.GET("/onchain/perps/positions/:id", deps.onChainPerps.PositionHandler)
+				protected.POST("/onchain/perps/open", deps.onChainPerps.BuildOpenPositionHandler)
+				protected.POST("/onchain/perps/positions/:id/close", deps.onChainPerps.BuildClosePositionHandler)
+				protected.POST("/onchain/perps/margin/add", deps.onChainPerps.BuildAddMarginHandler)
+				protected.POST("/onchain/perps/margin/remove", deps.onChainPerps.BuildRemoveMarginHandler)
+				protected.POST("/onchain/perps/liquidity", deps.onChainPerps.BuildLiquidityHandler)
+			}
 
 			// Liquidity pool read routes
 			protected.GET("/liquidity/pools", deps.liquidityService.GetPoolsHandler)
@@ -442,6 +456,12 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		// Perpetual markets (public read)
 		public.GET("/perpetuals/markets", deps.perpetualEngine.GetMarketsHandler)
 		public.GET("/perpetuals/pairs", deps.perpetualEngine.GetSupportedPairsHandler)
+
+		// On-chain perpetuals markets (public read): the deployed contract's
+		// live markets and open interest.
+		if deps.onChainPerps != nil {
+			public.GET("/onchain/perps/markets", deps.onChainPerps.MarketsHandler)
+		}
 
 		// Spot-margin markets (public read): the tradable pairs shown in the
 		// margin panel. Only active listings are returned.

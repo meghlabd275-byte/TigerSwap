@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/joho/godotenv"
 	"tigerswap/backend/config"
+	perpspkg "tigerswap/backend/go/perps"
 	"tigerswap/backend/models"
 	"tigerswap/backend/services"
 	"tigerswap/backend/services/botengine"
@@ -138,6 +140,9 @@ func main() {
 		&models.IntegrationToken{},
 		&models.IntegrationBridge{},
 		&models.IntegrationFarm{},
+		&models.OnChainPerpPosition{},
+		&models.OnChainPerpCursor{},
+		&models.OnChainPerpLiquidation{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -185,6 +190,24 @@ func main() {
 			log.Printf("failed to refresh perpetual markets: %v", err)
 		}
 	})
+	// On-chain perpetuals: the deployed TigerSwapPerpetuals contract is the
+	// settlement layer, so a derivative position is verifiable on-chain rather
+	// than only in the platform ledger. The service dials only TigerSwap's own
+	// nodes and needs no user key — order building returns unsigned calldata.
+	onChainPerps := services.NewOnChainPerpsService(db, priceAggregator)
+	if err := onChainPerps.LoadDeployments(); err != nil {
+		log.Printf("warning: on-chain perps deployments not loaded: %v", err)
+	}
+	if signerKey, ok := perpspkg.LoadSigner(); ok {
+		if key, err := crypto.HexToECDSA(signerKey); err == nil {
+			onChainPerps.SetKeeperKey(key)
+		} else {
+			log.Printf("warning: TIGERSWAP_PERPS_KEEPER_KEY is not a valid key: %v", err)
+		}
+	}
+	if err := onChainPerps.ReloadSymbols(); err != nil {
+		log.Printf("warning: could not map perp market symbols: %v", err)
+	}
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator).SetDB(db)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
 	launchpadService := services.NewLaunchpadService(db, blockchainClient, priceAggregator)
@@ -283,6 +306,9 @@ func main() {
 	services.StartMarketFeed(realtimeCtx, priceAggregator, services.DefaultMarketFeedInterval)
 	services.StartPositionMaintenance(realtimeCtx, perpetualEngine, copyTradingEngine, services.DefaultPositionRefreshInterval)
 	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
+	// Index on-chain perp events and liquidate unhealthy positions. Started only
+	// when a deployment is configured; otherwise it is a no-op.
+	onChainPerps.Start(realtimeCtx)
 	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
 
 	// Drive every active bot against live market data. The Rust engine is the
@@ -315,6 +341,7 @@ func main() {
 		liquidityService:   liquidityService,
 		marginEngine:       marginEngine,
 		perpetualEngine:    perpetualEngine,
+		onChainPerps:       onChainPerps,
 		copyTradingEngine:  copyTradingEngine,
 		bridgeService:      bridgeService,
 		launchpadService:   launchpadService,
