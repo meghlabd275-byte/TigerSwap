@@ -589,7 +589,11 @@ func (s *WalletService) CreateCopyTrade(c *gin.Context) {
 
 	status := "pending"
 	if s.copyEngine != nil {
-		if _, err := s.copyEngine.CopyTrade(c.Request.Context(), followerAddress, strings.ToLower(req.TraderAddress), req.Pair, req.Side, req.Amount, ""); err != nil {
+		if _, err := s.copyEngine.CopyTrade(c.Request.Context(), userID, followerAddress, strings.ToLower(req.TraderAddress), req.Pair, req.Side, req.Amount, ""); err != nil {
+			if errors.Is(err, ErrInsufficientBalance) {
+				c.JSON(409, gin.H{"error": "Insufficient balance to fund the copy position"})
+				return
+			}
 			// `err` here is an internal failure (a signer, a database write or an
 			// upstream RPC) whose text can carry a path or a connection string; it is
 			// logged for the operator and not returned to the caller.

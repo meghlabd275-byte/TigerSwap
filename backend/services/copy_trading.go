@@ -46,6 +46,30 @@ type CopyTradingEngine struct {
 	// other by the address would make a followed trader impossible to copy from
 	// the wallet route.
 	db *gorm.DB
+
+	// ledger escrows the follower's collateral, so a copy position is funded from
+	// the same balance the rest of the platform moves. settlementChainID and
+	// settlementResolver name the quote asset the collateral is denominated in.
+	ledger             *LedgerService
+	settlementChainID  int64
+	settlementResolver func(pair string) (perpSettlement, error)
+}
+
+// SetLedger wires the ledger copy positions escrow against and the chain whose
+// token registry names the settlement asset. Without it the engine refuses to
+// open a position rather than recording one that moves no funds.
+func (e *CopyTradingEngine) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	e.ledger = ledger
+	e.settlementChainID = settlementChainID
+	if e.settlementResolver == nil {
+		e.settlementResolver = resolveSettlementFromConfig(settlementChainID)
+	}
+}
+
+// SetSettlementResolver overrides how a copy position's settlement asset is
+// resolved. Tests use it to supply a fixed registry.
+func (e *CopyTradingEngine) SetSettlementResolver(resolver func(pair string) (perpSettlement, error)) {
+	e.settlementResolver = resolver
 }
 
 // Trader represents a trader that can be copied
@@ -299,7 +323,7 @@ func (e *CopyTradingEngine) StopFollowing(followerAddress string) error {
 
 // CopyTrade copies a trade from a trader to a follower and persists the copy
 // position.
-func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, traderAddress, pair, side, size, originalPositionID string) (*CopyPosition, error) {
+func (e *CopyTradingEngine) CopyTrade(ctx context.Context, ownerID, followerAddress, traderAddress, pair, side, size, originalPositionID string) (*CopyPosition, error) {
 	if e.db == nil {
 		return nil, fmt.Errorf("copy trading store is not configured")
 	}
@@ -340,6 +364,23 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 		size = trimDecimal(formatDecimal(scaled, 18))
 	}
 
+	// A copy position is funded from the follower's own platform balance: the
+	// notional `size` is the collateral, escrowed here in the same transaction
+	// that records the position, so a position can never exist without the funds
+	// it promises. The settlement asset is the listing's quote asset.
+	settlement, err := e.settlementFor(pair)
+	if err != nil {
+		return nil, err
+	}
+	notional, err := parseDecimal(size)
+	if err != nil {
+		return nil, fmt.Errorf("copy size %q is not a decimal amount: %w", size, err)
+	}
+	collateralUnits := scaleToBaseUnits(notional, settlement.Decimals)
+	if collateralUnits.Sign() <= 0 {
+		return nil, fmt.Errorf("copy size is below one base unit of %s", settlement.Symbol)
+	}
+
 	now := time.Now()
 	position := &CopyPosition{
 		ID:               uuid.NewString(),
@@ -358,13 +399,81 @@ func (e *CopyTradingEngine) CopyTrade(ctx context.Context, followerAddress, trad
 		CopiedAt:         now,
 	}
 	row := copyPositionToModel(position)
-	if err := e.db.Create(&row).Error; err != nil {
-		return nil, fmt.Errorf("persist copy position: %w", err)
+	row.OwnerID = ownerID
+	row.Escrow = formatDecimal(notional, 8)
+	row.EscrowChainID = settlement.ChainID
+	row.EscrowToken = settlement.Address
+	row.EscrowSymbol = settlement.Symbol
+	row.EscrowDecimals = settlement.Decimals
+
+	if err := e.db.Transaction(func(tx *gorm.DB) error {
+		if err := e.ledger.debitWithin(tx, ownerID, settlement.ChainID, settlement.Address, collateralUnits); err != nil {
+			return err
+		}
+		return tx.Create(&row).Error
+	}); err != nil {
+		return nil, err
 	}
 	// The row's generated id is authoritative: the id returned to the caller must
 	// be the one the close and listing paths will find.
 	position.ID = row.ID.String()
 	return position, nil
+}
+
+// settlementFor resolves the quote asset a copy position is collateralised in.
+// It requires both a ledger to escrow against and a resolver to name the asset,
+// so a deployment that forgets either refuses to open a position rather than
+// opening one that moves no funds.
+func (e *CopyTradingEngine) settlementFor(pair string) (perpSettlement, error) {
+	if e.ledger == nil {
+		return perpSettlement{}, errors.New("copy trading has no ledger configured; positions cannot be escrowed")
+	}
+	if e.settlementResolver == nil {
+		return perpSettlement{}, fmt.Errorf("no settlement asset resolver configured for %s", pair)
+	}
+	settlement, err := e.settlementResolver(pair)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if settlement.Symbol == "" || settlement.Address == "" {
+		return perpSettlement{}, fmt.Errorf("settlement asset for %s has no resolvable ledger entry", pair)
+	}
+	if settlement.Decimals < 0 || settlement.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("settlement asset for %s has invalid decimals %d", pair, settlement.Decimals)
+	}
+	return settlement, nil
+}
+
+// settleEscrow credits the follower's escrow plus realised PnL back to their
+// balance inside the caller's transaction. A loss larger than the escrow is
+// clamped so the credit is never negative, and the follower can never be paid
+// more than they put in plus their profit.
+func (e *CopyTradingEngine) settleEscrow(tx *gorm.DB, row *models.CopyPositionRecord) error {
+	if e.ledger == nil || row.OwnerID == "" || row.Escrow == "" || row.Escrow == "0" {
+		// Nothing was escrowed for this row (a pre-escrow record); nothing to settle.
+		return nil
+	}
+	escrow, err := parseDecimal(row.Escrow)
+	if err != nil {
+		return fmt.Errorf("stored escrow is invalid: %w", err)
+	}
+	pnl := new(big.Rat)
+	if row.PNL != "" {
+		parsed, err := parseSignedDecimal(row.PNL)
+		if err != nil {
+			return fmt.Errorf("stored pnl is invalid: %w", err)
+		}
+		pnl = parsed
+	}
+	total := new(big.Rat).Add(escrow, pnl)
+	if total.Sign() < 0 {
+		total = new(big.Rat)
+	}
+	units := scaleToBaseUnits(total, row.EscrowDecimals)
+	if units.Sign() <= 0 {
+		return nil
+	}
+	return e.ledger.creditWithin(tx, row.OwnerID, row.EscrowChainID, row.EscrowToken, row.EscrowSymbol, row.EscrowDecimals, units)
 }
 
 // UpdateCopyPositions re-marks every open copy position to the live oracle
@@ -441,7 +550,26 @@ func (e *CopyTradingEngine) UpdateCopyPositions(ctx context.Context) error {
 			updates["status"] = "closed"
 			updates["closed_at"] = &now
 		}
-		if err := e.db.Model(&models.CopyPositionRecord{}).Where("id = ?", position.ID).Updates(updates).Error; err != nil {
+		// An auto-close (stop-loss or take-profit) settles the escrow in the same
+		// transaction that flips the status, so the follower is credited exactly
+		// when the position closes and a crash cannot leave it closed but unpaid.
+		if err := e.db.Transaction(func(tx *gorm.DB) error {
+			var row models.CopyPositionRecord
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&row, "id = ?", position.ID).Error; err != nil {
+				return err
+			}
+			if row.Status != "open" {
+				// Another pass already closed it; do not settle twice.
+				return nil
+			}
+			if closed {
+				if err := e.settleEscrow(tx, &row); err != nil {
+					return err
+				}
+			}
+			return tx.Model(&models.CopyPositionRecord{}).Where("id = ?", row.ID).Updates(updates).Error
+		}); err != nil {
 			return err
 		}
 	}
@@ -491,6 +619,11 @@ func (e *CopyTradingEngine) CloseCopyPosition(positionID, caller string) (*CopyP
 		}
 		if row.Status != "open" {
 			return errCopyPositionClosed
+		}
+		// Settle the escrow (collateral plus realised PnL, clamped at zero) and
+		// mark the position closed in one transaction, so a close always pays out.
+		if err := e.settleEscrow(tx, &row); err != nil {
+			return err
 		}
 		now := time.Now()
 		if err := tx.Model(&models.CopyPositionRecord{}).Where("id = ?", row.ID).

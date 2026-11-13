@@ -567,6 +567,33 @@ func parseDecimal(raw string) (*big.Rat, error) {
 	return value, nil
 }
 
+// parseSignedDecimal is parseDecimal's counterpart for a value that may carry a
+// sign, such as a realised profit-and-loss. Input amounts that can only be
+// positive still go through parseDecimal, which rejects a sign outright.
+func parseSignedDecimal(raw string) (*big.Rat, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("empty decimal value")
+	}
+	unsigned := trimmed
+	negative := false
+	switch trimmed[0] {
+	case '-':
+		negative = true
+		unsigned = trimmed[1:]
+	case '+':
+		unsigned = trimmed[1:]
+	}
+	value, err := parseDecimal(unsigned)
+	if err != nil {
+		return nil, err
+	}
+	if negative {
+		value.Neg(value)
+	}
+	return value, nil
+}
+
 func isAllDigits(s string) bool {
 	for _, r := range s {
 		if r < '0' || r > '9' {

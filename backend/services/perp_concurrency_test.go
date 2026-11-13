@@ -122,30 +122,30 @@ func TestCreateOrderAllocatesUniqueIDs(t *testing.T) {
 // its records. DistributeFees flips a record's status in place under the write
 // lock; a handler that serialised the live pointer read that field concurrently.
 func TestFeeRecordsSnapshotIsImmutable(t *testing.T) {
-svc := NewFeeCollectorService()
-if _, err := svc.CollectSwapFee("RUSD", "TGR", "1000", "0xabc", 1, "0xuser", 1, 1); err != nil {
-t.Fatalf("collect swap fee: %v", err)
-}
+	svc := NewFeeCollectorService()
+	if _, err := svc.CollectSwapFee("RUSD", "TGR", "1000", "0xabc", 1, "0xuser", 1, 1); err != nil {
+		t.Fatalf("collect swap fee: %v", err)
+	}
 
-var wg sync.WaitGroup
-wg.Add(2)
-go func() {
-defer wg.Done()
-for i := 0; i < 2000; i++ {
-for _, record := range svc.GetFeeRecords("swap") {
-_ = record.Status
-}
-}
-}()
-go func() {
-defer wg.Done()
-for i := 0; i < 2000; i++ {
-svc.mu.Lock()
-for _, record := range svc.allRecordsLocked() {
-record.Status = "distributed"
-}
-svc.mu.Unlock()
-}
-}()
-wg.Wait()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			for _, record := range svc.GetFeeRecords("swap") {
+				_ = record.Status
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			svc.mu.Lock()
+			for _, record := range svc.allRecordsLocked() {
+				record.Status = "distributed"
+			}
+			svc.mu.Unlock()
+		}
+	}()
+	wg.Wait()
 }

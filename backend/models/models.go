@@ -372,23 +372,33 @@ func (f *CopyFollow) BeforeCreate(tx *gorm.DB) error {
 // CopyPositionRecord is a copied position owned by a follower. EntryPrice and
 // CurrentPrice are stored as decimal strings so the PnL arithmetic stays exact.
 type CopyPositionRecord struct {
-	ID               uuid.UUID  `gorm:"type:uuid;primary_key" json:"id"`
-	FollowerAddress  string     `gorm:"index;size:42;not null" json:"follower_address"`
-	TraderAddress    string     `gorm:"size:42" json:"trader_address"`
-	OriginalPosition string     `gorm:"size:80" json:"original_position"`
-	Pair             string     `gorm:"size:40" json:"pair"`
-	Side             string     `gorm:"size:10" json:"side"`
-	Size             string     `gorm:"size:78" json:"size"`
-	EntryPrice       string     `gorm:"size:78" json:"entry_price"`
-	CurrentPrice     string     `gorm:"size:78" json:"current_price"`
-	Leverage         int        `json:"leverage"`
-	PNL              string     `gorm:"size:78;default:'0'" json:"pnl"`
-	Status           string     `gorm:"size:20;index" json:"status"`
-	OpenedAt         time.Time  `json:"opened_at"`
-	ClosedAt         *time.Time `json:"closed_at"`
-	CopiedAt         time.Time  `json:"copied_at"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
+	ID               uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	FollowerAddress  string    `gorm:"index;size:42;not null" json:"follower_address"`
+	TraderAddress    string    `gorm:"size:42" json:"trader_address"`
+	OriginalPosition string    `gorm:"size:80" json:"original_position"`
+	Pair             string    `gorm:"size:40" json:"pair"`
+	Side             string    `gorm:"size:10" json:"side"`
+	Size             string    `gorm:"size:78" json:"size"`
+	EntryPrice       string    `gorm:"size:78" json:"entry_price"`
+	CurrentPrice     string    `gorm:"size:78" json:"current_price"`
+	Leverage         int       `json:"leverage"`
+	PNL              string    `gorm:"size:78;default:'0'" json:"pnl"`
+	Status           string    `gorm:"size:20;index" json:"status"`
+	// Escrow holds the collateral debited from the follower when the position was
+	// opened, so a close can settle it plus realised PnL against the same ledger
+	// entry. OwnerID is the account the escrow belongs to (the follower's account
+	// UUID), because the ledger is keyed by account, not by wallet address.
+	Escrow         string     `gorm:"size:78;default:'0'" json:"escrow"`
+	EscrowChainID  int64      `gorm:"default:0" json:"escrow_chain_id"`
+	EscrowToken    string     `gorm:"size:42" json:"escrow_token"`
+	EscrowSymbol   string     `gorm:"size:20" json:"escrow_symbol"`
+	EscrowDecimals int        `gorm:"default:18" json:"escrow_decimals"`
+	OwnerID        string     `gorm:"size:64;index" json:"owner_id"`
+	OpenedAt       time.Time  `json:"opened_at"`
+	ClosedAt       *time.Time `json:"closed_at"`
+	CopiedAt       time.Time  `json:"copied_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 func (p *CopyPositionRecord) BeforeCreate(tx *gorm.DB) error {

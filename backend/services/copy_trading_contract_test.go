@@ -89,7 +89,8 @@ func TestCopyPositionResponseWireFormat(t *testing.T) {
 	if err := engine.StartFollowing(user.WalletAddress, "0x2222222222222222222222222222222222222222", CopyConfig{CopyRatio: 1}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	if _, err := engine.CopyTrade(t.Context(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "1000", ""); err != nil {
+	fundCopyFollower(t, engine, user.ID.String())
+	if _, err := engine.CopyTrade(t.Context(), user.ID.String(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "1000", ""); err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
 

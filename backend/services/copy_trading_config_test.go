@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	"math/big"
 	"testing"
 	"time"
 
@@ -16,10 +17,35 @@ import (
 func newCopyTestEngine(t *testing.T) (*CopyTradingEngine, *gorm.DB) {
 	t.Helper()
 	db := newListingTestDB(t)
-	if err := db.AutoMigrate(&models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}); err != nil {
+	if err := db.AutoMigrate(&models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}, &models.AccountBalance{}); err != nil {
 		t.Fatalf("migrate copy trading: %v", err)
 	}
-	return NewCopyTradingEngine(nil, &stubPriceSource{price: 100}).SetDB(db), db
+	engine := NewCopyTradingEngine(nil, &stubPriceSource{price: 100}).SetDB(db)
+	engine.SetLedger(NewLedgerService(db), copyEscrowChainID)
+	engine.SetSettlementResolver(copyTestSettlement)
+	return engine, db
+}
+
+// copyEscrowChainID and copyEscrowToken are the settlement entry the copy tests
+// escrow against, so a funded follower can actually be debited.
+const (
+	copyEscrowChainID = int64(1)
+	copyEscrowToken   = "0xrusd000000000000000000000000000000000001"
+)
+
+// copyTestSettlement resolves any pair to a fixed RUSD ledger entry so the copy
+// escrow path is exercised without the chain token registry.
+func copyTestSettlement(_ string) (perpSettlement, error) {
+	return perpSettlement{Symbol: "RUSD", ChainID: copyEscrowChainID, Address: copyEscrowToken, Decimals: 18}, nil
+}
+
+// fundCopyFollower credits a follower's escrow asset so a copy can be funded.
+func fundCopyFollower(t *testing.T, engine *CopyTradingEngine, ownerID string) {
+	t.Helper()
+	fund := new(big.Int).Exp(big.NewInt(10), big.NewInt(24), nil)
+	if err := engine.ledger.Credit(ownerID, copyEscrowChainID, copyEscrowToken, "RUSD", 18, fund); err != nil {
+		t.Fatalf("fund copy follower: %v", err)
+	}
 }
 
 // seedCopyPosition inserts one copy position owned by follower, returning its id.
@@ -97,7 +123,8 @@ func TestStartFollowingAppliesCopyRatio(t *testing.T) {
 		t.Fatalf("StartFollowing: %v", err)
 	}
 
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
@@ -116,7 +143,8 @@ func TestCopyTradingStateSurvivesRestart(t *testing.T) {
 	if err := engine.StartFollowing("0xfollower", "0xtrader", CopyConfig{CopyRatio: 1}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
@@ -142,7 +170,7 @@ func TestCopyTradeRejectsUnknownFollower(t *testing.T) {
 	engine, _ := newCopyTestEngine(t)
 	engine.RegisterTrader("0xtrader", "Trader", "")
 
-	if _, err := engine.CopyTrade(context.Background(), "0xstranger", "0xtrader", "BTC/RUSD", "long", "100", ""); err == nil {
+	if _, err := engine.CopyTrade(context.Background(), "0xstranger", "0xstranger", "0xtrader", "BTC/RUSD", "long", "100", ""); err == nil {
 		t.Fatal("expected a copy from a non-follower to be rejected")
 	}
 }
@@ -184,7 +212,8 @@ func TestUpdateCopyPositionsAppliesStopLoss(t *testing.T) {
 	if err := engine.StartFollowing("0xfollower", "0xtrader", CopyConfig{CopyRatio: 1, StopLoss: 5}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
@@ -213,7 +242,8 @@ func TestUpdateCopyPositionsAppliesTakeProfit(t *testing.T) {
 	if err := engine.StartFollowing("0xfollower", "0xtrader", CopyConfig{CopyRatio: 1, TakeProfit: 5}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
@@ -238,7 +268,8 @@ func TestUpdateCopyPositionsLeavesHealthyPositionOpen(t *testing.T) {
 	if err := engine.StartFollowing("0xfollower", "0xtrader", CopyConfig{CopyRatio: 1, StopLoss: 5, TakeProfit: 5}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
@@ -264,7 +295,8 @@ func TestUpdateCopyPositionsSkipsUnpriceablePair(t *testing.T) {
 	if err := engine.StartFollowing("0xfollower", "0xtrader", CopyConfig{CopyRatio: 1, StopLoss: 5}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
+	fundCopyFollower(t, engine, "0xfollower")
+	position, err := engine.CopyTrade(context.Background(), "0xfollower", "0xfollower", "0xtrader", "BTC/RUSD", "long", "1000", "")
 	if err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}

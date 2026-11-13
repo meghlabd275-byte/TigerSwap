@@ -15,7 +15,7 @@ import (
 func newCopyIdentityEngine(t *testing.T) (*CopyTradingEngine, *models.User) {
 	t.Helper()
 	db := newWalletTestDB(t)
-	if err := db.AutoMigrate(&models.User{}, &models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.CopyTrader{}, &models.CopyFollow{}, &models.CopyPositionRecord{}, &models.AccountBalance{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
@@ -29,6 +29,8 @@ func newCopyIdentityEngine(t *testing.T) (*CopyTradingEngine, *models.User) {
 	}
 
 	engine := NewCopyTradingEngine(nil, &stubPriceSource{price: 100}).SetDB(db)
+	engine.SetLedger(NewLedgerService(db), copyEscrowChainID)
+	engine.SetSettlementResolver(copyTestSettlement)
 	engine.RegisterTrader("0x2222222222222222222222222222222222222222", "Trader", "")
 	return engine, &user
 }
@@ -63,7 +65,8 @@ func TestStartFollowingKeysFollowerByWallet(t *testing.T) {
 
 	// A copy placed under the wallet address (the domain the wallet route uses)
 	// must be accepted, proving the two routes agree on one identity.
-	if _, err := engine.CopyTrade(t.Context(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "1000", ""); err != nil {
+	fundCopyFollower(t, engine, user.ID.String())
+	if _, err := engine.CopyTrade(t.Context(), user.ID.String(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "1000", ""); err != nil {
 		t.Fatalf("copy under the wallet address must succeed: %v", err)
 	}
 }
@@ -82,6 +85,8 @@ func TestStartFollowingRejectsAccountWithoutWallet(t *testing.T) {
 	}
 
 	engine := NewCopyTradingEngine(nil, &stubPriceSource{price: 100}).SetDB(db)
+	engine.SetLedger(NewLedgerService(db), copyEscrowChainID)
+	engine.SetSettlementResolver(copyTestSettlement)
 	engine.RegisterTrader("0x2222222222222222222222222222222222222222", "Trader", "")
 
 	rec := runAuthenticatedHandler(t, engine.StartFollowingHandler, user.ID.String(), gin.H{
@@ -109,7 +114,8 @@ func TestGetPositionsResolvesCallerWallet(t *testing.T) {
 	if err := engine.StartFollowing(user.WalletAddress, "0x2222222222222222222222222222222222222222", CopyConfig{CopyRatio: 1}); err != nil {
 		t.Fatalf("StartFollowing: %v", err)
 	}
-	if _, err := engine.CopyTrade(t.Context(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "100", ""); err != nil {
+	fundCopyFollower(t, engine, user.ID.String())
+	if _, err := engine.CopyTrade(t.Context(), user.ID.String(), user.WalletAddress, "0x2222222222222222222222222222222222222222", "BTC/RUSD", "long", "100", ""); err != nil {
 		t.Fatalf("CopyTrade: %v", err)
 	}
 
