@@ -10,6 +10,8 @@ import {TigerSwapPriceOracle} from "../TigerSwapPriceOracle.sol";
 import {TigerSwapPerpetuals} from "../TigerSwapPerpetuals.sol";
 import {TigerSwapLending} from "../TigerSwapLending.sol";
 import {TigerSwapBridge} from "../TigerSwapBridge.sol";
+import {TigerSwapAdvancedOrders} from "../TigerSwapAdvancedOrders.sol";
+import {TigerSwapTWAMM} from "../TigerSwapTWAMM.sol";
 
 /**
  * @title Deploy
@@ -53,6 +55,25 @@ contract Deploy is Script {
         TigerSwapLending lending = new TigerSwapLending(address(oracle));
         TigerSwapBridge bridge = new TigerSwapBridge(bridgeChainId);
 
+        // On-chain order execution. TigerSwapAdvancedOrders escrows the input of a
+        // limit/stop/TWAP order and settles fills through the router, so a keeper
+        // can only fill at the pool's real price. TigerSwapTWAMM executes a
+        // long-term order in virtual slices against its own pool. Both read their
+        // price from the same oracle the rest of the protocol uses.
+        TigerSwapAdvancedOrders orders = new TigerSwapAdvancedOrders(address(oracle), address(router));
+
+        // TigerSwapTWAMM is a per-pair pool, so it is deployed only when the pair
+        // is configured. Without a pair there is nothing for a long-term order to
+        // trade against, and the registry records the zero address.
+        address twamm = address(0);
+        address twammToken0 = vm.envOr("TIGERSWAP_TWAMM_TOKEN0", address(0));
+        address twammToken1 = vm.envOr("TIGERSWAP_TWAMM_TOKEN1", address(0));
+        if (twammToken0 != address(0) && twammToken1 != address(0)) {
+            address twammFeeRecipient = vm.envOr("TIGERSWAP_TWAMM_FEE_RECIPIENT", msg.sender);
+            uint256 twammFee = vm.envOr("TIGERSWAP_TWAMM_FEE", uint256(0));
+            twamm = address(new TigerSwapTWAMM(twammToken0, twammToken1, twammFeeRecipient, twammFee));
+        }
+
         // The perps oracle must be the address the API's keeper signs with, so it
         // is set from the environment rather than defaulting to the deployer.
         perps.setOracle(perpsOracle);
@@ -61,7 +82,7 @@ contract Deploy is Script {
 
         _seedMarkets(perps);
 
-        _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth);
+        _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth, address(orders), twamm);
 
         console2.log("TigerSwap deployed on chain", chainId);
         console2.log("  factory", address(factory));
@@ -69,6 +90,8 @@ contract Deploy is Script {
         console2.log("  quoter ", address(quoter));
         console2.log("  oracle ", address(oracle));
         console2.log("  perps  ", address(perps));
+        console2.log("  orders ", address(orders));
+        console2.log("  twamm  ", twamm);
         console2.log("  lending", address(lending));
         console2.log("  bridge ", address(bridge));
     }
@@ -124,7 +147,9 @@ contract Deploy is Script {
         address perps,
         address lending,
         address bridge,
-        address weth
+        address weth,
+        address orders,
+        address twamm
     ) internal {
         string memory json = string.concat(
             "{\n",
@@ -134,6 +159,8 @@ contract Deploy is Script {
             '  "quoter": "', vm.toString(quoter), '",\n',
             '  "oracle": "', vm.toString(oracle), '",\n',
             '  "perps": "', vm.toString(perps), '",\n',
+            '  "orders": "', vm.toString(orders), '",\n',
+            '  "twamm": "', vm.toString(twamm), '",\n',
             '  "lending": "', vm.toString(lending), '",\n',
             '  "bridge": "', vm.toString(bridge), '",\n',
             '  "weth": "', vm.toString(weth), '"\n',

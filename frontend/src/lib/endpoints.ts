@@ -54,8 +54,10 @@ import {
   NFTToken,
   OtcOrder,
   OnChainCall,
+  OnChainOrder,
   OnChainPerpMarket,
   OnChainPerpPosition,
+  OnChainTwammOrder,
   OptionBuyResult,
   OptionExerciseResult,
   OptionPositionView,
@@ -77,7 +79,6 @@ import {
   Token,
   Trade,
   TopTrader,
-  TwammOrder,
   UserProfile,
   UserTransaction,
   VolumeSeriesResponse,
@@ -151,6 +152,8 @@ import {
   otcOrderListValidator,
   otcOrderValidator,
   onChainCallValidator,
+  onChainOrderListValidator,
+  onChainTwammOrderListValidator,
   onChainPerpMarketListValidator,
   onChainPerpPositionListValidator,
   perpMarketListValidator,
@@ -168,8 +171,6 @@ import {
   tokenListValidator,
   tradeListValidator,
   topTraderListValidator,
-  twammOrderListValidator,
-  twammOrderValidator,
   userProfileValidator,
   volumeSeriesValidator,
   userTransactionListValidator,
@@ -539,6 +540,66 @@ export const endpoints = {
     return onChainCallValidator(body);
   },
 
+  /**
+   * Unsigned calldata that creates an advanced order (limit, stop, TWAP, GTC,
+   * IOC, post-only) on the deployed `TigerSwapAdvancedOrders` contract. The
+   * caller's wallet signs it; the condition is evaluated on-chain against the
+   * price oracle.
+   */
+  async buildOnChainOrder(payload: {
+    chain_id: number;
+    order_type: 'limit' | 'stop_loss' | 'take_profit' | 'twap' | 'gtc' | 'ioc' | 'post_only';
+    side: 'buy' | 'sell';
+    token_in: string;
+    token_out: string;
+    amount_in: string;
+    amount_out_min?: string;
+    price?: string;
+    stop_price?: string;
+    expires_in?: number;
+    twap_parts?: number;
+    twap_interval?: number;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/orders", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** The authenticated caller's on-chain advanced orders for a chain. */
+  async getOnChainOrders(chainId: number): Promise<OnChainOrder[]> {
+    const body = await api.get("/onchain/orders", { query: { chain_id: chainId } });
+    return onChainOrderListValidator(body);
+  },
+
+  /** Unsigned calldata that cancels one of the caller's own on-chain orders. */
+  async buildOnChainCancelOrder(orderId: string, chainId: number): Promise<OnChainCall> {
+    const body = await api.post(
+      `/onchain/orders/${encodeURIComponent(orderId)}/cancel`,
+      undefined,
+      { query: { chain_id: chainId } },
+    );
+    return onChainCallValidator(body);
+  },
+
+  /**
+   * Unsigned calldata that creates a long-term TWAMM order on the deployed
+   * `TigerSwapTWAMM` contract. The order executes in slices over its life.
+   */
+  async buildOnChainTwammOrder(payload: {
+    chain_id: number;
+    is_token0: boolean;
+    sell_rate: string;
+    duration_hours: number;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/twamm", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** The long-term TWAMM orders on a chain. */
+  async getOnChainTwammOrders(chainId: number): Promise<OnChainTwammOrder[]> {
+    const body = await api.get("/onchain/twamm", { query: { chain_id: chainId } });
+    return onChainTwammOrderListValidator(body);
+  },
+
   /** Opens a spot margin account for the authenticated caller. */
   async openMarginAccount(payload: { pair: string; margin_mode?: string }): Promise<MarginAccount> {
     const body = await api.post("/margin/accounts", payload);
@@ -801,25 +862,6 @@ export const endpoints = {
     await apiRequest(`/otc/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 
-  /** TWAMM schedules: large orders sliced over their lifetime. */
-
-  async listTwammOrders(): Promise<TwammOrder[]> {
-    const body = await api.get("/twamm/orders");
-    return twammOrderListValidator(body);
-  },
-
-  async createTwammOrder(payload: {
-    symbol: string;
-    side: "buy" | "sell";
-    total_quantity: string;
-    limit_price: string;
-    duration_hours: number;
-    start_delay_seconds: number;
-  }): Promise<TwammOrder> {
-    const body = await api.post("/twamm/orders", payload);
-    return twammOrderValidator(body);
-  },
-
   /** Copy trading: public leaderboard plus the caller's own follow state. */
   async listCopyTraders(limit = 20): Promise<CopyTrader[]> {
     const body = await api.get("/copy-trading/traders", { query: { limit } });
@@ -888,10 +930,6 @@ export const endpoints = {
   /** Stops copying the trader the caller currently follows. */
   async unfollowTrader(): Promise<void> {
     await api.delete("/copy-trading/follow");
-  },
-
-  async cancelTwammOrder(id: string): Promise<void> {
-    await apiRequest(`/twamm/orders/${encodeURIComponent(id)}`, { method: "DELETE" });
   },
 
   /** Farms: liquidity mining with one or more reward streams. */

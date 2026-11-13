@@ -39,6 +39,8 @@ import {
   optionSeriesViewListValidator,
   otcOrderListValidator,
   onChainCallValidator,
+  onChainOrderListValidator,
+  onChainTwammOrderListValidator,
   onChainPerpMarketListValidator,
   onChainPerpPositionListValidator,
   perpMarketListValidator,
@@ -52,7 +54,6 @@ import {
   topTraderListValidator,
   tradeListValidator,
   volumeSeriesValidator,
-  twammOrderListValidator,
   airdropAllocationViewListValidator,
   airdropCampaignListValidator,
   farmStakeViewListValidator,
@@ -106,6 +107,14 @@ const SERVER_ONCHAIN_PERP_POSITIONS = `{"positions":[{"chain_id":8453,"position_
 
 const SERVER_ONCHAIN_CALL = `{"to":"0x2222222222222222222222222222222222222222","data":"0x12345678","value":"0","chain_id":8453}`;
 
+const SERVER_ONCHAIN_ORDER = `{"order_id":"0x9f5a44e1a0b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c","owner":"0x1234567890123456789012345678901234567890","order_type":"limit","side":"buy","token_in":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","token_out":"0x4200000000000000000000000000000000000006","amount_in":"1000000000000000000","amount_out_min":"2000000000000000000","price":"65000000000000000000000","stop_price":"0","filled_amount":"0","amount_out_received":"0","status":"open","expires_at":"2026-11-01T16:17:02Z","created_at":"2026-10-31T16:17:02Z"}`;
+
+const SERVER_ONCHAIN_ORDERS = `{"orders":[${SERVER_ONCHAIN_ORDER}],"count":1,"chain_id":8453}`;
+
+const SERVER_ONCHAIN_TWAMM_ORDER = `{"order_id":"1","owner":"0x1234567890123456789012345678901234567890","is_token0":true,"sell_rate":"1000000000000","expiration":"1793500000","escrow":"100000000000000000000","proceeds":"0","active":true}`;
+
+const SERVER_ONCHAIN_TWAMM_ORDERS = `{"orders":[${SERVER_ONCHAIN_TWAMM_ORDER}],"count":1,"chain_id":8453}`;
+
 const SERVER_FUTURES_LIST = `{"count":1,"markets":[{"id":"186c6bc6-619b-4d36-87a6-e9be2dfdced6","symbol":"BTC/RUSD","contract_type":"RUSD_M","base_asset":"BTC","quote_asset":"RUSD","settlement":"RUSD","contract_size":"1","tick_size":"0.1","max_leverage":200,"min_order_size":"1","funding_rate":"0.0001","funding_interval_hours":8,"funding_rate_cap":"0.01","oracle_sources":"","maintenance_margin_rate":0.005,"initial_margin_rate":0.008,"liquidation_fee_rate":0.005,"insurance_fund_share":0.1,"maker_fee_rate":0,"taker_fee_rate":0.0002,"status":"paused","listing_type":"perpetual","is_tradfi":false,"created_at":"2026-10-31T04:06:45.968928Z","updated_at":"2026-10-31T04:06:45.968928Z"}]}`;
 
 // /perps/markets and /margin/markets share the futures envelope shape; these
@@ -122,7 +131,7 @@ const SERVER_SPLIT_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"20100
 
 const SERVER_MULTIHOP_QUOTE = `{"amountIn":"1000000000000000000","amountOut":"2050000000000000000","amountOutMin":"2039750000000000000","priceImpact":0.05,"route":["0x1111111111111111111111111111111111111111","0x5555555555555555555555555555555555555555","0x2222222222222222222222222222222222222222"],"gasEstimate":250000,"routeHops":[{"tokenIn":"0x1111111111111111111111111111111111111111","tokenOut":"0x5555555555555555555555555555555555555555","family":"tigerswap_v2","pool":"0x6666666666666666666666666666666666666666"},{"tokenIn":"0x5555555555555555555555555555555555555555","tokenOut":"0x2222222222222222222222222222222222222222","family":"tigerswap_stable","pool":"0x7777777777777777777777777777777777777777"}]}`;
 
-// The bots, OTC and TWAMM payloads below were captured by running the real
+// The bots and OTC payloads below were captured by running the real
 // handlers against an in-memory database in
 // `backend/services/contract_capture_test.go` and copying the logged JSON.
 const SERVER_BOT = `{"config":{"rebalance_threshold_bps":50,"spread_bps":25,"target_depth":"10000"},"created_at":"2026-10-31T16:17:02.420413229Z","filled_orders":0,"id":1,"last_run_at":"0001-01-01T00:00:00Z","max_daily_loss":"100","max_open_orders":10,"max_order_size":"5","name":"maker","realised_pnl":"0","status":"active","strategy":"market_maker","symbol":"BTC/RUSD","traded_volume":"0","updated_at":"2026-10-31T16:17:02.420413229Z"}`;
@@ -140,10 +149,6 @@ const SERVER_BOT_PERFORMANCE = `[{"id":1,"bot_id":1,"day":"2026-10-31T00:00:00Z"
 const SERVER_OTC_ORDER = `{"id":1,"maker_id":"7","symbol":"BTC/RUSD","side":"buy","quantity":"2","price":"60000","status":"open","min_fill":"0.5","expires_at":"2026-11-01T16:17:02.425322999Z","created_at":"2026-10-31T16:17:02.425348979Z","updated_at":"2026-10-31T16:17:02.425348979Z"}`;
 
 const SERVER_OTC_ORDERS = `[${SERVER_OTC_ORDER}]`;
-
-const SERVER_TWAMM_ORDER = `{"id":1,"user_id":"7","symbol":"BTC/RUSD","side":"buy","total_quantity":"10","filled_quantity":"0","limit_price":"0","start_time":"2026-10-31T16:17:02.428673919Z","end_time":"2026-11-01T16:17:02.428673919Z","status":"active","created_at":"2026-10-31T16:17:02.428691819Z","updated_at":"2026-10-31T16:17:02.428691819Z"}`;
-
-const SERVER_TWAMM_ORDERS = `[${SERVER_TWAMM_ORDER}]`;
 
 const SERVER_COPY_TRADER = `{"address":"0x1111111111111111111111111111111111111111","name":"Alpha Whale","avatar":"https://example.com/a.png","win_rate":0,"total_profit":"0","weekly_profit":0,"monthly_profit":0,"total_trades":0,"followers":0,"total_volume":"0","avg_holding_time":"","is_verified":false,"is_pro":false,"risk_score":"medium","strategies":null,"last_active":"2026-10-31T16:35:21.407518436Z"}`;
 
@@ -300,6 +305,23 @@ test("on-chain order-building payload satisfies onChainCallValidator", () => {
   assert.equal(call.data, "0x12345678");
 });
 
+test("live /onchain/orders payload satisfies onChainOrderListValidator", () => {
+  const orders = parse(onChainOrderListValidator, SERVER_ONCHAIN_ORDERS, "onChainOrders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].order_type, "limit");
+  assert.equal(orders[0].side, "buy");
+  assert.equal(orders[0].status, "open");
+  assert.equal(orders[0].amount_in, "1000000000000000000");
+});
+
+test("live /onchain/twamm payload satisfies onChainTwammOrderListValidator", () => {
+  const orders = parse(onChainTwammOrderListValidator, SERVER_ONCHAIN_TWAMM_ORDERS, "onChainTwammOrders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].is_token0, true);
+  assert.equal(orders[0].active, true);
+  assert.equal(orders[0].sell_rate, "1000000000000");
+});
+
 test("on-chain validators drop a row whose market_id is not a hash string", () => {
   // A market with no id cannot be traded against; it must be dropped rather than
   // rendered with an empty identifier.
@@ -380,13 +402,6 @@ test("live /otc/orders payload satisfies otcOrderListValidator", () => {
   assert.equal(orders.length, 1);
   assert.equal(orders[0].side, "buy");
   assert.equal(orders[0].min_fill, "0.5");
-});
-
-test("live /twamm/orders payload satisfies twammOrderListValidator", () => {
-  const orders = parse(twammOrderListValidator, SERVER_TWAMM_ORDERS, "twammOrders");
-  assert.equal(orders.length, 1);
-  assert.equal(orders[0].total_quantity, "10");
-  assert.equal(orders[0].status, "active");
 });
 
 test("live /copy-trading/traders payload satisfies copyTraderListValidator", () => {

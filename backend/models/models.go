@@ -50,7 +50,6 @@ type User struct {
 	// Relations
 	Tokens       []Token       `gorm:"foreignKey:CreatedBy" json:"-"`
 	Transactions []Transaction `gorm:"foreignKey:UserID" json:"-"`
-	Orders       []Order       `gorm:"foreignKey:UserID" json:"-"`
 }
 
 func (u *User) BeforeCreate(tx *gorm.DB) error {
@@ -154,35 +153,6 @@ type Transaction struct {
 func (t *Transaction) BeforeCreate(tx *gorm.DB) error {
 	if t.ID == uuid.Nil {
 		t.ID = uuid.New()
-	}
-	return nil
-}
-
-// Order represents a limit order
-type Order struct {
-	ID           uuid.UUID      `gorm:"type:uuid;primary_key" json:"id"`
-	UserID       uuid.UUID      `gorm:"type:uuid;index" json:"user_id"`
-	ChainID      int64          `gorm:"index" json:"chain_id"`
-	OrderType    string         `gorm:"size:20" json:"order_type"` // limit, stop_loss, take_profit
-	Side         string         `gorm:"size:10" json:"side"`       // buy, sell
-	TokenIn      string         `gorm:"size:42" json:"token_in"`
-	TokenOut     string         `gorm:"size:42" json:"token_out"`
-	AmountIn     string         `gorm:"size:50" json:"amount_in"`
-	AmountOutMin string         `gorm:"size:50" json:"amount_out_min"`
-	Price        string         `gorm:"size:50" json:"price"`                    // For limit orders
-	Status       string         `gorm:"size:20;default:'pending'" json:"status"` // pending, filled, cancelled, expired
-	FilledAmount string         `gorm:"size:50" json:"filled_amount"`
-	GasUsed      string         `gorm:"size:30" json:"gas_used"`
-	TxHash       string         `gorm:"size:66" json:"tx_hash,omitempty"`
-	ExpiresAt    time.Time      `json:"expires_at"`
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
-	DeletedAt    gorm.DeletedAt `gorm:"index" json:"-"`
-}
-
-func (o *Order) BeforeCreate(tx *gorm.DB) error {
-	if o.ID == uuid.Nil {
-		o.ID = uuid.New()
 	}
 	return nil
 }

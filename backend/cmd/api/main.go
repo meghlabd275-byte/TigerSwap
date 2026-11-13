@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/joho/godotenv"
 	"tigerswap/backend/config"
+	orderspkg "tigerswap/backend/go/orders"
 	perpspkg "tigerswap/backend/go/perps"
 	"tigerswap/backend/models"
 	"tigerswap/backend/services"
@@ -86,7 +87,6 @@ func main() {
 		&models.Blockchain{},
 		&models.Pool{},
 		&models.Transaction{},
-		&models.Order{},
 		&models.AdminLog{},
 		&models.PerpetualPosition{},
 		&models.PerpetualOrder{},
@@ -121,7 +121,6 @@ func main() {
 		&models.BotOrder{},
 		&models.BotPerformance{},
 		&models.OtcOrder{},
-		&models.TwammOrder{},
 		&models.FarmPool{},
 		&models.FarmReward{},
 		&models.FarmStake{},
@@ -228,6 +227,23 @@ func main() {
 	listingService.SetPerpsMarketCreatedHook(func(market *models.PerpsMarket) error {
 		return onChainPerps.MirrorPerpsMarket(context.Background(), market)
 	})
+	// On-chain advanced orders and TWAMM: the deployed TigerSwapAdvancedOrders
+	// and TigerSwapTWAMM contracts escrow and fill orders on-chain, so a limit,
+	// stop, TWAP or long-term order is verifiable on-chain rather than only in
+	// the platform ledger. Order building returns unsigned calldata; the
+	// executor key only fills resting orders the platform may submit itself.
+	onChainOrders := services.NewOnChainOrdersService(db)
+	if execKey, ok := orderspkg.LoadSigner(); ok {
+		if key, err := crypto.HexToECDSA(execKey); err == nil {
+			onChainOrders.SetExecutorKey(key)
+		} else {
+			log.Printf("warning: TIGERSWAP_ORDERS_EXECUTOR_KEY is not a valid key: %v", err)
+		}
+	}
+	if err := onChainOrders.LoadDeployments(); err != nil {
+		log.Printf("warning: on-chain orders deployments not loaded: %v", err)
+	}
+
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator).SetDB(db)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
 	launchpadService := services.NewLaunchpadService(db, blockchainClient, priceAggregator)
@@ -235,10 +251,9 @@ func main() {
 	feeCollector.SetBlockchain(blockchainClient)
 	feeCollector.SetDB(db)
 
-	// DEX-native order types and automation. OTC block trades, TWAMM
-	// schedules and trading bots are each persisted so a restart resumes them.
+	// DEX-native order types and automation. OTC block trades and trading bots
+	// are each persisted so a restart resumes them.
 	otcService := services.NewOtcService(db)
-	twammService := services.NewTwammService(db)
 	botsService := services.NewBotsService(db)
 	dynamicIntegration := services.NewDynamicIntegrationService(db)
 
@@ -334,6 +349,10 @@ func main() {
 	// Index on-chain perp events and liquidate unhealthy positions. Started only
 	// when a deployment is configured; otherwise it is a no-op.
 	onChainPerps.Start(realtimeCtx)
+	// Fill resting advanced orders and trigger stop/take-profit orders whose
+	// on-chain condition is met. Started only when an executor key and an orders
+	// deployment are configured; otherwise it is a no-op.
+	onChainOrders.Start(realtimeCtx)
 	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
 
 	// Drive every active bot against live market data. The Rust engine is the
@@ -367,13 +386,13 @@ func main() {
 		marginEngine:       marginEngine,
 		perpetualEngine:    perpetualEngine,
 		onChainPerps:       onChainPerps,
+		onChainOrders:      onChainOrders,
 		copyTradingEngine:  copyTradingEngine,
 		bridgeService:      bridgeService,
 		launchpadService:   launchpadService,
 		feeCollector:       feeCollector,
 		walletService:      walletService,
 		otcService:         otcService,
-		twammService:       twammService,
 		botsService:        botsService,
 		dynamicIntegration: dynamicIntegration,
 		farmService:        farmService,

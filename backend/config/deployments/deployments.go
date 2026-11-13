@@ -28,6 +28,8 @@ type Registry struct {
 	Quoter  string `json:"quoter"`
 	Oracle  string `json:"oracle"`
 	Perps   string `json:"perps"`
+	Orders  string `json:"orders"`
+	Twamm   string `json:"twamm"`
 	Lending string `json:"lending"`
 	Bridge  string `json:"bridge"`
 	WETH    string `json:"weth"`
@@ -48,6 +50,10 @@ func (r Registry) Address(field string) (common.Address, error) {
 		raw = r.Oracle
 	case "perps":
 		raw = r.Perps
+	case "orders":
+		raw = r.Orders
+	case "twamm":
+		raw = r.Twamm
 	case "lending":
 		raw = r.Lending
 	case "bridge":

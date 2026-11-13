@@ -439,6 +439,99 @@ export const onChainPerpPositionValidator = object<OnChainPerpPosition>({
 export const onChainPerpPositionListValidator = listingArray(onChainPerpPositionValidator);
 
 /**
+ * An advanced order held by the deployed `TigerSwapAdvancedOrders` contract, as
+ * returned by `/onchain/orders`. Every amount is an exact integer string in the
+ * token's smallest unit, read from chain state; the API never converts it to a
+ * float. The condition (limit, stop, TWAP slice) is evaluated on-chain against
+ * the price oracle, so the server cannot assert that a condition was met.
+ */
+export interface OnChainOrder {
+  order_id: string;
+  owner: string;
+  order_type: string;
+  side: string;
+  token_in: string;
+  token_out: string;
+  amount_in: string;
+  amount_out_min: string;
+  price: string;
+  stop_price: string;
+  filled_amount: string;
+  amount_out_received: string;
+  status: string;
+  expires_at: string;
+  created_at: string;
+}
+
+export const onChainOrderValidator = object<OnChainOrder>({
+  order_id: string,
+  owner: address,
+  order_type: oneOf([
+    'limit',
+    'stop_loss',
+    'take_profit',
+    'twap',
+    'gtc',
+    'ioc',
+    'post_only',
+    'market',
+    'unknown',
+  ] as const),
+  side: oneOf(['buy', 'sell'] as const),
+  token_in: address,
+  token_out: address,
+  amount_in: string,
+  amount_out_min: string,
+  price: string,
+  stop_price: string,
+  filled_amount: string,
+  amount_out_received: string,
+  status: oneOf([
+    'pending',
+    'open',
+    'partially_filled',
+    'filled',
+    'cancelled',
+    'expired',
+    'triggered',
+    'unknown',
+  ] as const),
+  expires_at: string,
+  created_at: string,
+});
+
+export const onChainOrderListValidator = listingArray(onChainOrderValidator);
+
+/**
+ * A long-term TWAMM order held by the deployed `TigerSwapTWAMM` contract, as
+ * returned by `/onchain/twamm`. The order executes in slices over its life, so
+ * there is no single transaction to sandwich.
+ */
+export interface OnChainTwammOrder {
+  order_id: string;
+  owner: string;
+  is_token0: boolean;
+  sell_rate: string;
+  expiration: string;
+  escrow: string;
+  proceeds: string;
+  active: boolean;
+}
+
+export const onChainTwammOrderValidator = object<OnChainTwammOrder>({
+  order_id: string,
+  owner: address,
+  is_token0: boolean,
+  sell_rate: string,
+  expiration: string,
+  escrow: string,
+  proceeds: string,
+  active: boolean,
+});
+
+export const onChainTwammOrderListValidator = listingArray(onChainTwammOrderValidator);
+
+/**
  * Unsigned calldata returned by an order-building endpoint. The caller's own
  * wallet signs it; the server never holds a user key.
  */
@@ -982,6 +1075,7 @@ function listingArray<T>(element: (value: unknown, path?: string) => T) {
       const items =
         record.markets ??
         record.listings ??
+        record.orders ??
         record.balances ??
         record.items ??
         record.locks ??
@@ -1490,39 +1584,6 @@ export const otcOrderValidator = object<OtcOrder>({
 });
 
 export const otcOrderListValidator = listingArray(otcOrderValidator);
-
-/** A TWAMM order that executes in slices across its lifetime. */
-export interface TwammOrder {
-  id: string;
-  user_id: string;
-  symbol: string;
-  side: string;
-  total_quantity: string;
-  filled_quantity: string;
-  limit_price: string;
-  start_time: string;
-  end_time: string;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export const twammOrderValidator = object<TwammOrder>({
-  id: identifier,
-  user_id: identifier,
-  symbol: marketSymbol,
-  side: oneOf(["buy", "sell"] as const),
-  total_quantity: decimal,
-  filled_quantity: withDefault(decimal, "0"),
-  limit_price: withDefault(decimal, "0"),
-  start_time: timestamp,
-  end_time: timestamp,
-  status: string,
-  created_at: withDefault(timestamp, new Date(0).toISOString()),
-  updated_at: withDefault(timestamp, new Date(0).toISOString()),
-});
-
-export const twammOrderListValidator = listingArray(twammOrderValidator);
 
 /**
  * A trader on the copy-trading leaderboard, as returned by

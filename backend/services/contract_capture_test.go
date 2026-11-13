@@ -140,23 +140,6 @@ func TestOtcOrderWireFormat(t *testing.T) {
 	)
 }
 
-func TestTwammOrderWireFormat(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	status, body := callHandler(t, service.CreateOrder, "7", http.MethodPost, "/twamm/orders",
-		`{"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","limit_price":"0",`+
-			`"duration_hours":24,"start_delay_seconds":0}`,
-		nil)
-	if status != http.StatusCreated {
-		t.Fatalf("create twamm: status %d body %s", status, body)
-	}
-	t.Logf("SERVER_TWAMM_ORDER = `%s`", body)
-	assertKeys(t, body,
-		"id", "user_id", "symbol", "side", "total_quantity", "filled_quantity",
-		"limit_price", "start_time", "end_time", "status", "created_at", "updated_at",
-	)
-}
 
 // TestBotTablesRoundTrip pins the columns the migrations create, so a dropped
 // column is caught here rather than in the browser.

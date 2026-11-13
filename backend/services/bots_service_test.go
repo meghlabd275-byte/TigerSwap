@@ -41,7 +41,6 @@ func newBotsTestDB(t *testing.T) *gorm.DB {
 		&models.BotOrder{},
 		&models.BotPerformance{},
 		&models.OtcOrder{},
-		&models.TwammOrder{},
 		&models.AccountBalance{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -417,64 +416,6 @@ func TestTakeOtcOrderRefusesBelowMinFill(t *testing.T) {
 	}
 }
 
-func TestCreateTwammOrderRequiresAMinimumDuration(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	// One hour is below the five-minute minimum? No: 0 hours is.
-	body := `{"symbol":"BTC/RUSD","side":"sell","total_quantity":"10","limit_price":"0","duration_hours":0}`
-	status, _ := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
-	if status != http.StatusBadRequest {
-		t.Fatalf("a zero-hour twamm order must be rejected, got %d", status)
-	}
-
-	body = `{"symbol":"BTC/RUSD","side":"sell","total_quantity":"10","limit_price":"0","duration_hours":1}`
-	status, response := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
-	if status != http.StatusCreated {
-		t.Fatalf("a one-hour twamm order should be created, got %d: %s", status, response)
-	}
-}
-
-func TestCreateTwammOrderDefaultsAnEmptyLimitPriceToZero(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	body := `{"symbol":"BTC/RUSD","side":"buy","total_quantity":"10","duration_hours":1}`
-	status, response := callHandler(t, service.CreateOrder, "1", http.MethodPost, "/twamm/orders", body, nil)
-	if status != http.StatusCreated {
-		t.Fatalf("a twamm order without a limit price should be created, got %d: %s", status, response)
-	}
-
-	var stored models.TwammOrder
-	if err := db.Where("user_id = ?", "1").First(&stored).Error; err != nil {
-		t.Fatalf("load twamm order: %v", err)
-	}
-	if stored.LimitPrice != "0" {
-		t.Fatalf("an absent limit price should default to 0, got %s", stored.LimitPrice)
-	}
-}
-
-func TestCancelTwammOrderRefusesAnotherUsersOrder(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	order := models.TwammOrder{
-		UserID: "1", Symbol: "BTC/RUSD", Side: "sell", TotalQuantity: "10",
-		FilledQuantity: "0", LimitPrice: "0",
-		StartTime: time.Now().UTC(), EndTime: time.Now().UTC().Add(time.Hour),
-		Status: "active",
-	}
-	if err := db.Create(&order).Error; err != nil {
-		t.Fatalf("seed twamm: %v", err)
-	}
-
-	status, _ := callHandler(t, service.CancelOrder, "2", http.MethodPost,
-		"/twamm/orders/1/cancel", "", idParam(strconv.FormatUint(uint64(order.ID), 10)))
-	if status != http.StatusNotFound {
-		t.Fatalf("another user's twamm order must not be cancellable, got %d", status)
-	}
-}
-
 // ------------------------------------------------------- config validation
 
 func TestValidateStrategyConfigAcceptsAValidMarketMaker(t *testing.T) {
@@ -678,106 +619,6 @@ func TestOtcExpireStaleOrdersMarksOnlyExpiredOnes(t *testing.T) {
 }
 
 // ------------------------------------------------------- TWAMM schedule
-
-func TestTwammSliceIsLinearInElapsedTime(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	start := time.Now().UTC()
-	order := models.TwammOrder{
-		UserID:         "1",
-		Symbol:         "BTC/RUSD",
-		Side:           "sell",
-		TotalQuantity:  "100",
-		FilledQuantity: "0",
-		LimitPrice:     "0",
-		StartTime:      start,
-		EndTime:        start.Add(time.Hour),
-		Status:         "active",
-	}
-
-	// Before the start there is nothing to trade.
-	slice, err := service.ExecutableSlice(order, start.Add(-time.Minute))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slice.Sign() != 0 {
-		t.Fatalf("nothing should be executable before the start, got %s", slice)
-	}
-
-	// Halfway through, half the order has been released.
-	slice, err = service.ExecutableSlice(order, start.Add(30*time.Minute))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slice.String() != "50000000000000000000" { // 50 * 10^18
-		t.Fatalf("halfway slice should be 50, got %s", slice)
-	}
-
-	// At the end, the whole order is released.
-	slice, err = service.ExecutableSlice(order, start.Add(time.Hour))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slice.String() != "100000000000000000000" {
-		t.Fatalf("final slice should be 100, got %s", slice)
-	}
-}
-
-func TestTwammSliceAccountsForAlreadyFilledQuantity(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	start := time.Now().UTC()
-	order := models.TwammOrder{
-		UserID:         "1",
-		Symbol:         "BTC/RUSD",
-		Side:           "sell",
-		TotalQuantity:  "100",
-		FilledQuantity: "30",
-		LimitPrice:     "0",
-		StartTime:      start,
-		EndTime:        start.Add(time.Hour),
-		Status:         "active",
-	}
-
-	// Halfway, 50 is released and 30 has been filled, so 20 remains.
-	slice, err := service.ExecutableSlice(order, start.Add(30*time.Minute))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slice.String() != "20000000000000000000" {
-		t.Fatalf("slice should be 20, got %s", slice)
-	}
-}
-
-func TestTwammSliceNeverGoesNegative(t *testing.T) {
-	db := newBotsTestDB(t)
-	service := NewTwammService(db)
-
-	start := time.Now().UTC()
-	order := models.TwammOrder{
-		UserID:        "1",
-		Symbol:        "BTC/RUSD",
-		Side:          "sell",
-		TotalQuantity: "100",
-		// More filled than the schedule has released, which can happen if a
-		// slice filled at the start of a period.
-		FilledQuantity: "60",
-		LimitPrice:     "0",
-		StartTime:      start,
-		EndTime:        start.Add(time.Hour),
-		Status:         "active",
-	}
-
-	slice, err := service.ExecutableSlice(order, start.Add(30*time.Minute))
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if slice.Sign() != 0 {
-		t.Fatalf("a negative slice must clamp to zero, got %s", slice)
-	}
-}
 
 // ------------------------------------------------------- bot order limits
 

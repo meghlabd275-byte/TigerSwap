@@ -45,14 +45,15 @@ import { CrossChain } from '@/components/CrossChain';
 import { Governance } from '@/components/Governance';
 import { MarginTrading } from '@/components/MarginTrading';
 import { Bots } from '@/components/Bots';
-import { OtcTwamm } from '@/components/OtcTwamm';
+import { OnChainOrders } from '@/components/OnChainOrders';
+import { OtcTrades } from '@/components/OtcTrades';
 import { CopyTrading } from '@/components/CopyTrading';
 import { Farming } from '@/components/Farming';
 import { OptionsTrading } from '@/components/OptionsTrading';
 import { NFTMarketplace } from '@/components/NFTMarketplace';
 import { Analytics } from '@/components/Analytics';
 
-type Tab = 'swap' | 'perpetuals' | 'onchain-perps' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'bots' | 'copy-trading' | 'analytics';
+type Tab = 'swap' | 'perpetuals' | 'onchain-perps' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'orders' | 'bots' | 'copy-trading' | 'analytics';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -87,7 +88,8 @@ export default function Home() {
     { id: 'portfolio' as const, label: 'Portfolio', icon: Wallet },
     { id: 'governance' as const, label: 'Governance', icon: Vote },
     { id: 'farming' as const, label: 'Farm & Airdrop', icon: Gauge },
-    { id: 'otc' as const, label: 'OTC / TWAMM', icon: Clock },
+    { id: 'otc' as const, label: 'OTC', icon: ArrowRightLeft },
+    { id: 'orders' as const, label: 'On-chain Orders', icon: Clock },
     { id: 'bots' as const, label: 'Bots', icon: Bot },
     { id: 'copy-trading' as const, label: 'Copy Trading', icon: Users },
     { id: 'analytics' as const, label: 'Analytics', icon: BarChart3 },
@@ -163,7 +165,8 @@ export default function Home() {
                 {activeTab === 'portfolio' && <Portfolio />}
                 {activeTab === 'governance' && <Governance />}
                 {activeTab === 'farming' && <Farming />}
-                {activeTab === 'otc' && <OtcTwamm />}
+                {activeTab === 'otc' && <OtcTrades />}
+                {activeTab === 'orders' && <OnChainOrders />}
                 {activeTab === 'bots' && <Bots />}
                 {activeTab === 'copy-trading' && <CopyTrading />}
                 {activeTab === 'analytics' && <Analytics />}

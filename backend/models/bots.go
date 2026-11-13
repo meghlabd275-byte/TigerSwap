@@ -133,25 +133,3 @@ func (OtcOrder) TableName() string {
 	return "otc_orders"
 }
 
-// TwammOrder is a long-running order that executes in slices between a start
-// and an end time. The virtual order curve is what makes it un-sandwichable:
-// there is no single transaction to front-run.
-type TwammOrder struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`
-	UserID         string `gorm:"index;size:100;not null" json:"user_id"`
-	Symbol         string `gorm:"size:41;index;not null" json:"symbol"`
-	Side           string `gorm:"size:8;not null" json:"side"`
-	TotalQuantity  string `gorm:"size:78;not null" json:"total_quantity"`
-	FilledQuantity string `gorm:"size:78;not null;default:0" json:"filled_quantity"`
-	// LimitPrice is the worst price acceptable; zero means no limit.
-	LimitPrice string    `gorm:"size:78;not null;default:0" json:"limit_price"`
-	StartTime  time.Time `gorm:"index;not null" json:"start_time"`
-	EndTime    time.Time `gorm:"index;not null" json:"end_time"`
-	Status     string    `gorm:"size:16;index;not null;default:active" json:"status"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
-
-func (TwammOrder) TableName() string {
-	return "twamm_orders"
-}

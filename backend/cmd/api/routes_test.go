@@ -8,11 +8,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// TestRouterRegistersBotsOtcTwammRoutes pins the routes added for the bots,
-// OTC and TWAMM services. These handlers existed but were unreachable; a
-// regression that drops one of them leaves the feature inaccessible again, and
-// gin panics at startup on a route conflict, so this also guards the tree.
-func TestRouterRegistersBotsOtcTwammRoutes(t *testing.T) {
+// TestRouterRegistersBotsAndOtcRoutes pins the routes added for the bots
+// and OTC services. These handlers existed but were unreachable; a regression
+// that drops one of them leaves the feature inaccessible again, and gin panics
+// at startup on a route conflict, so this also guards the tree.
+func TestRouterRegistersBotsAndOtcRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := setupRouter(apiDeps{})
 
@@ -38,9 +38,6 @@ func TestRouterRegistersBotsOtcTwammRoutes(t *testing.T) {
 		"POST /api/v1/otc/orders/:id/take",
 		"DELETE /api/v1/otc/orders/:id",
 
-		"GET /api/v1/twamm/orders",
-		"POST /api/v1/twamm/orders",
-		"DELETE /api/v1/twamm/orders/:id",
 
 		"GET /api/v1/farms",
 		"GET /api/v1/farms/all",
@@ -106,8 +103,6 @@ func TestRouterProtectedRoutesRejectAnonymousCallers(t *testing.T) {
 		{"GET", "/api/v1/otc/orders"},
 		{"POST", "/api/v1/otc/orders"},
 		{"DELETE", "/api/v1/otc/orders/1"},
-		{"GET", "/api/v1/twamm/orders"},
-		{"POST", "/api/v1/twamm/orders"},
 		{"GET", "/api/v1/farms/stakes"},
 		{"POST", "/api/v1/farms/1/stake"},
 		{"POST", "/api/v1/farms/1/claim"},

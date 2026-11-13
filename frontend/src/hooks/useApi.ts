@@ -50,8 +50,10 @@ import type {
   OptionSeriesView,
   OtcOrder,
   OnChainCall,
+  OnChainOrder,
   OnChainPerpMarket,
   OnChainPerpPosition,
+  OnChainTwammOrder,
   PerpMarket,
   PerpOrder,
   PerpPosition,
@@ -64,7 +66,6 @@ import type {
   Token,
   TopTrader,
   Trade,
-  TwammOrder,
   UserTransaction,
   VolumeSeriesResponse,
 } from "@/lib/types";
@@ -778,42 +779,92 @@ export function useCancelOtcOrder() {
   });
 }
 
-/** The caller's TWAMM schedules. */
-export function useTwammOrders(): UseQueryResult<TwammOrder[], Error> {
-  return useQuery<TwammOrder[], Error>({
-    queryKey: ["twamm", "orders"],
-    queryFn: () => endpoints.listTwammOrders(),
-    enabled: isAuthenticated(),
+/** The caller's on-chain advanced orders for a chain. */
+export function useOnChainOrders(chainId: number | null): UseQueryResult<OnChainOrder[], Error> {
+  return useQuery<OnChainOrder[], Error>({
+    queryKey: ["onchain", "orders", chainId],
+    queryFn: () => endpoints.getOnChainOrders(chainId as number),
+    enabled: isAuthenticated() && chainId !== null,
     refetchInterval: REFRESH.normal,
     retry: shouldRetry,
   });
 }
 
-/** Schedules a TWAMM order. */
-export function useCreateTwammOrder() {
+/** Builds, signs and broadcasts an advanced order the caller's wallet owns. */
+export function useBuildOnChainOrder() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: {
-      symbol: string;
-      side: "buy" | "sell";
-      total_quantity: string;
-      limit_price: string;
-      duration_hours: number;
-      start_delay_seconds: number;
-    }) => endpoints.createTwammOrder(payload),
+    mutationFn: async (params: {
+      chain_id: number;
+      order_type: 'limit' | 'stop_loss' | 'take_profit' | 'twap' | 'gtc' | 'ioc' | 'post_only';
+      side: 'buy' | 'sell';
+      token_in: string;
+      token_out: string;
+      amount_in: string;
+      amount_out_min?: string;
+      price?: string;
+      stop_price?: string;
+      expires_in?: number;
+      twap_parts?: number;
+      twap_interval?: number;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainOrder(params);
+      return params.send(call);
+    },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["twamm"] });
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "orders"] });
     },
   });
 }
 
-/** Cancels a TWAMM order that has not finished. */
-export function useCancelTwammOrder() {
+/** Builds, signs and broadcasts a cancellation of one of the caller's orders. */
+export function useBuildOnChainCancelOrder() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => endpoints.cancelTwammOrder(id),
+    mutationFn: async (params: {
+      order_id: string;
+      chain_id: number;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainCancelOrder(params.order_id, params.chain_id);
+      return params.send(call);
+    },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["twamm"] });
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "orders"] });
+    },
+  });
+}
+
+/** The long-term TWAMM orders on a chain. */
+export function useOnChainTwammOrders(
+  chainId: number | null,
+): UseQueryResult<OnChainTwammOrder[], Error> {
+  return useQuery<OnChainTwammOrder[], Error>({
+    queryKey: ["onchain", "twamm", chainId],
+    queryFn: () => endpoints.getOnChainTwammOrders(chainId as number),
+    enabled: chainId !== null,
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** Builds, signs and broadcasts a long-term TWAMM order. */
+export function useBuildOnChainTwammOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      is_token0: boolean;
+      sell_rate: string;
+      duration_hours: number;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainTwammOrder(params);
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "twamm"] });
     },
   });
 }

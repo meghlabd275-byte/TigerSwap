@@ -113,6 +113,16 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
+      - name: Run on-chain Go integration tests
+        run: |
+          set -e
+          # These packages drive real contracts on a local anvil chain. They skip
+          # when anvil is absent, so run them here, after Foundry is installed, to
+          # actually exercise the on-chain order, TWAMM and perps paths.
+          cd "$GITHUB_WORKSPACE/backend"
+          go test ./go/orders/... ./go/perps/... -count=1
+          go test ./services/ -run 'OnChain|Anvil|Oracle|Reconcile' -count=1
+
       - name: Build and test contracts
         run: |
           set -e

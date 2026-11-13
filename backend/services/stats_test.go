@@ -35,7 +35,7 @@ func newStatsTestDB(t *testing.T) *gorm.DB {
 
 	if err := db.AutoMigrate(
 		&models.User{}, &models.Transaction{}, &models.Token{},
-		&models.Pool{}, &models.Blockchain{}, &models.Order{}, &models.PerpetualPosition{},
+		&models.Pool{}, &models.Blockchain{}, &models.PerpetualPosition{},
 	); err != nil {
 		t.Fatalf("migrate test db: %v", err)
 	}

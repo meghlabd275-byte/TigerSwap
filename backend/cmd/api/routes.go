@@ -31,13 +31,13 @@ type apiDeps struct {
 	marginEngine       *services.MarginEngine
 	perpetualEngine    *services.PerpetualEngine
 	onChainPerps       *services.OnChainPerpsService
+	onChainOrders      *services.OnChainOrdersService
 	copyTradingEngine  *services.CopyTradingEngine
 	bridgeService      *services.BridgeService
 	launchpadService   *services.LaunchpadService
 	feeCollector       *services.FeeCollectorService
 	walletService      *services.WalletService
 	otcService         *services.OtcService
-	twammService       *services.TwammService
 	botsService        *services.BotsService
 	dynamicIntegration *services.DynamicIntegrationService
 	farmService        *services.FarmService
@@ -170,10 +170,6 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/swap/execute", tradingGate(deps.swapService.ExecuteSwap))
 			protected.POST("/swap/approve", deps.swapService.ApproveToken)
 
-			// Order routes
-			protected.POST("/orders/create", tradingGate(deps.swapService.CreateOrder))
-			protected.GET("/orders", deps.swapService.GetOrders)
-			protected.DELETE("/orders/:id", tradingGate(deps.swapService.CancelOrder))
 
 			// Liquidity routes
 			protected.POST("/liquidity/add", tradingGate(deps.swapService.AddLiquidity))
@@ -213,6 +209,17 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.POST("/onchain/perps/margin/add", tradingGate(deps.onChainPerps.BuildAddMarginHandler))
 				protected.POST("/onchain/perps/margin/remove", tradingGate(deps.onChainPerps.BuildRemoveMarginHandler))
 				protected.POST("/onchain/perps/liquidity", tradingGate(deps.onChainPerps.BuildLiquidityHandler))
+			}
+
+			// On-chain advanced orders and TWAMM: the deployed contracts escrow
+			// and fill on-chain. Build endpoints return unsigned calldata the
+			// caller's wallet signs; reads come from chain state.
+			if deps.onChainOrders != nil {
+				protected.POST("/onchain/orders", tradingGate(deps.onChainOrders.BuildOrderHandler))
+				protected.GET("/onchain/orders", deps.onChainOrders.ListOrdersHandler)
+				protected.POST("/onchain/orders/:id/cancel", tradingGate(deps.onChainOrders.CancelOrderHandler))
+				protected.POST("/onchain/twamm", tradingGate(deps.onChainOrders.BuildTWAMMOrderHandler))
+				protected.GET("/onchain/twamm", deps.onChainOrders.ListTWAMMOrdersHandler)
 			}
 
 			// Liquidity pool read routes
@@ -266,11 +273,6 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/otc/orders/:id/take", deps.otcService.TakeOrder)
 			protected.DELETE("/otc/orders/:id", tradingGate(deps.otcService.CancelOrder))
 
-			// TWAMM schedules: large orders sliced over time to remove the
-			// single transaction a sandwich attack needs.
-			protected.POST("/twamm/orders", tradingGate(deps.twammService.CreateOrder))
-			protected.GET("/twamm/orders", deps.twammService.ListOrders)
-			protected.DELETE("/twamm/orders/:id", tradingGate(deps.twammService.CancelOrder))
 
 			// Trading bots: each strategy is an engine in the Rust bots crate.
 			protected.POST("/bots", tradingGate(deps.botsService.CreateBot))
