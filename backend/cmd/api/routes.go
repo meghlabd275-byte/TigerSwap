@@ -49,6 +49,7 @@ type apiDeps struct {
 	analyticsService   *services.AnalyticsService
 	portfolioService   *services.PortfolioService
 	platformGate       *services.PlatformGate
+	metrics            *services.Metrics
 }
 
 // setupRouter registers every route on a fresh engine.
@@ -81,11 +82,16 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 	// Global middleware
 	router.Use(middleware.RequestLogger())
+	if deps.metrics != nil {
+		router.Use(deps.metrics.Middleware())
+	}
 	router.Use(middleware.RedisRateLimiter(deps.redis))
 	router.Use(middleware.SecurityHeaders())
 	router.Use(middleware.BodySizeLimit(1 << 20)) // 1 MiB request bodies
 
-	// Health check
+	// Health check. /health stays as the coarse "process is up" probe; /healthz
+	// and /readyz split liveness from readiness so a dependency outage drains a
+	// replica instead of restarting it. /metrics is the Prometheus exposition.
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status":    "healthy",
@@ -93,6 +99,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			"version":   "1.0.0",
 		})
 	})
+	if deps.metrics != nil {
+		router.GET("/healthz", deps.metrics.LivenessHandler)
+		router.GET("/readyz", deps.metrics.ReadinessHandler)
+		router.GET("/metrics", deps.metrics.Handler)
+	}
 
 	// API v1
 	v1 := router.Group("/api/v1")

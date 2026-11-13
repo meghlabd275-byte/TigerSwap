@@ -230,8 +230,10 @@ func rateLimiter(redisClient *redis.Client, prefix string, limit int, window tim
 	fallback := newLocalRateLimiter(limit, window)
 
 	return func(c *gin.Context) {
-		// Skip rate limiting for health check
-		if c.Request.URL.Path == "/health" {
+		// Probes and the metrics scrape are exempt: a scraper or an orchestrator
+		// must not be rate-limited out of the signal it exists to read.
+		switch c.Request.URL.Path {
+		case "/health", "/healthz", "/readyz", "/metrics":
 			c.Next()
 			return
 		}

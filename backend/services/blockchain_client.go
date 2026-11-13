@@ -36,6 +36,14 @@ type BlockchainClient struct {
 	sendMu sync.Map // string -> *sync.Mutex
 }
 
+// ActiveChainCount reports how many chain endpoints are registered. A readiness
+// probe uses it so a server with no dialable node is reported not ready.
+func (b *BlockchainClient) ActiveChainCount() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return len(b.rpcURLs)
+}
+
 // senderLock returns the mutex that serialises sends for one chain and signer.
 func (b *BlockchainClient) senderLock(chainID int64, signer string) *sync.Mutex {
 	key := strconv.FormatInt(chainID, 10) + ":" + strings.ToLower(signer)

@@ -433,6 +433,34 @@ func main() {
 	botRunner.SetCopySource(services.NewPerpCopySource(perpetualEngine))
 	go botRunner.Run(realtimeCtx)
 
+	// Metrics registry. Probes report the real state of a dependency, so
+	// /readyz drains a replica whose database or chain client is unusable.
+	metrics := services.NewMetrics()
+	metrics.RegisterProbe("database", func() error {
+		sqlDB, err := db.DB()
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		return sqlDB.PingContext(ctx)
+	})
+	if redis != nil {
+		metrics.RegisterProbe("redis", func() error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			return redis.Ping(ctx).Err()
+		})
+	}
+	if blockchainClient != nil {
+		metrics.RegisterProbe("blockchain_client", func() error {
+			if blockchainClient.ActiveChainCount() == 0 {
+				return fmt.Errorf("no active chain endpoint is registered")
+			}
+			return nil
+		})
+	}
+
 	router := setupRouter(apiDeps{
 		redis:              redis,
 		blockchainService:  blockchainService,
@@ -467,6 +495,7 @@ func main() {
 		analyticsService:   analyticsService,
 		portfolioService:   portfolioService,
 		platformGate:       platformGate,
+		metrics:            metrics,
 	})
 
 	// Get port from environment or default
