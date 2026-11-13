@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
-import { login, logout, register, loginWithWallet, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
+import { login, logout, register, loginWithWallet, isTOTPRequired, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
 
 type Mode = 'signin' | 'register';
 
@@ -19,6 +19,8 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [totpCode, setTotpCode] = useState('');
+  const [totpNeeded, setTotpNeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -48,11 +50,18 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
       if (mode === 'register') {
         await register(email, password, username);
       } else {
-        await login(email, password);
+        await login(email, password, totpNeeded ? totpCode : undefined);
       }
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Sign-in failed');
+      // When the account has two-factor enabled the server asks for a code;
+      // reveal the field rather than showing the raw rejection.
+      if (isTOTPRequired(err)) {
+        setTotpNeeded(true);
+        setError('Enter the 6-digit code from your authenticator app.');
+      } else {
+        setError(err instanceof Error ? err.message : 'Sign-in failed');
+      }
     } finally {
       setBusy(false);
     }
@@ -123,6 +132,22 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
               </p>
             )}
           </div>
+
+          {mode === 'signin' && totpNeeded && (
+            <div>
+              <label className="text-gray-400 text-sm mb-1 block">Two-factor code</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                value={totpCode}
+                onChange={(e) => setTotpCode(e.target.value.replace(/\D/g, ''))}
+                className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white tracking-[0.4em] focus:outline-none focus:border-tiger-orange"
+                placeholder="000000"
+              />
+            </div>
+          )}
 
           {error && <p className="text-red-400 text-sm">{error}</p>}
 

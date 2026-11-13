@@ -915,6 +915,7 @@ func (s *AuthService) Login(c *gin.Context) {
 	var req struct {
 		Email    string `json:"email" binding:"required"`
 		Password string `json:"password" binding:"required"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		respondBadRequestError(c, err)
@@ -949,7 +950,20 @@ func (s *AuthService) Login(c *gin.Context) {
 		return
 	}
 
-	// A correct password clears the failure counter and any expired lock.
+	// Second factor. When the account has two-factor enabled, the password alone
+	// is not enough to obtain a session; a valid TOTP code is required. The
+	// response is a distinct 401 with a marker so the client can prompt for the
+	// code, but it does not reveal whether the password was correct beyond what a
+	// successful second-factor entry would anyway.
+	if user.TOTPEnabled {
+		if message := s.verifyLoginTOTP(&user, req.TOTPCode); message != "" {
+			c.JSON(401, gin.H{"error": message, "totp_required": true})
+			return
+		}
+	}
+
+	// A correct password (and second factor) clears the failure counter and any
+	// expired lock.
 	if user.FailedLoginAttempts != 0 || user.LockedUntil != nil {
 		s.db.Model(&models.User{}).Where("id = ?", user.ID).
 			Updates(map[string]interface{}{"failed_login_attempts": 0, "locked_until": nil})

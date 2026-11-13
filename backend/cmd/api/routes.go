@@ -161,6 +161,13 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			// User routes
 			protected.GET("/user/profile", deps.authService.GetProfile)
 			protected.PUT("/user/profile", deps.authService.UpdateProfile)
+
+			// Two-factor authentication. Enrolment is two steps so a user
+			// cannot lock themselves out; disabling requires a current code.
+			protected.GET("/user/2fa", deps.authService.TOTPStatus)
+			protected.POST("/user/2fa/setup", deps.authService.SetupTOTP)
+			protected.POST("/user/2fa/confirm", deps.authService.ConfirmTOTP)
+			protected.POST("/user/2fa/disable", deps.authService.DisableTOTP)
 			// Portfolio and transaction history. Both are served as camelCase
 			// DTOs from the caller's own ledger rows, so the frontend validators
 			// pass against the real server rather than a hand-written shape.
@@ -266,7 +273,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/wallet/balances", deps.walletService.GetBalances)
 				protected.POST("/wallet/autosign", tradingGate(deps.walletService.AutoSignTransaction))
 				protected.POST("/wallet/deposit", deps.platformGate.RequireDeposits(), deps.walletService.Deposit)
-				protected.POST("/wallet/withdraw", deps.platformGate.RequireWithdrawals(), deps.walletService.Withdraw)
+				protected.POST("/wallet/withdraw", deps.platformGate.RequireWithdrawals(), deps.authService.TOTPRequired(), deps.walletService.Withdraw)
 				protected.POST("/wallet/swap", tradingGate(deps.walletService.ExecuteSwap))
 				protected.POST("/wallet/swap/quote", deps.walletService.GetSwapQuote)
 				protected.POST("/wallet/perpetual/open", tradingGate(deps.walletService.CreatePerpetualPosition))
@@ -347,6 +354,10 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		// Admin routes (protected by admin middleware)
 		admin := v1.Group("/admin")
 		admin.Use(middleware.AdminRequired(deps.authService))
+		// An operator with two-factor enabled must present a code on every admin
+		// call; an operator without it is unaffected. This closes the window in
+		// which a stolen admin session is usable without the second factor.
+		admin.Use(deps.authService.TOTPRequired())
 		{
 			admin.GET("/dashboard", deps.adminService.GetDashboard)
 			admin.GET("/users", deps.adminService.GetUsers)

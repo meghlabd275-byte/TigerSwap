@@ -47,6 +47,13 @@ type User struct {
 	FailedLoginAttempts int        `gorm:"default:0" json:"-"`
 	LockedUntil         *time.Time `json:"-"`
 
+	// TOTP two-factor authentication. The secret is stored encrypted (AES-256-GCM
+	// under WALLET_ENCRYPTION_KEY) and never serialised. TOTPEnabled is set only
+	// after the user confirms a code, so a half-finished enrolment never locks a
+	// user out of their own account.
+	TOTPSecret  string `gorm:"size:255" json:"-"`
+	TOTPEnabled bool   `gorm:"default:false" json:"totp_enabled"`
+
 	// Relations
 	Tokens       []Token       `gorm:"foreignKey:CreatedBy" json:"-"`
 	Transactions []Transaction `gorm:"foreignKey:UserID" json:"-"`

@@ -17,12 +17,15 @@
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
+  /** Parsed error body, when the server sent a JSON object. */
+  readonly body?: unknown;
 
-  constructor(message: string, status: number, code = "api_error") {
+  constructor(message: string, status: number, code = "api_error", body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.body = body;
   }
 
   /** True when the session is missing or no longer valid. */
@@ -233,7 +236,7 @@ async function performRequest(
   }
 
   if (!response.ok) {
-    throw new ApiError(extractErrorMessage(text, response.status), response.status);
+    throw new ApiError(extractErrorMessage(text, response.status), response.status, "api_error", parseErrorBody(text));
   }
 
   if (text.length === 0) {
@@ -280,6 +283,22 @@ function extractErrorMessage(text: string, status: number): string {
   if (status === 429) return "too many requests";
   if (status >= 500) return "the service is temporarily unavailable";
   return "request failed";
+}
+
+/**
+ * Parses a JSON error body so callers can branch on structured fields such as
+ * `totp_required`. Returns undefined when the body is not a JSON object.
+ */
+function parseErrorBody(text: string): unknown {
+  if (text.length === 0 || text.length > 4096) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    return parsed !== null && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export const api = {

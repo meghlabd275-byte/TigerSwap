@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 
-import { getCurrentUser, login, logout, register, validatePassword, validateUsername } from "./auth";
+import { getCurrentUser, isTOTPRequired, login, logout, register, validatePassword, validateUsername } from "./auth";
 import { setSessionToken } from "./apiClient";
 
 let server: Server;
@@ -35,6 +35,12 @@ before(async () => {
         }
         send(201, { token: "register-token", user: { id: "u1", email: body.email, role: "user" } });
       } else if (path.endsWith("/auth/login")) {
+        // Mirror the server: an account with two-factor enabled rejects a
+        // password-only attempt with a totp_required marker.
+        if (body.email === "two@tigerswap.local" && body.totp_code !== "123456") {
+          send(401, { error: "two-factor code required", totp_required: true });
+          return;
+        }
         send(200, { token: "login-token", user: { id: "u1", email: body.email, role: "user" } });
       } else if (path.endsWith("/auth/logout")) {
         send(200, { ok: true });
@@ -113,5 +119,27 @@ test("login stores the session and logout clears it", async () => {
 
   await logout();
   assert.equal(getCurrentUser(), null);
+  setSessionToken(null);
+});
+
+test("login surfaces the two-factor prompt when the server asks for a code", async () => {
+  requests.length = 0;
+  await assert.rejects(
+    () => login("two@tigerswap.local", "Str0ng-Passw0rd!2026"),
+    (error: unknown) => isTOTPRequired(error),
+  );
+
+  const attempt = requests.find((entry) => entry.path.endsWith("/auth/login"));
+  assert.ok(attempt, "login request was not sent");
+  assert.equal(attempt.body.totp_code, undefined, "no code is sent before the server asks");
+});
+
+test("login sends the code on the second attempt and succeeds", async () => {
+  requests.length = 0;
+  const user = await login("two@tigerswap.local", "Str0ng-Passw0rd!2026", "123456");
+  assert.equal(user.id, "u1");
+  const attempt = requests.find((entry) => entry.path.endsWith("/auth/login"));
+  assert.equal(attempt?.body.totp_code, "123456");
+  assert.equal(attempt?.body.email, "two@tigerswap.local");
   setSessionToken(null);
 });

@@ -15,7 +15,7 @@
  */
 
 import { ApiError, NetworkError, api, clearSessionToken, setSessionToken, setUnauthorizedHandler } from "./apiClient";
-import { object, string } from "./validation";
+import { object, string, boolean } from "./validation";
 import { connectWallet, signPersonalMessage } from "./wallet";
 
 export interface SessionUser {
@@ -110,12 +110,16 @@ export function validateEmail(email: string): string | null {
 /**
  * Signs in and stores the resulting token in memory.
  *
- * Throws `ApiError` with the server's message on failure.
+ * When the account has two-factor enabled, the server rejects a password-only
+ * attempt with a `totp_required` marker; `totpCode` must then be supplied.
+ *
+ * Throws `ApiError` with the server's message on failure. A caller can detect
+ * the second-factor prompt via `isTOTPRequired`.
  */
-export async function login(email: string, password: string): Promise<SessionUser> {
+export async function login(email: string, password: string, totpCode?: string): Promise<SessionUser> {
   const body = await api.post(
     "/auth/login",
-    { email, password },
+    { email, password, ...(totpCode ? { totp_code: totpCode } : {}) },
     { authenticated: false },
   );
 
@@ -134,6 +138,46 @@ export async function login(email: string, password: string): Promise<SessionUse
   currentUser = user;
   notify();
   return user;
+}
+
+/** True when an error is the server asking for a two-factor code. */
+export function isTOTPRequired(error: unknown): boolean {
+  if (!(error instanceof ApiError)) {
+    return false;
+  }
+  const body = error.body;
+  return (
+    body !== null &&
+    typeof body === "object" &&
+    (body as { totp_required?: unknown }).totp_required === true
+  );
+}
+
+/** Two-factor status for the signed-in account. */
+export async function fetchTOTPStatus(): Promise<boolean> {
+  const body = await api.get("/user/2fa");
+  const parsed = object<{ totp_enabled: boolean }>({ totp_enabled: boolean })(body);
+  return parsed.totp_enabled;
+}
+
+/** Begins two-factor enrolment and returns the secret and otpauth URI. */
+export async function beginTOTPEnrollment(): Promise<{ secret: string; otpauthUri: string }> {
+  const body = await api.post("/user/2fa/setup");
+  const parsed = object<{ secret: string; otpauth_uri: string }>({
+    secret: string,
+    otpauth_uri: string,
+  })(body);
+  return { secret: parsed.secret, otpauthUri: parsed.otpauth_uri };
+}
+
+/** Completes two-factor enrolment with a code from the authenticator app. */
+export async function confirmTOTPEnrollment(code: string): Promise<void> {
+  await api.post("/user/2fa/confirm", { code });
+}
+
+/** Disables two-factor; a current code is required. */
+export async function disableTOTP(code: string): Promise<void> {
+  await api.post("/user/2fa/disable", { code });
 }
 
 export async function register(
