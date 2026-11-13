@@ -165,16 +165,23 @@ The strongest part of the repository.
 
 ## 3. What is broken (reachable code that does not do its job)
 
-### 3.1 Precision: floats in the derivatives money paths (open)
+### 3.1 Precision: floats in the derivatives money paths (margin fixed, perp open)
 
 `perpetual_engine.go` carries `EntryPrice`, `MarkPrice`, `IndexPrice`,
-`LiquidationPrice` as `float64`, and `MarginEngine.assetPriceUSD` returns
-`float64`. The core PnL/settlement arithmetic was moved to `big.Rat`
-(`perp_money.go`: `liquidationPayout`, `settlementPayout`), but the stored and
-displayed prices are still floats. On a venue where a liquidation threshold is
-compared against a mark price, a 1-ULP rounding at the boundary is a real risk.
-This contradicts the stated convention ("never use floats for balances") and
-should be converted to `big.Rat`/`big.Int` throughout.
+`LiquidationPrice` as `float64`, and `notionalPNL` / `isLiquidatable` compare a
+float mark price against a float liquidation price. The core PnL/settlement
+arithmetic was moved to `big.Rat` (`perp_money.go`: `liquidationPayout`,
+`settlementPayout`), but the stored and displayed perp prices are still floats.
+On a venue where a liquidation threshold is compared against a mark price, a
+1-ULP rounding at the boundary is a real risk.
+
+`MarginEngine` has been converted to exact rational arithmetic: risk ratios
+(LTV, liquidation threshold, bonus, close factor) are parsed once into
+`*big.Rat`, `computeHealth` values collateral and debt in `big.Rat`, and the
+liquidation decision compares the health factor against exactly 1. An account
+whose health factor is exactly the threshold is neither listed as liquidatable
+nor liquidated (`TestMarginHealthIsExact` pins this). The perp engine still
+needs the same conversion.
 
 ### 3.2 Non-EVM chains can be enabled but cannot be watched (open, fails closed)
 

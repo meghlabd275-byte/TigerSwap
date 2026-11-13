@@ -438,10 +438,10 @@ func (r *BotRunner) liquidationPosition(ctx context.Context, bot models.BotInsta
 	}
 	payload, err := json.Marshal(map[string]any{
 		"id":                    candidate.AccountID,
-		"collateral_value":      strconv.FormatFloat(health.CollateralUSD, 'f', 18, 64),
-		"debt_value":            strconv.FormatFloat(health.DebtUSD, 'f', 18, 64),
-		"liquidation_threshold": strconv.FormatFloat(cfg.LiquidationThreshold, 'f', 18, 64),
-		"liquidation_bonus_bps": int64(cfg.LiquidationBonus * 10_000),
+		"collateral_value":      formatDecimal(health.CollateralUSD, 18),
+		"debt_value":            formatDecimal(health.DebtUSD, 18),
+		"liquidation_threshold": formatDecimal(cfg.LiquidationThreshold, 18),
+		"liquidation_bonus_bps": bonusBps(cfg.LiquidationBonus),
 	})
 	if err != nil {
 		return nil, err

@@ -48,20 +48,23 @@ type MarginEngine struct {
 
 // marginMarketConfig is the tradable subset of an admin margin listing.
 type marginMarketConfig struct {
-	Pair                 string
-	BaseAsset            string
-	QuoteAsset           string
-	MarginMode           string
-	MaxLeverage          int
-	CollateralAssets     map[string]bool
-	BorrowableAssets     map[string]bool
-	BaseRateAPY          float64
-	KinkUtilization      float64
-	JumpMultiplier       float64
-	LTV                  float64
-	LiquidationThreshold float64
-	LiquidationBonus     float64
-	CloseFactor          float64
+	Pair             string
+	BaseAsset        string
+	QuoteAsset       string
+	MarginMode       string
+	MaxLeverage      int
+	CollateralAssets map[string]bool
+	BorrowableAssets map[string]bool
+	BaseRateAPY      float64
+	KinkUtilization  float64
+	JumpMultiplier   float64
+	// Risk ratios are exact rationals. A liquidation decision compares the
+	// health factor against 1, and a float64 threshold can round at the
+	// boundary; the ratios are parsed once from the listing and kept exact.
+	LTV                  *big.Rat
+	LiquidationThreshold *big.Rat
+	LiquidationBonus     *big.Rat
+	CloseFactor          *big.Rat
 }
 
 // MarginAccountView is the public risk description of a margin account. All
@@ -165,11 +168,37 @@ func (e *MarginEngine) marginConfig(pair string) (*marginMarketConfig, error) {
 		BaseRateAPY:          market.BaseRateAPY,
 		KinkUtilization:      market.KinkUtilization,
 		JumpMultiplier:       market.JumpMultiplier,
-		LTV:                  market.LTV,
-		LiquidationThreshold: market.LiquidationThreshold,
-		LiquidationBonus:     market.LiquidationBonus,
-		CloseFactor:          market.CloseFactor,
+		LTV:                  ratioFromFloat(market.LTV),
+		LiquidationThreshold: ratioFromFloat(market.LiquidationThreshold),
+		LiquidationBonus:     ratioFromFloat(market.LiquidationBonus),
+		CloseFactor:          ratioFromFloat(market.CloseFactor),
 	}, nil
+}
+
+// ratioFromFloat parses a stored risk ratio (LTV, liquidation threshold, bonus,
+// close factor) into an exact rational once, so every comparison and product
+// below runs in exact arithmetic. A stored value that cannot be parsed yields
+// zero, which fails closed: a zero LTV refuses a borrow and a zero liquidation
+// threshold makes a position liquidatable, never the other way round.
+func ratioFromFloat(value float64) *big.Rat {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return new(big.Rat)
+	}
+	rat, err := parseDecimal(strconv.FormatFloat(value, 'f', -1, 64))
+	if err != nil {
+		return new(big.Rat)
+	}
+	return rat
+}
+
+// bonusBps renders a liquidation bonus ratio as basis points, truncating toward
+// zero. A 1% bonus is 100 bps.
+func bonusBps(bonus *big.Rat) int64 {
+	if bonus == nil {
+		return 0
+	}
+	bps := new(big.Rat).Mul(bonus, big.NewRat(10_000, 1))
+	return new(big.Int).Quo(bps.Num(), bps.Denom()).Int64()
 }
 
 // assetSet parses a comma-separated asset list into a set. A blank entry is
@@ -246,16 +275,36 @@ func (e *MarginEngine) assetPriceUSD(ctx context.Context, asset string) (float64
 	return price.USD, nil
 }
 
-// marginHealth is the risk state of an account.
+// marginHealth is the exact risk state of an account. Every value is a rational
+// so a liquidation comparison is never decided by a binary-rounding artefact.
 type marginHealth struct {
-	CollateralUSD       float64
-	DebtUSD             float64
-	LiquidationValueUSD float64
-	HealthFactor        float64
+	CollateralUSD       *big.Rat
+	DebtUSD             *big.Rat
+	LiquidationValueUSD *big.Rat
+	// HealthFactor is the liquidation value over debt. It is nil for a debt-free
+	// account, whose health factor is infinite.
+	HealthFactor *big.Rat
+}
+
+// assetPriceRat returns the oracle price of an asset as an exact rational. A
+// zero price or an oracle failure is an error: the engine must never value
+// collateral or debt at a fabricated price.
+func (e *MarginEngine) assetPriceRat(ctx context.Context, asset string) (*big.Rat, error) {
+	if e.priceAgg == nil {
+		return nil, errors.New("margin engine has no price aggregator")
+	}
+	price, err := e.priceAgg.GetRealPrice(ctx, strings.ToUpper(strings.TrimSpace(asset)))
+	if err != nil {
+		return nil, err
+	}
+	if price.USD <= 0 {
+		return nil, fmt.Errorf("oracle returned a non-positive price for %s", asset)
+	}
+	return rationalFromFloat(price.USD)
 }
 
 // computeHealth values an account's collateral and debt and derives the health
-// factor. A debt-free account has an infinite health factor.
+// factor, entirely in exact rational arithmetic.
 func (e *MarginEngine) computeHealth(ctx context.Context, db *gorm.DB, accountID uuid.UUID, cfg *marginMarketConfig) (*marginHealth, error) {
 	var collaterals []models.MarginCollateral
 	if err := db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
@@ -266,7 +315,10 @@ func (e *MarginEngine) computeHealth(ctx context.Context, db *gorm.DB, accountID
 		return nil, err
 	}
 
-	health := &marginHealth{}
+	health := &marginHealth{
+		CollateralUSD: new(big.Rat),
+		DebtUSD:       new(big.Rat),
+	}
 	for i := range collaterals {
 		amount, err := parseDecimal(collaterals[i].Amount)
 		if err != nil {
@@ -275,16 +327,11 @@ func (e *MarginEngine) computeHealth(ctx context.Context, db *gorm.DB, accountID
 		if amount.Sign() <= 0 {
 			continue
 		}
-		price, err := e.assetPriceUSD(ctx, collaterals[i].Asset)
+		usd, err := e.assetPriceRat(ctx, collaterals[i].Asset)
 		if err != nil {
 			return nil, err
 		}
-		usd, err := rationalFromFloat(price)
-		if err != nil {
-			return nil, fmt.Errorf("oracle price for %s is unusable: %w", collaterals[i].Asset, err)
-		}
-		collateralUSD, _ := new(big.Rat).Mul(amount, usd).Float64()
-		health.CollateralUSD += collateralUSD
+		health.CollateralUSD.Add(health.CollateralUSD, new(big.Rat).Mul(amount, usd))
 	}
 	for i := range borrows {
 		principal, err := parseDecimal(borrows[i].Principal)
@@ -299,25 +346,40 @@ func (e *MarginEngine) computeHealth(ctx context.Context, db *gorm.DB, accountID
 		if total.Sign() <= 0 {
 			continue
 		}
-		price, err := e.assetPriceUSD(ctx, borrows[i].Asset)
+		usd, err := e.assetPriceRat(ctx, borrows[i].Asset)
 		if err != nil {
 			return nil, err
 		}
-		usd, err := rationalFromFloat(price)
-		if err != nil {
-			return nil, fmt.Errorf("oracle price for %s is unusable: %w", borrows[i].Asset, err)
-		}
-		debtUSD, _ := new(big.Rat).Mul(total, usd).Float64()
-		health.DebtUSD += debtUSD
+		health.DebtUSD.Add(health.DebtUSD, new(big.Rat).Mul(total, usd))
 	}
 
-	health.LiquidationValueUSD = health.CollateralUSD * cfg.LiquidationThreshold
-	if health.DebtUSD <= 0 {
-		health.HealthFactor = math.Inf(1)
+	health.LiquidationValueUSD = new(big.Rat).Mul(health.CollateralUSD, cfg.LiquidationThreshold)
+	if health.DebtUSD.Sign() <= 0 {
+		health.HealthFactor = nil // infinite
 	} else {
-		health.HealthFactor = health.LiquidationValueUSD / health.DebtUSD
+		health.HealthFactor = new(big.Rat).Quo(health.LiquidationValueUSD, health.DebtUSD)
 	}
 	return health, nil
+}
+
+// isLiquidatable reports whether the account's health factor is below 1. A
+// debt-free account is never liquidatable. The comparison is exact, so an
+// account that sits precisely at 1 is not liquidated.
+func (h *marginHealth) isLiquidatable() bool {
+	if h.DebtUSD.Sign() <= 0 || h.HealthFactor == nil {
+		return false
+	}
+	return h.HealthFactor.Cmp(big.NewRat(1, 1)) < 0
+}
+
+// healthFactorFloat renders the health factor for the API. A debt-free account
+// reports +Inf.
+func (h *marginHealth) healthFactorFloat() float64 {
+	if h.HealthFactor == nil {
+		return math.Inf(1)
+	}
+	f, _ := h.HealthFactor.Float64()
+	return f
 }
 
 // borrowRateAPY applies the listing's two-slope curve: the base rate up to the
@@ -502,7 +564,7 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 	if err != nil {
 		return err
 	}
-	borrowPrice, err := e.assetPriceUSD(ctx, normalized)
+	borrowPrice, err := e.assetPriceRat(ctx, normalized)
 	if err != nil {
 		return fmt.Errorf("cannot price borrow asset %s: %w", normalized, err)
 	}
@@ -515,27 +577,12 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 	// liquidation threshold, so a fresh borrow leaves a safety buffer. The
 	// comparison is exact, so a borrow that only fits because of binary
 	// rounding is refused.
-	priceRat, err := rationalFromFloat(borrowPrice)
-	if err != nil {
-		return fmt.Errorf("oracle price for %s is unusable: %w", normalized, err)
-	}
-	ltv, err := rationalFromFloat(cfg.LTV)
-	if err != nil {
-		return fmt.Errorf("listing LTV for %s is unusable: %w", cfg.Pair, err)
-	}
-	collateralUSD, err := rationalFromFloat(health.CollateralUSD)
-	if err != nil {
-		return fmt.Errorf("collateral value is unusable: %w", err)
-	}
-	debtUSD, err := rationalFromFloat(health.DebtUSD)
-	if err != nil {
-		return fmt.Errorf("debt value is unusable: %w", err)
-	}
-	maxDebt := new(big.Rat).Mul(collateralUSD, ltv)
-	debt := new(big.Rat).Add(debtUSD, new(big.Rat).Mul(value, priceRat))
+	maxDebt := new(big.Rat).Mul(health.CollateralUSD, cfg.LTV)
+	debt := new(big.Rat).Add(health.DebtUSD, new(big.Rat).Mul(value, borrowPrice))
 	if debt.Cmp(maxDebt) > 0 {
 		f, _ := value.Float64()
-		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, cfg.LTV)
+		ltvFloat, _ := cfg.LTV.Float64()
+		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, ltvFloat)
 	}
 
 	settled, err := e.assetLedger(normalized)
@@ -721,11 +768,12 @@ func (e *MarginEngine) LiquidatableAccounts(ctx context.Context) ([]LiquidationC
 		if err != nil {
 			continue
 		}
-		if health.DebtUSD > 0 && health.HealthFactor < 1 {
+		if health.isLiquidatable() {
+			debtFloat, _ := health.DebtUSD.Float64()
 			candidates = append(candidates, LiquidationCandidate{
 				AccountID:    accounts[i].ID.String(),
-				HealthFactor: health.HealthFactor,
-				DebtUSD:      health.DebtUSD,
+				HealthFactor: health.healthFactorFloat(),
+				DebtUSD:      debtFloat,
 			})
 		}
 	}
@@ -751,19 +799,19 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 	if err != nil {
 		return nil, err
 	}
-	if health.DebtUSD <= 0 || health.HealthFactor >= 1 {
+	if !health.isLiquidatable() {
 		return nil, fmt.Errorf("%w: %s", ErrMarginNotLiquidatable, accountID)
 	}
 
 	// The close factor caps how much of the debt one liquidation may repay,
 	// which keeps a large account from being closed in a single step.
 	closeFactor := cfg.CloseFactor
-	if closeFactor <= 0 || closeFactor > 1 {
-		closeFactor = 1
+	if closeFactor.Sign() <= 0 || closeFactor.Cmp(big.NewRat(1, 1)) > 0 {
+		closeFactor = big.NewRat(1, 1)
 	}
-	repayable := health.DebtUSD * closeFactor
-	seizeValue := repayable * (1 + cfg.LiquidationBonus)
-	if seizeValue > health.CollateralUSD {
+	repayable := new(big.Rat).Mul(health.DebtUSD, closeFactor)
+	seizeValue := new(big.Rat).Mul(repayable, new(big.Rat).Add(big.NewRat(1, 1), cfg.LiquidationBonus))
+	if seizeValue.Cmp(health.CollateralUSD) > 0 {
 		seizeValue = health.CollateralUSD
 	}
 
@@ -790,7 +838,7 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 		}
 		// Mark the account liquidated once its debt is cleared, reading the
 		// post-settlement state inside the same transaction.
-		if remaining, err := e.computeHealth(ctx, tx, accountID, cfg); err == nil && remaining.DebtUSD <= 1e-9 {
+		if remaining, err := e.computeHealth(ctx, tx, accountID, cfg); err == nil && remaining.DebtUSD.Sign() <= 0 {
 			if err := tx.Model(&models.MarginAccount{}).Where("id = ?", accountID).
 				Update("status", models.MarginAccountLiquidated).Error; err != nil {
 				return err
@@ -802,7 +850,8 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 		return nil, err
 	}
 
-	return &LiquidationCandidate{AccountID: accountID.String(), HealthFactor: health.HealthFactor, DebtUSD: health.DebtUSD}, nil
+	debtFloat, _ := health.DebtUSD.Float64()
+	return &LiquidationCandidate{AccountID: accountID.String(), HealthFactor: health.healthFactorFloat(), DebtUSD: debtFloat}, nil
 }
 
 // seizeCollateral removes collateral worth valueUSD, proportionally across the
@@ -810,7 +859,7 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 // balance. The trader's collateral is escrowed balance, so seizing it is a real
 // transfer out of the trader's escrow into the liquidator's, not a bookkeeping
 // edit.
-func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64, liquidator string) error {
+func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD *big.Rat, liquidator string) error {
 	var collaterals []models.MarginCollateral
 	if err := db.Where("account_id = ?", accountID).Find(&collaterals).Error; err != nil {
 		return err
@@ -818,10 +867,10 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, account
 
 	type holding struct {
 		row models.MarginCollateral
-		usd float64
+		usd *big.Rat
 	}
 	holdings := make([]holding, 0, len(collaterals))
-	var totalUSD float64
+	totalUSD := new(big.Rat)
 	for i := range collaterals {
 		amount, err := parseDecimal(collaterals[i].Amount)
 		if err != nil {
@@ -830,35 +879,27 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, account
 		if amount.Sign() <= 0 {
 			continue
 		}
-		price, err := e.assetPriceUSD(ctx, collaterals[i].Asset)
+		priceRat, err := e.assetPriceRat(ctx, collaterals[i].Asset)
 		if err != nil {
 			return err
 		}
-		priceRat, err := rationalFromFloat(price)
-		if err != nil {
-			return fmt.Errorf("oracle price for %s is unusable: %w", collaterals[i].Asset, err)
-		}
-		usdRat := new(big.Rat).Mul(amount, priceRat)
-		usd, _ := usdRat.Float64()
-		totalUSD += usd
+		usd := new(big.Rat).Mul(amount, priceRat)
+		totalUSD.Add(totalUSD, usd)
 		holdings = append(holdings, holding{row: collaterals[i], usd: usd})
 	}
-	if totalUSD <= 0 {
+	if totalUSD.Sign() <= 0 {
 		return nil
 	}
 
-	fraction := valueUSD / totalUSD
-	if fraction > 1 {
-		fraction = 1
-	}
 	// Seize proportionally: each holding loses `fraction` of its balance. The
-	// remainder is computed exactly so the sum of the kept balances matches the
-	// account's collateral rather than drifting with binary rounding.
-	fractionRat, err := rationalFromFloat(fraction)
-	if err != nil {
-		return fmt.Errorf("collateral seize fraction is unusable: %w", err)
+	// fraction is capped at 1 and the kept fraction is computed exactly so the
+	// sum of the kept balances matches the account's collateral rather than
+	// drifting with binary rounding.
+	fraction := new(big.Rat).Quo(valueUSD, totalUSD)
+	if fraction.Cmp(big.NewRat(1, 1)) > 0 {
+		fraction = big.NewRat(1, 1)
 	}
-	keptFraction := new(big.Rat).Sub(big.NewRat(1, 1), fractionRat)
+	keptFraction := new(big.Rat).Sub(big.NewRat(1, 1), fraction)
 	for _, h := range holdings {
 		amount, err := parseDecimal(h.row.Amount)
 		if err != nil {
@@ -896,17 +937,17 @@ func (e *MarginEngine) seizeCollateral(ctx context.Context, db *gorm.DB, account
 }
 
 // reduceDebt reduces an account's debt by valueUSD, clearing interest first.
-func (e *MarginEngine) reduceDebt(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD float64) error {
+func (e *MarginEngine) reduceDebt(ctx context.Context, db *gorm.DB, accountID uuid.UUID, valueUSD *big.Rat) error {
 	var borrows []models.MarginBorrow
 	if err := db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
 		return err
 	}
-	remaining := valueUSD
+	remaining := new(big.Rat).Set(valueUSD)
 	for i := range borrows {
-		if remaining <= 0 {
+		if remaining.Sign() <= 0 {
 			break
 		}
-		price, err := e.assetPriceUSD(ctx, borrows[i].Asset)
+		priceRat, err := e.assetPriceRat(ctx, borrows[i].Asset)
 		if err != nil {
 			return err
 		}
@@ -918,20 +959,12 @@ func (e *MarginEngine) reduceDebt(ctx context.Context, db *gorm.DB, accountID uu
 		if err != nil {
 			return fmt.Errorf("borrow %s holds unreadable interest %q: %w", borrows[i].Asset, borrows[i].AccruedInterest, err)
 		}
-		priceRat, err := rationalFromFloat(price)
-		if err != nil {
-			return fmt.Errorf("oracle price for %s is unusable: %w", borrows[i].Asset, err)
-		}
 		owed := new(big.Rat).Mul(new(big.Rat).Add(principal, interest), priceRat)
 		if owed.Sign() <= 0 {
 			continue
 		}
 		// Pay the lesser of what is left to repay and what this borrow owes.
-		remainingRat, err := rationalFromFloat(remaining)
-		if err != nil {
-			return fmt.Errorf("remaining liquidation value is unusable: %w", err)
-		}
-		payUSD := remainingRat
+		payUSD := new(big.Rat).Set(remaining)
 		if owed.Cmp(payUSD) < 0 {
 			payUSD = owed
 		}
@@ -964,8 +997,7 @@ func (e *MarginEngine) reduceDebt(ctx context.Context, db *gorm.DB, accountID uu
 				return err
 			}
 		}
-		paid, _ := payUSD.Float64()
-		remaining -= paid
+		remaining.Sub(remaining, payUSD)
 	}
 	return nil
 }
@@ -1001,16 +1033,20 @@ func (e *MarginEngine) GetAccountView(ctx context.Context, userID string, accoun
 	if err != nil {
 		return nil, err
 	}
+	collateralFloat, _ := health.CollateralUSD.Float64()
+	debtFloat, _ := health.DebtUSD.Float64()
+	equityFloat, _ := new(big.Rat).Sub(health.CollateralUSD, health.DebtUSD).Float64()
+	liquidationFloat, _ := health.LiquidationValueUSD.Float64()
 	return &MarginAccountView{
 		ID:                  account.ID.String(),
 		MarginMode:          account.MarginMode,
 		Pair:                account.Pair,
 		Status:              account.Status,
-		CollateralValueUSD:  health.CollateralUSD,
-		DebtValueUSD:        health.DebtUSD,
-		EquityUSD:           health.CollateralUSD - health.DebtUSD,
-		HealthFactor:        health.HealthFactor,
-		LiquidationValueUSD: health.LiquidationValueUSD,
+		CollateralValueUSD:  collateralFloat,
+		DebtValueUSD:        debtFloat,
+		EquityUSD:           equityFloat,
+		HealthFactor:        health.healthFactorFloat(),
+		LiquidationValueUSD: liquidationFloat,
 	}, nil
 }
 

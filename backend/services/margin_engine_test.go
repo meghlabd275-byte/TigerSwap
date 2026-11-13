@@ -276,6 +276,63 @@ func TestMarginHealthAndLiquidation(t *testing.T) {
 	}
 }
 
+// TestMarginHealthIsExact verifies the risk decision is computed in exact
+// rational arithmetic: two collateral deposits of 0.1 and 0.2 sum to exactly
+// 0.3, and an account whose health factor is exactly 1 is not liquidatable. A
+// float64 valuation cannot guarantee either, so this pins the exact path.
+func TestMarginHealthIsExact(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 1, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.7)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "0.1"); err != nil {
+		t.Fatalf("deposit 0.1: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "0.2"); err != nil {
+		t.Fatalf("deposit 0.2: %v", err)
+	}
+	// 0.3 BTC at price 1 = 0.3 USD collateral, exactly. Float64 would store
+	// 0.30000000000000004.
+	cfg, err := env.engine.marginConfig("BTC/RUSD")
+	if err != nil {
+		t.Fatalf("config: %v", err)
+	}
+	health, err := env.engine.computeHealth(ctx, env.db, account.ID, cfg)
+	if err != nil {
+		t.Fatalf("health: %v", err)
+	}
+	if health.CollateralUSD.Cmp(big.NewRat(3, 10)) != 0 {
+		t.Fatalf("expected collateral exactly 0.3, got %s", health.CollateralUSD.FloatString(18))
+	}
+
+	// Borrow exactly 0.21 RUSD so liquidation value (0.3 * 0.7 = 0.21) equals
+	// the debt: the health factor is exactly 1 and the account must not be
+	// liquidated.
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "0.21"); err != nil {
+		t.Fatalf("borrow: %v", err)
+	}
+	health, err = env.engine.computeHealth(ctx, env.db, account.ID, cfg)
+	if err != nil {
+		t.Fatalf("health after borrow: %v", err)
+	}
+	if health.HealthFactor == nil || health.HealthFactor.Cmp(big.NewRat(1, 1)) != 0 {
+		t.Fatalf("expected health factor exactly 1, got %v", health.healthFactorFloat())
+	}
+	if health.isLiquidatable() {
+		t.Fatal("an account at exactly the liquidation threshold must not be liquidatable")
+	}
+	if candidates, err := env.engine.LiquidatableAccounts(ctx); err != nil || len(candidates) != 0 {
+		t.Fatalf("boundary account must not be listed (err=%v, candidates=%d)", err, len(candidates))
+	}
+	if _, err := env.engine.Liquidate(ctx, account.ID, "liquidator"); !errors.Is(err, ErrMarginNotLiquidatable) {
+		t.Fatalf("boundary account must reject liquidation, got %v", err)
+	}
+}
+
 // TestMarginHealthyAccountCannotBeLiquidated verifies the guard that stops a
 // liquidation of a solvent account.
 func TestMarginHealthyAccountCannotBeLiquidated(t *testing.T) {

@@ -110,11 +110,16 @@ does not yet contain.
 
 ## Gaps (correctness or launch-blocking)
 
-1. **Perp/margin prices are `float64`.** The core PnL and settlement arithmetic
-   is exact (`perp_money.go` uses `big.Rat`), but `PerpetualPosition` prices and
-   `MarginEngine.assetPriceUSD` are still `float64`. A liquidation threshold
-   compared against a floating mark price can round at the boundary; convert the
-   remaining prices to exact integers.
+1. **Perp prices are still `float64` (margin is now exact).** The perp
+   settlement arithmetic is exact (`perp_money.go` uses `big.Rat`), but
+   `PerpetualPosition` prices (`EntryPrice`, `MarkPrice`, `IndexPrice`,
+   `LiquidationPrice`) are still `float64`, and `notionalPNL` /
+   `isLiquidatable` compare a float mark price against a float liquidation
+   price. `MarginEngine` is now fully exact: health, LTV, liquidation
+   threshold, bonus and close factor are `*big.Rat`, so a margin account whose
+   health factor is exactly 1 is neither listed nor liquidated. The perp engine
+   should be converted the same way; a liquidation threshold compared against a
+   floating mark price can round at the boundary.
 2. **Bridge relayer holds the entire validator key set.** `bridge_new.go` reads
    `TIGERBRIDGE_VALIDATOR_KEYS` in-process and signs the supermajority itself, so
    the supermajority is produced by one process. A production bridge needs
