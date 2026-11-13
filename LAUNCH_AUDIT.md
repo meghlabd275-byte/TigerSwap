@@ -1,6 +1,6 @@
 # TigerSwap launch audit — global / commercial readiness
 
-Scope: the repository as it stands at `main` (`60d403b`). This is a
+Scope: the repository as it stands at `main` (`dd4d1b7`). This is a
 "what is working / what is broken / what is missing" review measured against the
 bar set by venues a global launch would be compared to (Hyperliquid, dYdX,
 Uniswap, PancakeSwap, Anyswap/Multiswap): settlement model, real order
@@ -12,7 +12,7 @@ client, and it fails closed rather than falling back to mock data.
 advertises. "Missing" = a launch needs it and it is not here.
 
 An earlier revision of this file reviewed `1047ece`. Most of its P0 items have
-since been fixed on `main`; this revision records the state at `60d403b` and
+since been fixed on `main`; this revision records the state at `dd4d1b7` and
 notes each earlier finding as resolved or still open.
 
 ---
@@ -37,6 +37,14 @@ prove each component does what its own test says, not that the system trades. Th
 largest remaining issues are operational and commercial, not "the feature is
 wired to nothing":
 
+0. **The derivatives ledger is now free of the read-before-lock races.** Two
+   margin settlement defects and a governance bribe escrow defect found in this
+   review are fixed on `main`: `Repay` reads its debt row inside the transaction
+   under a `FOR UPDATE` lock, `Liquidate` computes health, the repayable amount
+   and the seized value inside the transaction after locking the account, and
+   `AddBribe`/`ClaimBribe` move real ledger funds instead of recording an amount
+   that was never debited or credited. Each has a regression test that fails on
+   the pre-fix code.
 1. **Settlement of the derivatives book is custodial and off-chain.** Perp and
    margin positions live in Postgres and settle against an internal ledger. That
    is the exchange model, not the DEX model, and it is the opposite of
