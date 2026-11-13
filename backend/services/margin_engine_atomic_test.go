@@ -80,3 +80,53 @@ func TestMarginLiquidationIsAtomic(t *testing.T) {
 		t.Fatalf("borrow must be untouched after a failed settlement: got %q, want %q", borrow.Principal, beforeBorrow.Principal)
 	}
 }
+
+// TestMarginRepayReadsDebtUnderTransaction proves the borrow row a repayment acts
+// on is read inside the settlement transaction, under the row lock. Reading it
+// beforehand let two concurrent repayments each act on the pre-payment debt, so
+// both debits were accepted and the debt was reduced twice for a single payment.
+//
+// The query callback observes the transaction the read ran in: with the row read
+// outside the transaction (the defect) no transaction is active when
+// margin_borrows is queried, so the guard fires.
+func TestMarginRepayReadsDebtUnderTransaction(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "1000"); err != nil {
+		t.Fatalf("borrow: %v", err)
+	}
+
+	var borrowRead, borrowReadInTx bool
+	if err := env.db.Callback().Query().Before("gorm:query").
+		Register("test:watch_margin_borrow_read", func(tx *gorm.DB) {
+			if tx.Statement == nil || tx.Statement.Table != "margin_borrows" {
+				return
+			}
+			borrowRead = true
+			if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); ok {
+				borrowReadInTx = true
+			}
+		}); err != nil {
+		t.Fatalf("register query observer: %v", err)
+	}
+
+	if err := env.engine.Repay(ctx, "user-1", account.ID, "RUSD", "100"); err != nil {
+		t.Fatalf("repay: %v", err)
+	}
+
+	if !borrowRead {
+		t.Fatal("repay never read the borrow row it settles")
+	}
+	if !borrowReadInTx {
+		t.Fatal("repay must read the borrow row inside the transaction, under the row lock")
+	}
+}

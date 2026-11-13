@@ -685,30 +685,6 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 		return err
 	}
 
-	var borrow models.MarginBorrow
-	err = e.db.Where("account_id = ? AND asset = ?", accountID, normalized).First(&borrow).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return ErrMarginNoDebt
-	}
-	if err != nil {
-		return err
-	}
-
-	principal, err := parseDecimal(borrow.Principal)
-	if err != nil {
-		return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
-	}
-	interest, err := parseDecimal(borrow.AccruedInterest)
-	if err != nil {
-		return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
-	}
-	owed := new(big.Rat).Add(principal, interest)
-	if value.Cmp(owed) > 0 {
-		f, _ := value.Float64()
-		owedF, _ := owed.Float64()
-		return fmt.Errorf("repay amount %.8f exceeds debt %.8f", f, owedF)
-	}
-
 	settled, err := e.assetLedger(normalized)
 	if err != nil {
 		return err
@@ -719,8 +695,36 @@ func (e *MarginEngine) Repay(_ context.Context, userID string, accountID uuid.UU
 	}
 
 	// Repaying debits the trader and reduces the debt in one transaction, so a
-	// debit can never be taken without the debt it clears.
+	// debit can never be taken without the debt it clears. The borrow row is read
+	// under the same transaction with a row lock: reading it beforehand let two
+	// concurrent repayments each act on the pre-payment debt, so both debits were
+	// accepted and the debt was reduced twice for one payment.
 	return e.db.Transaction(func(tx *gorm.DB) error {
+		var borrow models.MarginBorrow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("account_id = ? AND asset = ?", accountID, normalized).First(&borrow).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrMarginNoDebt
+		}
+		if err != nil {
+			return err
+		}
+
+		principal, err := parseDecimal(borrow.Principal)
+		if err != nil {
+			return fmt.Errorf("stored principal for %s is unreadable: %w", normalized, err)
+		}
+		interest, err := parseDecimal(borrow.AccruedInterest)
+		if err != nil {
+			return fmt.Errorf("stored interest for %s is unreadable: %w", normalized, err)
+		}
+		owed := new(big.Rat).Add(principal, interest)
+		if value.Cmp(owed) > 0 {
+			f, _ := value.Float64()
+			owedF, _ := owed.Float64()
+			return fmt.Errorf("repay amount %.8f exceeds debt %.8f", f, owedF)
+		}
+
 		if err := e.ledger.debitWithin(tx, userID, settled.ChainID, settled.Address, units); err != nil {
 			return err
 		}
