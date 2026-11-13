@@ -95,3 +95,60 @@ func TestPlaceOrderCalldataRoundTrips(t *testing.T) {
 		t.Errorf("tif round-trip mismatch: %v", args[4])
 	}
 }
+
+// TestOrderFilledEventUnpacks pins the OrderFilled event shape to the indexed
+// orderId the indexer reads from topics[1]. The indexer decodes the non-indexed
+// tail into (price, quantity, isMaker, fee); a shape change would make every
+// fill silently drop, so this builds a real log and unpacks it.
+func TestOrderFilledEventUnpacks(t *testing.T) {
+	event := orderBookABI.Events["OrderFilled"]
+	if event.ID == ([32]byte{}) {
+		t.Fatal("OrderFilled event missing from ABI")
+	}
+	if len(event.Inputs) != 7 {
+		t.Fatalf("OrderFilled has %d inputs, want 7", len(event.Inputs))
+	}
+	if !event.Inputs[0].Indexed || event.Inputs[0].Name != "orderId" {
+		t.Fatalf("first input = %s indexed=%v, want indexed orderId", event.Inputs[0].Name, event.Inputs[0].Indexed)
+	}
+	if event.Inputs[3].Indexed || event.Inputs[3].Name != "price" {
+		t.Fatalf("fourth input = %s indexed=%v, want non-indexed price", event.Inputs[3].Name, event.Inputs[3].Indexed)
+	}
+
+	data, err := event.Inputs.NonIndexed().Pack(
+		mustBig(t, "60000000000000000000000"), // price
+		big.NewInt(1e18),                      // quantity
+		true,                                  // isMaker
+		mustBig(t, "12000000000000000000"),    // fee
+	)
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	var decoded struct {
+		Price    *big.Int
+		Quantity *big.Int
+		IsMaker  bool
+		Fee      *big.Int
+	}
+	if err := orderBookABI.UnpackIntoInterface(&decoded, "OrderFilled", data); err != nil {
+		t.Fatalf("unpack: %v", err)
+	}
+	if decoded.Price.Cmp(mustBig(t, "60000000000000000000000")) != 0 {
+		t.Errorf("price = %v", decoded.Price)
+	}
+	if !decoded.IsMaker {
+		t.Errorf("isMaker = false, want true")
+	}
+	if decoded.Fee.Cmp(mustBig(t, "12000000000000000000")) != 0 {
+		t.Errorf("fee = %v", decoded.Fee)
+	}
+}
+
+func mustBig(t *testing.T, s string) *big.Int {
+	t.Helper()
+	v, ok := new(big.Int).SetString(s, 10)
+	if !ok {
+		t.Fatalf("bad integer %q", s)
+	}
+	return v
+}

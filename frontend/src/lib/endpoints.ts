@@ -58,6 +58,7 @@ import {
   OnChainPerpMarket,
   OnChainPerpPosition,
   PerpBookDepth,
+  PerpBookFill,
   PerpBookMarket,
   PerpBookOrder,
   PerpBookPosition,
@@ -119,6 +120,7 @@ import {
   optionSeriesViewListValidator,
   optionSeriesViewValidator,
   perpBookDepthValidator,
+  perpBookFillListValidator,
   perpBookMarketListValidator,
   perpBookOrderListValidator,
   perpBookPositionListValidator,
@@ -576,6 +578,12 @@ export const endpoints = {
   async getPerpBookOrders(chainId: number): Promise<PerpBookOrder[]> {
     const body = await api.get("/onchain/perp-book/orders", { query: { chain_id: chainId } });
     return perpBookOrderListValidator(body);
+  },
+
+  /** The authenticated caller's indexed fills on the on-chain order book. */
+  async getPerpBookFills(chainId: number): Promise<PerpBookFill[]> {
+    const body = await api.get("/onchain/perp-book/fills", { query: { chain_id: chainId } });
+    return perpBookFillListValidator(body);
   },
 
   /** Unsigned calldata that deposits margin into an on-chain market. */

@@ -2693,3 +2693,34 @@ export const perpBookOrderValidator = object<PerpBookOrder>({
 });
 
 export const perpBookOrderListValidator = listingArray(perpBookOrderValidator);
+
+/** One executed fill on the on-chain perpetual order book, from the index. */
+export interface PerpBookFill {
+  order_id: string;
+  market_id: string;
+  symbol: string;
+  trader: string;
+  is_maker: boolean;
+  price: string;
+  quantity: string;
+  fee: string;
+  tx_hash: string;
+  log_index: number;
+  block_number: number;
+}
+
+export const perpBookFillValidator = object<PerpBookFill>({
+  order_id: string,
+  market_id: string,
+  symbol: withDefault(marketSymbol, ''),
+  trader: string,
+  is_maker: boolean,
+  price: string,
+  quantity: string,
+  fee: string,
+  tx_hash: string,
+  log_index: integer,
+  block_number: integer,
+});
+
+export const perpBookFillListValidator = listingArray(perpBookFillValidator);

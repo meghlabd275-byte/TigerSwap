@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -410,6 +411,55 @@ func (s *OnChainPerpBookService) OrdersHandler(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"orders": out, "count": len(out), "chain_id": chainID})
+}
+
+// FillsHandler returns the caller's indexed fills for a chain, newest first.
+// Each row is written from a confirmed OrderFilled event, so the history is the
+// chain's own trade record rather than a reconstructed one.
+func (s *OnChainPerpBookService) FillsHandler(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		return
+	}
+	chainID := s.resolveChainParam(c)
+	address, err := s.walletAddressFor(userID)
+	if err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	if s.db == nil {
+		respondServiceError(c, errors.New("fill index is unavailable"))
+		return
+	}
+	limit := 100
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 500 {
+			limit = parsed
+		}
+	}
+	var rows []models.OnChainBookFill
+	if err := s.db.Where("chain_id = ? AND trader = ?", chainID, common.HexToAddress(address).Hex()).
+		Order("block_number DESC, log_index DESC").Limit(limit).Find(&rows).Error; err != nil {
+		respondServiceError(c, err)
+		return
+	}
+	out := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, gin.H{
+			"order_id":     r.OrderID,
+			"market_id":    r.MarketID,
+			"symbol":       r.Symbol,
+			"trader":       r.Trader,
+			"is_maker":     r.IsMaker,
+			"price":        r.Price,
+			"quantity":     r.Quantity,
+			"fee":          r.Fee,
+			"tx_hash":      r.TxHash,
+			"log_index":    r.LogIndex,
+			"block_number": r.BlockNumber,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"fills": out, "count": len(out), "chain_id": chainID})
 }
 
 func (s *OnChainPerpBookService) positionView(ctx context.Context, client *orderbook.Client, chainID int64, symbol string, marketID common.Hash, trader common.Address, pos *orderbook.Position) gin.H {
@@ -855,9 +905,68 @@ func (s *OnChainPerpBookService) scanRange(ctx context.Context, client *orderboo
 			return err
 		}
 	}
+	if err := s.scanFills(ctx, client, chainID, from, to); err != nil {
+		return err
+	}
 	// Advance the cursor in the same pass, so a restart resumes here.
 	cursor := models.OnChainBookCursor{ChainID: chainID, Contract: client.Address().Hex(), LastBlock: to, UpdatedAt: time.Now()}
 	return s.db.Save(&cursor).Error
+}
+
+// scanFills mirrors OrderFilled events into trade-history rows. Each row is
+// keyed by (chain, tx hash, log index), so a reorg or a replay re-writes the
+// same row rather than appending a duplicate.
+func (s *OnChainPerpBookService) scanFills(ctx context.Context, client *orderbook.Client, chainID int64, from, to uint64) error {
+	abi := orderbook.ABI()
+	event := abi.Events["OrderFilled"]
+	query := ethereum.FilterQuery{
+		FromBlock: new(big.Int).SetUint64(from),
+		ToBlock:   new(big.Int).SetUint64(to),
+		Addresses: []common.Address{client.Address()},
+		Topics:    [][]common.Hash{{event.ID}},
+	}
+	logs, err := client.RPC().FilterLogs(ctx, query)
+	if err != nil {
+		return fmt.Errorf("filter OrderFilled: %w", err)
+	}
+	for _, lg := range logs {
+		// OrderFilled(orderId indexed, marketId indexed, trader indexed, price, quantity, isMaker, fee)
+		if len(lg.Topics) < 4 {
+			continue
+		}
+		var decoded struct {
+			Price    *big.Int
+			Quantity *big.Int
+			IsMaker  bool
+			Fee      *big.Int
+		}
+		if err := abi.UnpackIntoInterface(&decoded, "OrderFilled", lg.Data); err != nil {
+			continue
+		}
+		orderID := new(big.Int).SetBytes(lg.Topics[1].Bytes())
+		marketID := common.BytesToHash(lg.Topics[2].Bytes())
+		trader := common.BytesToAddress(lg.Topics[3].Bytes())
+		fill := models.OnChainBookFill{
+			ChainID:     chainID,
+			TxHash:      lg.TxHash.Hex(),
+			LogIndex:    lg.Index,
+			OrderID:     orderID.String(),
+			MarketID:    marketID.Hex(),
+			Symbol:      s.symbolFor(marketID),
+			Trader:      trader.Hex(),
+			IsMaker:     decoded.IsMaker,
+			Price:       bigString(decoded.Price),
+			Quantity:    bigString(decoded.Quantity),
+			Fee:         bigString(decoded.Fee),
+			BlockNumber: lg.BlockNumber,
+			CreatedAt:   time.Now(),
+		}
+		if err := s.db.Where("chain_id = ? AND tx_hash = ? AND log_index = ?", chainID, fill.TxHash, fill.LogIndex).
+			Assign(fill).FirstOrCreate(&models.OnChainBookFill{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *OnChainPerpBookService) upsertPosition(chainID int64, marketID common.Hash, trader common.Address, size, entryPrice, margin *big.Int, block uint64) error {

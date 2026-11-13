@@ -54,6 +54,7 @@ import {
   perpBookDepthValidator,
   perpBookMarketListValidator,
   perpBookOrderListValidator,
+  perpBookFillListValidator,
   perpBookPositionListValidator,
   topTraderListValidator,
   tradeListValidator,
@@ -817,4 +818,30 @@ test("live /onchain/perp-book/orders payload satisfies perpBookOrderListValidato
   assert.equal(orders.length, 1);
   assert.equal(orders[0].symbol, "BTC/RUSD");
   assert.equal(orders[0].post_only, true);
+});
+
+const SERVER_PERP_BOOK_FILLS = {
+  fills: [
+    {
+      order_id: "7",
+      market_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      symbol: "BTC/RUSD",
+      trader: "0x4444444444444444444444444444444444444444",
+      is_maker: true,
+      price: "60000000000000000000000",
+      quantity: "1000000000000000000",
+      fee: "12000000000000000000",
+      tx_hash: "0x2222222222222222222222222222222222222222222222222222222222222222",
+      log_index: 3,
+      block_number: 12345678,
+    },
+  ],
+  count: 1,
+};
+
+test("live /onchain/perp-book/fills payload satisfies perpBookFillListValidator", () => {
+  const fills = parse(perpBookFillListValidator, JSON.stringify(SERVER_PERP_BOOK_FILLS.fills), "fills");
+  assert.equal(fills.length, 1);
+  assert.equal(fills[0].order_id, "7");
+  assert.equal(fills[0].is_maker, true);
 });

@@ -54,6 +54,7 @@ import type {
   OnChainPerpMarket,
   OnChainPerpPosition,
   PerpBookDepth,
+  PerpBookFill,
   PerpBookMarket,
   PerpBookOrder,
   PerpBookPosition,
@@ -532,6 +533,18 @@ export function usePerpBookOrders(chainId: number | null): UseQueryResult<PerpBo
   return useQuery<PerpBookOrder[], Error>({
     queryKey: ["onchain", "perp-book", "orders", chainId],
     queryFn: () => endpoints.getPerpBookOrders(chainId as number),
+    enabled: chainId !== null && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+
+/** The authenticated caller's indexed fills for one chain. */
+export function usePerpBookFills(chainId: number | null): UseQueryResult<PerpBookFill[], Error> {
+  return useQuery<PerpBookFill[], Error>({
+    queryKey: ["onchain", "perp-book", "fills", chainId],
+    queryFn: () => endpoints.getPerpBookFills(chainId as number),
     enabled: chainId !== null && isAuthenticated(),
     refetchInterval: REFRESH.fast,
     retry: shouldRetry,

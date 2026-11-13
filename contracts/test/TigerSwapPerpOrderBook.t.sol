@@ -22,6 +22,18 @@ contract FixedOracle {
 }
 
 contract TigerSwapPerpOrderBookTest is Test {
+    // Mirrors TigerSwapPerpOrderBook.OrderFilled so the test can assert the
+    // maker fill names the resting order it consumed.
+    event OrderFilled(
+        uint256 indexed orderId,
+        bytes32 indexed marketId,
+        address indexed trader,
+        uint256 price,
+        uint256 quantity,
+        bool isMaker,
+        uint256 fee
+    );
+
     TigerSwapPerpOrderBook public book;
     FixedOracle public oracle;
     TestERC20 public usdc;
@@ -218,6 +230,19 @@ contract TigerSwapPerpOrderBookTest is Test {
         (int256 bobSize, , , , ) = book.getPosition(BTC, bob);
         assertEq(aliceSize, -1e18, "alice short");
         assertEq(bobSize, 1e18, "bob long");
+    }
+
+    /// @dev A maker fill must name the resting order it consumed, so an indexer
+    ///      can attribute the fill to that order. The taker side carries id 0.
+    function testMakerFillCarriesRestingOrderId() public {
+        _deposit(alice, 10_000e18);
+        _deposit(bob, 10_000e18);
+        (uint256 aliceId, ) = _place(alice, 1e18, PRICE, false, 0, false);
+
+        // Maker fee is 0.02% of the 60,000 notional = 12e18.
+        vm.expectEmit(true, true, true, true, address(book));
+        emit OrderFilled(aliceId, BTC, alice, PRICE, 1e18, true, 12e18);
+        _place(bob, 1e18, PRICE, true, 0, false);
     }
 
     function testPriceTimePriority() public {

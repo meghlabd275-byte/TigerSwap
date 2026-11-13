@@ -25,6 +25,7 @@ import {
   useBuildPerpBookWithdraw,
   usePerpBookDepth,
   usePerpBookMarkets,
+  usePerpBookFills,
   usePerpBookOrders,
   usePerpBookPositions,
 } from '@/hooks/useApi';
@@ -100,6 +101,7 @@ export function PerpOrderBook() {
   const depthQuery = usePerpBookDepth(chainId, marketId);
   const positionsQuery = usePerpBookPositions(chainId);
   const ordersQuery = usePerpBookOrders(chainId);
+  const fillsQuery = usePerpBookFills(chainId);
 
   const deposit = useBuildPerpBookDeposit();
   const withdraw = useBuildPerpBookWithdraw();
@@ -284,6 +286,7 @@ export function PerpOrderBook() {
   const depth = depthQuery.data ?? null;
   const positions = positionsQuery.data ?? [];
   const orders = ordersQuery.data ?? [];
+  const fills = fillsQuery.data ?? [];
   const bidLevels = depth ? depth.bid_prices.map((p, i) => ({ price: p, qty: depth.bid_qty[i] })) : [];
   const askLevels = depth ? depth.ask_prices.map((p, i) => ({ price: p, qty: depth.ask_qty[i] })) : [];
 
@@ -574,6 +577,36 @@ export function PerpOrderBook() {
                 >
                   Cancel
                 </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Recent fills */}
+      <div className="glass-dark rounded-2xl p-6">
+        <h3 className="text-sm font-semibold text-white mb-3">Your recent fills</h3>
+        {fills.length === 0 ? (
+          <p className="text-xs text-gray-500">No executed fills indexed on this chain yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {fills.map((f) => (
+              <div
+                key={`${f.tx_hash}:${f.log_index}`}
+                className="flex items-center justify-between text-xs bg-black/20 rounded-lg p-3"
+              >
+                <span className="text-white font-medium">
+                  {f.symbol || f.market_id.slice(0, 10)}
+                </span>
+                <span className={f.is_maker ? 'text-blue-400' : 'text-amber-400'}>
+                  {f.is_maker ? 'maker' : 'taker'}
+                </span>
+                <span className="text-gray-400">price {formatScaled(f.price)}</span>
+                <span className="text-gray-400">qty {formatScaled(f.quantity)}</span>
+                <span className="text-gray-500">fee {formatScaled(f.fee)}</span>
+                <span className="text-gray-600 font-mono">
+                  {f.tx_hash.slice(0, 10)}…#{f.log_index}
+                </span>
               </div>
             ))}
           </div>

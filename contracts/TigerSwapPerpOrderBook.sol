@@ -484,8 +484,12 @@ contract TigerSwapPerpOrderBook {
                 continue;
             }
 
-            _applyFill(marketId, taker, isLong, true, bestPrice, fillQty);
-            _applyFill(marketId, maker.trader, !isLong, false, bestPrice, fillQty);
+            // A taker fill is marketable and is not tied to a resting order, so
+            // it carries orderId 0; a maker fill carries the id of the order it
+            // consumed. Without this an indexer cannot attribute a fill to the
+            // order whose `filled` counter it advanced.
+            _applyFill(marketId, taker, isLong, true, 0, bestPrice, fillQty);
+            _applyFill(marketId, maker.trader, !isLong, false, bestOrderId, bestPrice, fillQty);
 
             maker.filled += fillQty;
             remaining -= fillQty;
@@ -499,7 +503,9 @@ contract TigerSwapPerpOrderBook {
     }
 
     /// @dev Apply a fill to one side and enforce margin on any exposure increase.
-    function _applyFill(bytes32 marketId, address trader, bool isLong, bool isTaker, uint256 price, uint256 quantity) private {
+    ///      `fillOrderId` is the resting order the fill consumed, or 0 for a
+    ///      marketable taker fill that is not tied to a resting order.
+    function _applyFill(bytes32 marketId, address trader, bool isLong, bool isTaker, uint256 fillOrderId, uint256 price, uint256 quantity) private {
         Market storage market = markets[marketId];
         Position storage pos = positions[marketId][trader];
         int256 oldSize = pos.size;
@@ -546,7 +552,7 @@ contract TigerSwapPerpOrderBook {
             require(equity >= 0 && uint256(equity) >= _initialMarginRequirement(marketId, trader), "TigerSwap: INSUFFICIENT_MARGIN");
         }
 
-        emit OrderFilled(0, marketId, trader, price, quantity, !isTaker, fee);
+        emit OrderFilled(fillOrderId, marketId, trader, price, quantity, !isTaker, fee);
         emit PositionChanged(marketId, trader, newSize, _entryPrice(marketId, trader), balances[marketId][trader]);
     }
 

@@ -222,6 +222,23 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/onchain/twamm", deps.onChainOrders.ListTWAMMOrdersHandler)
 			}
 
+			// On-chain perpetual order book: the deployed TigerSwapPerpOrderBook
+			// contract is the settlement layer for the CLOB. Reads come from chain
+			// state; build endpoints return unsigned calldata the caller's own
+			// wallet signs, so the server never holds a user key.
+			if deps.onChainPerpBook != nil {
+				protected.GET("/onchain/perp-book/positions", deps.onChainPerpBook.PositionsHandler)
+				protected.GET("/onchain/perp-book/orders", deps.onChainPerpBook.OrdersHandler)
+				protected.GET("/onchain/perp-book/fills", deps.onChainPerpBook.FillsHandler)
+				protected.POST("/onchain/perp-book/deposit", tradingGate(deps.onChainPerpBook.BuildDepositHandler))
+				protected.POST("/onchain/perp-book/withdraw", tradingGate(deps.onChainPerpBook.BuildWithdrawHandler))
+				protected.POST("/onchain/perp-book/orders", tradingGate(deps.onChainPerpBook.BuildPlaceOrderHandler))
+				protected.POST("/onchain/perp-book/orders/:id/cancel", tradingGate(deps.onChainPerpBook.BuildCancelOrderHandler))
+				protected.POST("/onchain/perp-book/liquidity/add", tradingGate(deps.onChainPerpBook.BuildAddLiquidityHandler))
+				protected.POST("/onchain/perp-book/liquidity/remove", tradingGate(deps.onChainPerpBook.BuildRemoveLiquidityHandler))
+				protected.POST("/onchain/perp-book/insurance", tradingGate(deps.onChainPerpBook.BuildDepositInsuranceHandler))
+			}
+
 			// Liquidity pool read routes
 			protected.GET("/liquidity/pools", deps.liquidityService.GetPoolsHandler)
 			protected.GET("/liquidity/pools/:address", deps.liquidityService.GetPoolHandler)

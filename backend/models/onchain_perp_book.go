@@ -74,3 +74,34 @@ func (l *OnChainBookLiquidation) BeforeCreate(tx *gorm.DB) error {
 	}
 	return nil
 }
+
+// OnChainBookFill is the indexed mirror of an OrderFilled event on the deployed
+// order book. The chain is the source of truth; this row lets the API show a
+// trader's trade history without replaying every log. It is idempotent on
+// (chain, tx hash, log index) so a replay or a reorg cannot double-count a fill.
+type OnChainBookFill struct {
+	ID       uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	ChainID  int64     `gorm:"uniqueIndex:idx_onchain_book_fill;index" json:"chain_id"`
+	TxHash   string    `gorm:"size:66;uniqueIndex:idx_onchain_book_fill" json:"tx_hash"`
+	LogIndex uint      `gorm:"uniqueIndex:idx_onchain_book_fill" json:"log_index"`
+	// OrderID is the resting order the fill consumed, or "0" for a marketable
+	// taker fill that is not tied to a resting order.
+	OrderID  string `gorm:"size:80;index" json:"order_id"`
+	MarketID string `gorm:"size:66;index" json:"market_id"`
+	Symbol   string `gorm:"size:40;index" json:"symbol"`
+	Trader   string `gorm:"size:42;index" json:"trader"`
+	IsMaker  bool   `json:"is_maker"`
+	Price    string `gorm:"size:80" json:"price"`
+	Quantity string `gorm:"size:80" json:"quantity"`
+	Fee      string `gorm:"size:80" json:"fee"`
+
+	BlockNumber uint64    `gorm:"index" json:"block_number"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+func (f *OnChainBookFill) BeforeCreate(tx *gorm.DB) error {
+	if f.ID == uuid.Nil {
+		f.ID = uuid.New()
+	}
+	return nil
+}
