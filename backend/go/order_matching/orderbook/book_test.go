@@ -647,3 +647,47 @@ func TestFormatScaledTrimsTrailingZeros(t *testing.T) {
 	}
 }
 
+// TestFOKIgnoresSelfOwnedLiquidity verifies a fill-or-kill order is rejected
+// when the only liquidity within its price limit is its own. Self-trade
+// prevention cancels that liquidity instead of filling it, so a FOK order that
+// counted it would be accepted and then leave a remainder it can never fill.
+func TestFOKIgnoresSelfOwnedLiquidity(t *testing.T) {
+	e := testEngine(t)
+
+	// Alice rests two asks at 60000; nothing else is on the book.
+	mustSubmit(t, e, Order{Trader: "alice", Pair: "BTC/RUSD", Side: SideSell, Type: TypeLimit, Price: 60000, Quantity: 2})
+
+	_, _, err := e.Submit(Order{
+		Trader: "alice", Pair: "BTC/RUSD", Side: SideBuy, Type: TypeLimit,
+		Price: 60000, Quantity: 2, TIF: TIFFOK,
+	})
+	if !errors.Is(err, ErrNoLiquidity) {
+		t.Fatalf("expected ErrNoLiquidity for self-only liquidity, got %v", err)
+	}
+
+	// The rejected FOK never reaches the matching loop, so the resting ask
+	// is left untouched and no trade was recorded.
+	book, _ := e.Book("BTC/RUSD")
+	if book.OpenOrders() != 1 {
+		t.Fatalf("a rejected FOK must not touch the book, got %d resting orders", book.OpenOrders())
+	}
+}
+
+// TestFOKCountsOnlyTradableLiquidity verifies a FOK order fills when its own
+// resting liquidity plus another trader's together exceed its size, but only
+// the other trader's share is tradable. The order must be rejected: it can fill
+// at most the one unit that is not its own.
+func TestFOKCountsOnlyTradableLiquidity(t *testing.T) {
+	e := testEngine(t)
+
+	mustSubmit(t, e, Order{Trader: "alice", Pair: "BTC/RUSD", Side: SideSell, Type: TypeLimit, Price: 60000, Quantity: 1})
+	mustSubmit(t, e, Order{Trader: "bob", Pair: "BTC/RUSD", Side: SideSell, Type: TypeLimit, Price: 60000, Quantity: 1})
+
+	_, _, err := e.Submit(Order{
+		Trader: "alice", Pair: "BTC/RUSD", Side: SideBuy, Type: TypeLimit,
+		Price: 60000, Quantity: 2, TIF: TIFFOK,
+	})
+	if !errors.Is(err, ErrNoLiquidity) {
+		t.Fatalf("expected ErrNoLiquidity when only 1 unit is tradable, got %v", err)
+	}
+}

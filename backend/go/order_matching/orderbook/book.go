@@ -392,8 +392,25 @@ func (b *Book) sideFor(side string) *sideBook {
 	return b.asks
 }
 
+// tradableUnits totals the leaves at this level a given trader may actually
+// trade against. A resting order owned by the incoming trader is excluded
+// because match stops at it (self-trade prevention cancels it rather than
+// filling it), so counting it would let a fill-or-kill order be accepted for a
+// quantity it can never fill.
+func (l *level) tradableUnits(trader string) int64 {
+	var total int64
+	for _, o := range l.orders {
+		if o.Trader == trader {
+			continue
+		}
+		total += o.leavesUnits()
+	}
+	return total
+}
+
 // availableUnits totals the units an incoming order could fill, honouring its
-// price limit. Market orders accept any price.
+// price limit and excluding its own resting liquidity. Market orders accept any
+// price.
 func (b *Book) availableUnits(o *Order) int64 {
 	opposite := b.sideFor(oppositeSide(o.Side))
 	var total int64
@@ -401,7 +418,7 @@ func (b *Book) availableUnits(o *Order) int64 {
 		if !b.crosses(o, l.priceTicks) {
 			break
 		}
-		total += l.totalUnits
+		total += l.tradableUnits(o.Trader)
 	}
 	return total
 }
