@@ -49,6 +49,7 @@ type apiDeps struct {
 	analyticsService   *services.AnalyticsService
 	portfolioService   *services.PortfolioService
 	platformGate       *services.PlatformGate
+	complianceService  *services.ComplianceService
 	metrics            *services.Metrics
 }
 
@@ -174,6 +175,30 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				h(c)
 			}
 		}
+
+		// Identity verification gate for the mutating trading paths. It is
+		// applied alongside tradingGate so an unverified account is refused before
+		// the trading switch is even consulted, and a deployment without the
+		// compliance service keeps the previous behaviour.
+		kycGate := func(h gin.HandlerFunc) gin.HandlerFunc {
+			if deps.complianceService == nil {
+				return h
+			}
+			verify := deps.complianceService.RequireVerifiedTrading()
+			return func(c *gin.Context) {
+				verify(c)
+				if c.IsAborted() {
+					return
+				}
+				h(c)
+			}
+		}
+
+		// trading applies both mutating-path gates: identity verification first,
+		// then the operator's trading switch.
+		trading := func(h gin.HandlerFunc) gin.HandlerFunc {
+			return kycGate(tradingGate(h))
+		}
 		{
 			// User routes
 			protected.GET("/user/profile", deps.authService.GetProfile)
@@ -187,6 +212,14 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/user/2fa/disable", deps.authService.DisableTOTP)
 			// Ask for (or resend) an email-verification link.
 			protected.POST("/user/email/verify", deps.authService.RequestEmailVerification)
+
+			// Identity verification. A submission moves the account to pending; an
+			// operator approves or rejects it, after which the trading and withdrawal
+			// gates let the account through.
+			if deps.complianceService != nil {
+				protected.GET("/user/kyc", deps.complianceService.GetMyKYC)
+				protected.POST("/user/kyc", deps.complianceService.SubmitKYC)
+			}
 			// Portfolio and transaction history. Both are served as camelCase
 			// DTOs from the caller's own ledger rows, so the frontend validators
 			// pass against the real server rather than a hand-written shape.
@@ -198,35 +231,35 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/wallet/disconnect", deps.authService.DisconnectWallet)
 
 			// Swap routes
-			protected.POST("/swap/execute", tradingGate(deps.swapService.ExecuteSwap))
+			protected.POST("/swap/execute", trading(deps.swapService.ExecuteSwap))
 			protected.POST("/swap/approve", deps.swapService.ApproveToken)
 
 			// Liquidity routes
-			protected.POST("/liquidity/add", tradingGate(deps.swapService.AddLiquidity))
-			protected.POST("/liquidity/remove", tradingGate(deps.swapService.RemoveLiquidity))
+			protected.POST("/liquidity/add", trading(deps.swapService.AddLiquidity))
+			protected.POST("/liquidity/remove", trading(deps.swapService.RemoveLiquidity))
 			protected.GET("/liquidity/positions", deps.swapService.GetPositions)
 
 			// Copy trading routes (follower is the authenticated user)
 			protected.POST("/copy-trading/traders", deps.copyTradingEngine.RegisterTraderHandler)
-			protected.POST("/copy-trading/follow", tradingGate(deps.copyTradingEngine.StartFollowingHandler))
-			protected.DELETE("/copy-trading/follow", tradingGate(deps.copyTradingEngine.StopFollowingHandler))
+			protected.POST("/copy-trading/follow", trading(deps.copyTradingEngine.StartFollowingHandler))
+			protected.DELETE("/copy-trading/follow", trading(deps.copyTradingEngine.StopFollowingHandler))
 			protected.GET("/copy-trading/positions", deps.copyTradingEngine.GetPositionsHandler)
-			protected.DELETE("/copy-trading/positions/:id", tradingGate(deps.copyTradingEngine.ClosePositionHandler))
+			protected.DELETE("/copy-trading/positions/:id", trading(deps.copyTradingEngine.ClosePositionHandler))
 
 			// Perpetual engine routes
-			protected.POST("/perpetual/open", tradingGate(deps.perpetualEngine.OpenPositionHandler))
-			protected.DELETE("/perpetual/positions/:id", tradingGate(deps.perpetualEngine.ClosePositionHandler))
+			protected.POST("/perpetual/open", trading(deps.perpetualEngine.OpenPositionHandler))
+			protected.DELETE("/perpetual/positions/:id", trading(deps.perpetualEngine.ClosePositionHandler))
 			protected.GET("/perpetual/positions", deps.perpetualEngine.GetPositionsHandler)
 
 			// Spot margin: accounts, collateral, borrow/repay.
-			protected.POST("/margin/accounts", tradingGate(deps.marginEngine.OpenMarginAccountHandler))
+			protected.POST("/margin/accounts", trading(deps.marginEngine.OpenMarginAccountHandler))
 			protected.GET("/margin/accounts/:id", deps.marginEngine.GetMarginAccountHandler)
-			protected.POST("/margin/collateral", tradingGate(deps.marginEngine.DepositMarginCollateralHandler))
-			protected.POST("/margin/borrow", tradingGate(deps.marginEngine.BorrowMarginHandler))
-			protected.POST("/margin/repay", tradingGate(deps.marginEngine.RepayMarginHandler))
-			protected.POST("/perpetual/orders", tradingGate(deps.perpetualEngine.CreateOrderHandler))
+			protected.POST("/margin/collateral", trading(deps.marginEngine.DepositMarginCollateralHandler))
+			protected.POST("/margin/borrow", trading(deps.marginEngine.BorrowMarginHandler))
+			protected.POST("/margin/repay", trading(deps.marginEngine.RepayMarginHandler))
+			protected.POST("/perpetual/orders", trading(deps.perpetualEngine.CreateOrderHandler))
 			protected.GET("/perpetual/orders", deps.perpetualEngine.GetOrdersHandler)
-			protected.DELETE("/perpetual/orders/:id", tradingGate(deps.perpetualEngine.CancelOrderHandler))
+			protected.DELETE("/perpetual/orders/:id", trading(deps.perpetualEngine.CancelOrderHandler))
 
 			// On-chain perpetuals: the deployed TigerSwapPerpetuals contract is the
 			// settlement layer. Order-building endpoints return unsigned calldata the
@@ -234,21 +267,21 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			if deps.onChainPerps != nil {
 				protected.GET("/onchain/perps/positions", deps.onChainPerps.PositionsHandler)
 				protected.GET("/onchain/perps/positions/:id", deps.onChainPerps.PositionHandler)
-				protected.POST("/onchain/perps/open", tradingGate(deps.onChainPerps.BuildOpenPositionHandler))
-				protected.POST("/onchain/perps/positions/:id/close", tradingGate(deps.onChainPerps.BuildClosePositionHandler))
-				protected.POST("/onchain/perps/margin/add", tradingGate(deps.onChainPerps.BuildAddMarginHandler))
-				protected.POST("/onchain/perps/margin/remove", tradingGate(deps.onChainPerps.BuildRemoveMarginHandler))
-				protected.POST("/onchain/perps/liquidity", tradingGate(deps.onChainPerps.BuildLiquidityHandler))
+				protected.POST("/onchain/perps/open", trading(deps.onChainPerps.BuildOpenPositionHandler))
+				protected.POST("/onchain/perps/positions/:id/close", trading(deps.onChainPerps.BuildClosePositionHandler))
+				protected.POST("/onchain/perps/margin/add", trading(deps.onChainPerps.BuildAddMarginHandler))
+				protected.POST("/onchain/perps/margin/remove", trading(deps.onChainPerps.BuildRemoveMarginHandler))
+				protected.POST("/onchain/perps/liquidity", trading(deps.onChainPerps.BuildLiquidityHandler))
 			}
 
 			// On-chain advanced orders and TWAMM: the deployed contracts escrow
 			// and fill on-chain. Build endpoints return unsigned calldata the
 			// caller's wallet signs; reads come from chain state.
 			if deps.onChainOrders != nil {
-				protected.POST("/onchain/orders", tradingGate(deps.onChainOrders.BuildOrderHandler))
+				protected.POST("/onchain/orders", trading(deps.onChainOrders.BuildOrderHandler))
 				protected.GET("/onchain/orders", deps.onChainOrders.ListOrdersHandler)
-				protected.POST("/onchain/orders/:id/cancel", tradingGate(deps.onChainOrders.CancelOrderHandler))
-				protected.POST("/onchain/twamm", tradingGate(deps.onChainOrders.BuildTWAMMOrderHandler))
+				protected.POST("/onchain/orders/:id/cancel", trading(deps.onChainOrders.CancelOrderHandler))
+				protected.POST("/onchain/twamm", trading(deps.onChainOrders.BuildTWAMMOrderHandler))
 				protected.GET("/onchain/twamm", deps.onChainOrders.ListTWAMMOrdersHandler)
 			}
 
@@ -260,14 +293,14 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.GET("/onchain/perp-book/positions", deps.onChainPerpBook.PositionsHandler)
 				protected.GET("/onchain/perp-book/orders", deps.onChainPerpBook.OrdersHandler)
 				protected.GET("/onchain/perp-book/fills", deps.onChainPerpBook.FillsHandler)
-				protected.POST("/onchain/perp-book/deposit", tradingGate(deps.onChainPerpBook.BuildDepositHandler))
-				protected.POST("/onchain/perp-book/withdraw", tradingGate(deps.onChainPerpBook.BuildWithdrawHandler))
-				protected.POST("/onchain/perp-book/orders", tradingGate(deps.onChainPerpBook.BuildPlaceOrderHandler))
-				protected.POST("/onchain/perp-book/orders/:id/cancel", tradingGate(deps.onChainPerpBook.BuildCancelOrderHandler))
-				protected.POST("/onchain/perp-book/liquidity/add", tradingGate(deps.onChainPerpBook.BuildAddLiquidityHandler))
-				protected.POST("/onchain/perp-book/liquidity/remove", tradingGate(deps.onChainPerpBook.BuildRemoveLiquidityHandler))
-				protected.POST("/onchain/perp-book/insurance", tradingGate(deps.onChainPerpBook.BuildDepositInsuranceHandler))
-				protected.POST("/onchain/perp-book/claim", tradingGate(deps.onChainPerpBook.BuildClaimUnpaidHandler))
+				protected.POST("/onchain/perp-book/deposit", trading(deps.onChainPerpBook.BuildDepositHandler))
+				protected.POST("/onchain/perp-book/withdraw", trading(deps.onChainPerpBook.BuildWithdrawHandler))
+				protected.POST("/onchain/perp-book/orders", trading(deps.onChainPerpBook.BuildPlaceOrderHandler))
+				protected.POST("/onchain/perp-book/orders/:id/cancel", trading(deps.onChainPerpBook.BuildCancelOrderHandler))
+				protected.POST("/onchain/perp-book/liquidity/add", trading(deps.onChainPerpBook.BuildAddLiquidityHandler))
+				protected.POST("/onchain/perp-book/liquidity/remove", trading(deps.onChainPerpBook.BuildRemoveLiquidityHandler))
+				protected.POST("/onchain/perp-book/insurance", trading(deps.onChainPerpBook.BuildDepositInsuranceHandler))
+				protected.POST("/onchain/perp-book/claim", trading(deps.onChainPerpBook.BuildClaimUnpaidHandler))
 			}
 
 			// Liquidity pool read routes
@@ -276,87 +309,92 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 			// Bridge routes
 			protected.POST("/bridge/quote", deps.bridgeService.GetQuoteHandler)
-			protected.POST("/bridge/transfer", tradingGate(deps.bridgeService.InitiateTransferHandler))
+			protected.POST("/bridge/transfer", trading(deps.bridgeService.InitiateTransferHandler))
 			protected.GET("/bridge/transfers", deps.bridgeService.GetUserTransfersHandler)
 			protected.GET("/bridge/transfers/:id", deps.bridgeService.GetTransferHandler)
 
 			// Launchpad routes
 			protected.POST("/launchpad/projects", deps.launchpadService.CreateProjectHandler)
-			protected.POST("/launchpad/projects/:id/participate", tradingGate(deps.launchpadService.ParticipateHandler))
-			protected.POST("/launchpad/projects/:id/claim", tradingGate(deps.launchpadService.ClaimTokensHandler))
+			protected.POST("/launchpad/projects/:id/participate", trading(deps.launchpadService.ParticipateHandler))
+			protected.POST("/launchpad/projects/:id/claim", trading(deps.launchpadService.ClaimTokensHandler))
 
 			// Wallet custody routes (only when a wallet encryption key is set)
 			if deps.walletService != nil {
 				protected.POST("/wallet/master/create", deps.walletService.CreateMasterWallet)
 				protected.GET("/wallet/master", deps.walletService.GetMasterWallet)
 				protected.GET("/wallet/balances", deps.walletService.GetBalances)
-				protected.POST("/wallet/autosign", tradingGate(deps.walletService.AutoSignTransaction))
+				protected.POST("/wallet/autosign", trading(deps.walletService.AutoSignTransaction))
 				protected.POST("/wallet/deposit", deps.platformGate.RequireDeposits(), deps.walletService.Deposit)
-				protected.POST("/wallet/withdraw", deps.platformGate.RequireWithdrawals(), deps.authService.TOTPRequired(), deps.walletService.Withdraw)
+				withdrawGates := []gin.HandlerFunc{deps.platformGate.RequireWithdrawals()}
+				if deps.complianceService != nil {
+					withdrawGates = append(withdrawGates, deps.complianceService.RequireVerifiedWithdrawal())
+				}
+				withdrawGates = append(withdrawGates, deps.authService.TOTPRequired(), deps.walletService.Withdraw)
+				protected.POST("/wallet/withdraw", withdrawGates...)
 				// Withdrawal policy: allow-listed destinations and the
 				// operator approval queue for oversized requests.
 				protected.POST("/wallet/withdraw/addresses", deps.withdrawalService.AddAddress)
 				protected.GET("/wallet/withdraw/addresses", deps.withdrawalService.ListAddresses)
 				protected.DELETE("/wallet/withdraw/addresses/:id", deps.withdrawalService.DeleteAddress)
-				protected.POST("/wallet/swap", tradingGate(deps.walletService.ExecuteSwap))
+				protected.POST("/wallet/swap", trading(deps.walletService.ExecuteSwap))
 				protected.POST("/wallet/swap/quote", deps.walletService.GetSwapQuote)
-				protected.POST("/wallet/perpetual/open", tradingGate(deps.walletService.CreatePerpetualPosition))
-				protected.POST("/wallet/perpetual/close", tradingGate(deps.walletService.ClosePerpetualPosition))
+				protected.POST("/wallet/perpetual/open", trading(deps.walletService.CreatePerpetualPosition))
+				protected.POST("/wallet/perpetual/close", trading(deps.walletService.ClosePerpetualPosition))
 				protected.GET("/wallet/perpetual/positions", deps.walletService.GetPerpetualPositions)
-				protected.POST("/wallet/copy-trade", tradingGate(deps.walletService.CreateCopyTrade))
+				protected.POST("/wallet/copy-trade", trading(deps.walletService.CreateCopyTrade))
 				protected.GET("/wallet/copy-trades", deps.walletService.GetCopyTrades)
 			}
 
 			// Governance routes: veTGR locks, gauge voting and the bribe market
-			protected.POST("/governance/locks", tradingGate(deps.governanceService.CreateLock))
+			protected.POST("/governance/locks", trading(deps.governanceService.CreateLock))
 			protected.GET("/governance/locks", deps.governanceService.GetLocks)
 			protected.POST("/governance/locks/:id/withdraw", deps.governanceService.WithdrawLock)
 			protected.GET("/governance/gauges", deps.governanceService.GetGauges)
-			protected.POST("/governance/vote", tradingGate(deps.governanceService.Vote))
-			protected.POST("/governance/bribes", tradingGate(deps.governanceService.AddBribe))
+			protected.POST("/governance/vote", trading(deps.governanceService.Vote))
+			protected.POST("/governance/bribes", trading(deps.governanceService.AddBribe))
 			protected.GET("/governance/bribes", deps.governanceService.GetBribes)
 			protected.POST("/governance/bribes/:id/claim", deps.governanceService.ClaimBribe)
 			protected.GET("/governance/boost", deps.governanceService.GetBoost)
 
 			// OTC private block trades. The caller is always the maker or the
 			// taker; identity comes from the token, never the body.
-			protected.POST("/otc/orders", tradingGate(deps.otcService.CreateOrder))
+			protected.POST("/otc/orders", trading(deps.otcService.CreateOrder))
 			protected.GET("/otc/orders", deps.otcService.ListOrders)
 			protected.GET("/otc/orders/open", deps.otcService.ListOpenOrders)
 			protected.POST("/otc/orders/:id/take", deps.otcService.TakeOrder)
-			protected.DELETE("/otc/orders/:id", tradingGate(deps.otcService.CancelOrder))
+			protected.DELETE("/otc/orders/:id", trading(deps.otcService.CancelOrder))
 
 			// Trading bots: each strategy is an engine in the Rust bots crate.
-			protected.POST("/bots", tradingGate(deps.botsService.CreateBot))
+			protected.POST("/bots", trading(deps.botsService.CreateBot))
 			protected.GET("/bots", deps.botsService.ListBots)
 			protected.GET("/bots/summary", deps.botsService.BotsSummary)
 			protected.GET("/bots/strategies", deps.botsService.AvailableStrategies)
 			protected.GET("/bots/:id", deps.botsService.GetBot)
 			protected.PUT("/bots/:id/status", deps.botsService.UpdateBotStatus)
-			protected.DELETE("/bots/:id", tradingGate(deps.botsService.DeleteBot))
+			protected.DELETE("/bots/:id", trading(deps.botsService.DeleteBot))
 			protected.GET("/bots/:id/orders", deps.botsService.ListBotOrders)
 			protected.GET("/bots/:id/performance", deps.botsService.BotPerformanceSummary)
 
 			// Farms: stake a token and earn one or more reward streams. A stake
 			// escrows a real ledger balance and rewards are funded before they can
 			// be claimed.
-			protected.POST("/farms/:id/stake", tradingGate(deps.farmService.Stake))
-			protected.POST("/farms/:id/unstake", tradingGate(deps.farmService.Unstake))
-			protected.POST("/farms/:id/claim", tradingGate(deps.farmService.Claim))
-			protected.POST("/farms/:id/fund", tradingGate(deps.farmService.FundFarmReward))
+			protected.POST("/farms/:id/stake", trading(deps.farmService.Stake))
+			protected.POST("/farms/:id/unstake", trading(deps.farmService.Unstake))
+			protected.POST("/farms/:id/claim", trading(deps.farmService.Claim))
+			protected.POST("/farms/:id/fund", trading(deps.farmService.FundFarmReward))
 			protected.GET("/farms/stakes", deps.farmService.GetStakes)
 
 			// Airdrops: an admin allocates and funds, the user claims.
-			protected.POST("/airdrops/:id/claim", tradingGate(deps.airdropService.ClaimAirdrop))
+			protected.POST("/airdrops/:id/claim", trading(deps.airdropService.ClaimAirdrop))
 			protected.GET("/airdrops/allocations", deps.airdropService.GetMyAllocations)
 
 			// Options: buy a long position, provide or withdraw series liquidity,
 			// and exercise a settled position. Every leg moves a real ledger
 			// balance, and a series can only pay out what it holds.
-			protected.POST("/options/series/:id/buy", tradingGate(deps.optionService.Buy))
-			protected.POST("/options/series/:id/collateral", tradingGate(deps.optionService.AddCollateral))
-			protected.POST("/options/series/:id/collateral/remove", tradingGate(deps.optionService.RemoveCollateral))
-			protected.POST("/options/series/:id/exercise", tradingGate(deps.optionService.Exercise))
+			protected.POST("/options/series/:id/buy", trading(deps.optionService.Buy))
+			protected.POST("/options/series/:id/collateral", trading(deps.optionService.AddCollateral))
+			protected.POST("/options/series/:id/collateral/remove", trading(deps.optionService.RemoveCollateral))
+			protected.POST("/options/series/:id/exercise", trading(deps.optionService.Exercise))
 			protected.POST("/options/series/:id/withdraw", deps.optionService.WithdrawLiquidity)
 			protected.GET("/options/positions", deps.optionService.GetMyPositions)
 
@@ -451,6 +489,19 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			admin.GET("/withdrawals/requests", deps.withdrawalService.ListRequests)
 			admin.POST("/withdrawals/requests/:id/approve", deps.withdrawalService.ApproveRequest)
 			admin.POST("/withdrawals/requests/:id/refuse", deps.withdrawalService.RefuseRequest)
+
+			// Compliance: KYC review, the sanctions denylist and the geographic
+			// policy. Every change takes effect on the next request.
+			if deps.complianceService != nil {
+				admin.GET("/compliance/settings", deps.complianceService.GetSettings)
+				admin.PUT("/compliance/settings", deps.complianceService.UpdateSettings)
+				admin.GET("/compliance/kyc", deps.complianceService.ListKYCSubmissions)
+				admin.POST("/compliance/kyc/:user_id/approve", deps.complianceService.ApproveKYC)
+				admin.POST("/compliance/kyc/:user_id/reject", deps.complianceService.RejectKYC)
+				admin.GET("/compliance/sanctions", deps.complianceService.ListSanctionsEntries)
+				admin.POST("/compliance/sanctions", deps.complianceService.AddSanctionsEntry)
+				admin.DELETE("/compliance/sanctions/:id", deps.complianceService.DeleteSanctionsEntry)
+			}
 
 			// Fee management (admin only)
 			admin.GET("/fees/config", deps.feeCollector.GetConfigHandler)

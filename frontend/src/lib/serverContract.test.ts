@@ -59,6 +59,13 @@ import {
   withdrawalAddressResultValidator,
   withdrawalLimitListValidator,
   withdrawalLimitResultValidator,
+  kycProfileValidator,
+  kycSubmissionResultValidator,
+  kycSubmissionListValidator,
+  kycDecisionResultValidator,
+  sanctionsEntryResultValidator,
+  sanctionsEntryListValidator,
+  complianceSettingsValidator,
   withdrawalRequestListValidator,
   withdrawalResultValidator,
   withdrawalDecisionResultValidator,
@@ -1005,4 +1012,122 @@ test("live /wallet/withdraw responses satisfy withdrawalResultValidator", () => 
   );
   assert.equal(queued.status, "pending_approval");
   assert.equal(queued.request_id, "11111111-2222-3333-4444-555555555555");
+});
+
+// Captured from the Go structs by TestEmitComplianceFixtures in
+// backend/services/zz_fixture_test.go.
+
+const SERVER_KYC_PROFILE = {
+  country: "GB",
+  document_last4: "4567",
+  document_type: "passport",
+  full_name: "ada lovelace",
+  rejection_reason: "",
+  reviewed_at: null,
+  status: "pending",
+  submitted_at: "2026-01-02T03:04:05Z",
+};
+
+test("live GET /user/kyc payload satisfies kycProfileValidator", () => {
+  const profile = parse(kycProfileValidator, JSON.stringify(SERVER_KYC_PROFILE), "kyc");
+  assert.equal(profile.status, "pending");
+  assert.equal(profile.country, "GB");
+  assert.equal(profile.reviewed_at, null);
+});
+
+const SERVER_KYC_SUBMISSION_RESULT = {
+  profile: {
+    id: "11111111-2222-3333-4444-555555555555",
+    user_id: "u1",
+    status: "pending",
+    full_name: "ada lovelace",
+    country: "GB",
+    document_type: "passport",
+    document_last4: "4567",
+    submitted_at: "2026-01-02T03:04:05Z",
+    created_at: "2026-01-02T03:04:05Z",
+    updated_at: "2026-01-02T03:04:05Z",
+  },
+};
+
+test("live POST /user/kyc payload satisfies kycSubmissionResultValidator", () => {
+  const result = parse(
+    kycSubmissionResultValidator,
+    JSON.stringify(SERVER_KYC_SUBMISSION_RESULT),
+    "kyc",
+  );
+  assert.equal(result.profile.status, "pending");
+  assert.equal(result.profile.document_last4, "4567");
+});
+
+const SERVER_KYC_SUBMISSIONS = { submissions: [SERVER_KYC_SUBMISSION_RESULT.profile] };
+
+test("live /admin/compliance/kyc payload satisfies kycSubmissionListValidator", () => {
+  const list = parse(
+    kycSubmissionListValidator,
+    JSON.stringify(SERVER_KYC_SUBMISSIONS),
+    "kyc",
+  );
+  assert.equal(list.submissions.length, 1);
+  assert.equal(list.submissions[0].user_id, "u1");
+});
+
+test("live KYC decision payload satisfies kycDecisionResultValidator", () => {
+  const decision = parse(
+    kycDecisionResultValidator,
+    JSON.stringify({ status: "approved" }),
+    "kyc",
+  );
+  assert.equal(decision.status, "approved");
+});
+
+const SERVER_SANCTIONS_ENTRY = {
+  entry: {
+    id: "66666666-7777-8888-9999-000000000000",
+    kind: "address",
+    value: "0xabcdef0000000000000000000000000000000001",
+    source: "manual",
+    active: true,
+    created_at: "2026-01-02T03:04:05Z",
+    updated_at: "2026-01-02T03:04:05Z",
+  },
+};
+
+test("live POST /admin/compliance/sanctions payload satisfies sanctionsEntryResultValidator", () => {
+  const result = parse(
+    sanctionsEntryResultValidator,
+    JSON.stringify(SERVER_SANCTIONS_ENTRY),
+    "sanctions",
+  );
+  assert.equal(result.entry.kind, "address");
+  assert.equal(result.entry.active, true);
+});
+
+test("live /admin/compliance/sanctions payload satisfies sanctionsEntryListValidator", () => {
+  const list = parse(
+    sanctionsEntryListValidator,
+    JSON.stringify({ entries: [SERVER_SANCTIONS_ENTRY.entry] }),
+    "sanctions",
+  );
+  assert.equal(list.entries.length, 1);
+  assert.equal(list.entries[0].value, "0xabcdef0000000000000000000000000000000001");
+});
+
+const SERVER_COMPLIANCE_SETTINGS = {
+  id: 1,
+  key: "default",
+  restricted_countries: "KP,IR",
+  require_kyc_for_trading: true,
+  require_kyc_for_withdrawal: true,
+  updated_at: "2026-01-02T03:04:05Z",
+};
+
+test("live /admin/compliance/settings payload satisfies complianceSettingsValidator", () => {
+  const settings = parse(
+    complianceSettingsValidator,
+    JSON.stringify(SERVER_COMPLIANCE_SETTINGS),
+    "settings",
+  );
+  assert.equal(settings.restricted_countries, "KP,IR");
+  assert.equal(settings.require_kyc_for_trading, true);
 });

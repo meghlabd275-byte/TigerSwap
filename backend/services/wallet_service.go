@@ -41,6 +41,9 @@ type WalletService struct {
 	// withdrawalPolicy enforces the allow-list, cooldown and per-asset limit on
 	// the outbound path. It is nil only in a test that does not exercise it.
 	withdrawalPolicy *WithdrawalService
+	// compliance screens a withdrawal destination against the sanctions denylist
+	// and the geographic policy. It is nil only in a test that does not use it.
+	compliance *ComplianceService
 	masterKeys       map[string]*ecdsa.PrivateKey
 	encryptionKey    []byte
 	hdSeed           []byte
@@ -86,6 +89,12 @@ func (s *WalletService) SetLedger(ledger *LedgerService) {
 // rejected rather than sent unchecked.
 func (s *WalletService) SetWithdrawalPolicy(policy *WithdrawalService) {
 	s.withdrawalPolicy = policy
+}
+
+// SetCompliance attaches the compliance screener so a withdrawal destination is
+// checked against the sanctions denylist and the geographic policy.
+func (s *WalletService) SetCompliance(compliance *ComplianceService) {
+	s.compliance = compliance
 }
 
 // SignWithdrawalKey exposes the platform signer to the withdrawal service so the
@@ -764,6 +773,22 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	if !ok || amount.Sign() <= 0 {
 		c.JSON(400, gin.H{"error": "Invalid amount"})
 		return
+	}
+
+	// Sanctions and geographic screening of the destination. A screened address
+	// or a restricted jurisdiction is refused before the policy or the signer is
+	// reached. A screening error fails closed.
+	if s.compliance != nil {
+		reason, screenErr := s.compliance.ScreenWithdrawalDestination(userID, req.ToAddress)
+		if screenErr != nil {
+			log.Printf("wallet: compliance screen failed: %v", screenErr)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "compliance screening unavailable"})
+			return
+		}
+		if reason != "" {
+			c.JSON(http.StatusForbidden, gin.H{"error": reason})
+			return
+		}
 	}
 
 	// Withdrawal policy: an allow-listed, cooled-down destination, and a per-asset

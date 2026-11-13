@@ -2875,3 +2875,149 @@ export const withdrawalResultValidator = object<WithdrawalResult>({
   request_id: withDefault(string, ""),
   message: withDefault(string, ""),
 });
+
+/** The verification status of an account's identity record. */
+export type KycStatus = "unverified" | "pending" | "approved" | "rejected";
+
+/** The caller's own identity-verification record (`GET /user/kyc`). */
+export interface KycProfile {
+  status: KycStatus;
+  full_name: string;
+  country: string;
+  document_type: string;
+  document_last4: string;
+  rejection_reason: string;
+  submitted_at: string | null;
+  reviewed_at: string | null;
+}
+
+export const kycProfileValidator = object<KycProfile>({
+  status: oneOf(["unverified", "pending", "approved", "rejected"] as const),
+  full_name: withDefault(string, ""),
+  country: withDefault(string, ""),
+  document_type: withDefault(string, ""),
+  document_last4: withDefault(string, ""),
+  rejection_reason: withDefault(string, ""),
+  submitted_at: withDefault(nullable(timestamp), null),
+  reviewed_at: withDefault(nullable(timestamp), null),
+});
+
+/** The result of submitting an identity record; carries the stored profile. */
+export interface KycSubmissionResult {
+  profile: {
+    id: string;
+    user_id: string;
+    status: KycStatus;
+    full_name: string;
+    country: string;
+    document_type: string;
+    document_last4: string;
+    submitted_at: string;
+  };
+}
+
+export const kycSubmissionResultValidator = object<KycSubmissionResult>({
+  profile: object({
+    id: string,
+    user_id: string,
+    status: oneOf(["unverified", "pending", "approved", "rejected"] as const),
+    full_name: withDefault(string, ""),
+    country: withDefault(string, ""),
+    document_type: withDefault(string, ""),
+    document_last4: withDefault(string, ""),
+    submitted_at: withDefault(timestamp, new Date(0).toISOString()),
+  }),
+});
+
+/** One account's verification record as an operator sees it (admin). */
+export interface KycSubmission {
+  id: string;
+  user_id: string;
+  status: KycStatus;
+  full_name: string;
+  country: string;
+  document_type: string;
+  document_last4: string;
+  rejection_reason: string;
+  submitted_at: string;
+  reviewed_at: string | null;
+}
+
+export const kycSubmissionValidator = object<KycSubmission>({
+  id: string,
+  user_id: string,
+  status: oneOf(["unverified", "pending", "approved", "rejected"] as const),
+  full_name: withDefault(string, ""),
+  country: withDefault(string, ""),
+  document_type: withDefault(string, ""),
+  document_last4: withDefault(string, ""),
+  rejection_reason: withDefault(string, ""),
+  submitted_at: withDefault(timestamp, new Date(0).toISOString()),
+  reviewed_at: withDefault(nullable(timestamp), null),
+});
+
+export const kycSubmissionListValidator = object<{ submissions: KycSubmission[] }>({
+  submissions: array(kycSubmissionValidator),
+});
+
+/** The outcome of an admin KYC decision. */
+export interface KycDecisionResult {
+  status: KycStatus;
+}
+
+export const kycDecisionResultValidator = object<KycDecisionResult>({
+  status: oneOf(["unverified", "pending", "approved", "rejected"] as const),
+});
+
+/** The kinds of value the sanctions denylist can hold. */
+export type SanctionsKind = "address" | "country" | "name";
+
+/** One denylisted value (admin). */
+export interface SanctionsEntry {
+  id: string;
+  kind: SanctionsKind;
+  value: string;
+  source: string;
+  note: string;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export const sanctionsEntryValidator = object<SanctionsEntry>({
+  id: string,
+  kind: oneOf(["address", "country", "name"] as const),
+  value: string,
+  source: withDefault(string, ""),
+  note: withDefault(string, ""),
+  active: withDefault(boolean, true),
+  created_at: withDefault(timestamp, new Date(0).toISOString()),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});
+
+export const sanctionsEntryListValidator = object<{ entries: SanctionsEntry[] }>({
+  entries: array(sanctionsEntryValidator),
+});
+
+export const sanctionsEntryResultValidator = object<{ entry: SanctionsEntry }>({
+  entry: sanctionsEntryValidator,
+});
+
+/** The platform's compliance policy (admin). */
+export interface ComplianceSettings {
+  id: number;
+  key: string;
+  restricted_countries: string;
+  require_kyc_for_trading: boolean;
+  require_kyc_for_withdrawal: boolean;
+  updated_at: string;
+}
+
+export const complianceSettingsValidator = object<ComplianceSettings>({
+  id: withDefault(integer, 0),
+  key: withDefault(string, "default"),
+  restricted_countries: withDefault(string, ""),
+  require_kyc_for_trading: withDefault(boolean, true),
+  require_kyc_for_withdrawal: withDefault(boolean, true),
+  updated_at: withDefault(timestamp, new Date(0).toISOString()),
+});

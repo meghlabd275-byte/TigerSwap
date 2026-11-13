@@ -43,8 +43,9 @@ import { AdminFarmingPanel } from '@/components/AdminFarmingPanel';
 import { AdminOptionsPanel } from '@/components/AdminOptionsPanel';
 import { AdminNFTMarketplacePanel } from '@/components/AdminNFTMarketplacePanel';
 import { AdminAnalyticsPanel } from '@/components/AdminAnalyticsPanel';
+import { AdminCompliancePanel } from '@/components/AdminCompliancePanel';
 
-type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'options' | 'nft' | 'farming' | 'analytics' | 'fees' | 'settings' | 'activity';
+type Tab = 'dashboard' | 'blockchains' | 'tokens' | 'listings' | 'launchpad' | 'options' | 'nft' | 'farming' | 'analytics' | 'compliance' | 'fees' | 'settings' | 'activity';
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
@@ -471,6 +472,7 @@ export default function AdminPage() {
               { id: 'nft', label: 'NFT', icon: Gem },
               { id: 'farming', label: 'Farms & Airdrops', icon: Sprout },
               { id: 'analytics', label: 'Analytics', icon: LineChart },
+              { id: 'compliance', label: 'Compliance', icon: Shield },
               { id: 'fees', label: 'Fees', icon: DollarSign },
               { id: 'settings', label: 'Settings', icon: Settings },
               { id: 'activity', label: 'Activity', icon: Activity },
@@ -892,6 +894,13 @@ export default function AdminPage() {
             <motion.div key="analytics" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
               <h2 className="text-2xl font-bold text-white mb-6">Analytics</h2>
               <AdminAnalyticsPanel />
+            </motion.div>
+          )}
+
+          {activeTab === 'compliance' && (
+            <motion.div key="compliance" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
+              <h2 className="text-2xl font-bold text-white mb-6">Compliance</h2>
+              <AdminCompliancePanel />
             </motion.div>
           )}
 

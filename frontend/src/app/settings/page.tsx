@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Loader2, ShieldCheck, ShieldOff } from 'lucide-react';
 import { useSession } from '@/hooks/useSession';
+import { KycPanel } from '@/components/KycPanel';
 import {
   beginTOTPEnrollment,
   confirmTOTPEnrollment,
@@ -132,6 +133,8 @@ export default function SettingsPage() {
     <main className="min-h-screen bg-tiger-dark p-6">
       <div className="max-w-2xl mx-auto space-y-6">
         <h1 className="text-2xl font-display font-bold text-white">Account settings</h1>
+
+        <KycPanel />
 
         <section className="bg-white/5 border border-white/10 rounded-2xl p-6 space-y-4">
           <div className="flex items-center space-x-2">

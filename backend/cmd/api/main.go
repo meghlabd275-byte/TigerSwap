@@ -168,6 +168,9 @@ func main() {
 		&models.WithdrawalAddress{},
 		&models.WithdrawalLimit{},
 		&models.WithdrawalRequest{},
+		&models.KycProfile{},
+		&models.SanctionsEntry{},
+		&models.ComplianceSettings{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -186,6 +189,10 @@ func main() {
 	platformGate := services.NewPlatformGate(db)
 	adminService.SetPlatformGate(platformGate)
 	authService.SetPlatformGate(platformGate)
+	// Compliance: identity verification, sanctions screening and geographic
+	// restriction. The service is wired so an unverified account cannot trade or
+	// withdraw and a screened destination or jurisdiction is refused.
+	complianceService := services.NewComplianceService(db)
 	listingService := services.NewListingService(db)
 	governanceService := services.NewGovernanceService(db)
 
@@ -385,6 +392,9 @@ func main() {
 	withdrawalService := services.NewWithdrawalService(db, ledgerService, blockchainClient, walletSigner(walletService))
 	if walletService != nil {
 		walletService.SetWithdrawalPolicy(withdrawalService)
+		// Screen a withdrawal destination against the sanctions denylist and the
+		// geographic policy before the policy or the signer is reached.
+		walletService.SetCompliance(complianceService)
 	}
 
 	// Credit user balances from confirmed on-chain deposits. The watcher owns
@@ -495,6 +505,7 @@ func main() {
 		analyticsService:   analyticsService,
 		portfolioService:   portfolioService,
 		platformGate:       platformGate,
+		complianceService:  complianceService,
 		metrics:            metrics,
 	})
 

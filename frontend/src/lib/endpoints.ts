@@ -95,6 +95,13 @@ import {
   WithdrawalRequest,
   WithdrawalRequestStatus,
   WithdrawalResult,
+  ComplianceSettings,
+  KycProfile,
+  KycSubmission,
+  KycDecisionResult,
+  KycSubmissionResult,
+  SanctionsEntry,
+  SanctionsKind,
   VeLock,
   accountBalanceListValidator,
   adminAuditLogListValidator,
@@ -191,6 +198,13 @@ import {
   topTraderListValidator,
   userProfileValidator,
   volumeSeriesValidator,
+  complianceSettingsValidator,
+  kycProfileValidator,
+  kycSubmissionListValidator,
+  kycDecisionResultValidator,
+  kycSubmissionResultValidator,
+  sanctionsEntryListValidator,
+  sanctionsEntryResultValidator,
   withdrawalAddressListValidator,
   withdrawalAddressResultValidator,
   withdrawalDecisionResultValidator,
@@ -1654,5 +1668,84 @@ export const endpoints = {
       reason,
     });
     return withdrawalDecisionResultValidator(body);
+  },
+
+  /** The caller's own identity-verification record. */
+  async getKyc(): Promise<KycProfile> {
+    const body = await api.get("/user/kyc");
+    return kycProfileValidator(body);
+  },
+
+  /** Submits an identity record; the account moves to pending review. */
+  async submitKyc(payload: {
+    full_name: string;
+    country: string;
+    document_type: string;
+    document_number: string;
+    date_of_birth?: string;
+  }): Promise<KycSubmissionResult> {
+    const body = await api.post("/user/kyc", payload);
+    return kycSubmissionResultValidator(body);
+  },
+
+  /** Admin: the identity review queue, optionally filtered by status. */
+  async getKycSubmissions(status?: string): Promise<KycSubmission[]> {
+    const body = await api.get("/admin/compliance/kyc", { query: { status } });
+    return kycSubmissionListValidator(body).submissions;
+  },
+
+  /** Admin: approve an account's identity record. */
+  async approveKyc(userId: string): Promise<KycDecisionResult> {
+    const body = await api.post(
+      `/admin/compliance/kyc/${encodeURIComponent(userId)}/approve`,
+    );
+    return kycDecisionResultValidator(body);
+  },
+
+  /** Admin: reject an account's identity record with a reason. */
+  async rejectKyc(userId: string, reason?: string): Promise<KycDecisionResult> {
+    const body = await api.post(
+      `/admin/compliance/kyc/${encodeURIComponent(userId)}/reject`,
+      { reason },
+    );
+    return kycDecisionResultValidator(body);
+  },
+
+  /** Admin: the sanctions denylist, optionally filtered by kind. */
+  async getSanctionsEntries(kind?: SanctionsKind): Promise<SanctionsEntry[]> {
+    const body = await api.get("/admin/compliance/sanctions", { query: { kind } });
+    return sanctionsEntryListValidator(body).entries;
+  },
+
+  /** Admin: add a denylisted address, country or name. */
+  async addSanctionsEntry(payload: {
+    kind: SanctionsKind;
+    value: string;
+    source?: string;
+    note?: string;
+  }): Promise<SanctionsEntry> {
+    const body = await api.post("/admin/compliance/sanctions", payload);
+    return sanctionsEntryResultValidator(body).entry;
+  },
+
+  /** Admin: remove a denylist entry. */
+  async deleteSanctionsEntry(id: string): Promise<void> {
+    await api.delete(`/admin/compliance/sanctions/${encodeURIComponent(id)}`);
+  },
+
+  /** Admin: the compliance policy. */
+  async getComplianceSettings(): Promise<ComplianceSettings> {
+    const body = await api.get("/admin/compliance/settings");
+    return complianceSettingsValidator(body);
+  },
+
+  /** Admin: replace the compliance policy. */
+  async updateComplianceSettings(payload: {
+    restricted_countries?: string;
+    require_kyc_for_trading?: boolean;
+    require_kyc_for_withdrawal?: boolean;
+  }): Promise<ComplianceSettings> {
+    const body = await api.put("/admin/compliance/settings", payload);
+    return complianceSettingsValidator(body);
   },
 };
