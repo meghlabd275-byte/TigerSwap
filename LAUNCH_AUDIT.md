@@ -176,12 +176,13 @@ compared against a mark price, a 1-ULP rounding at the boundary is a real risk.
 This contradicts the stated convention ("never use floats for balances") and
 should be converted to `big.Rat`/`big.Int` throughout.
 
-### 3.2 Non-EVM chains can be enabled but cannot be watched (open)
+### 3.2 Non-EVM chains can be enabled but cannot be watched (open, fails closed)
 
-`deposit_watcher.go` / `BlockchainClient` are EVM-only (`ethclient`). The chain
-admin handlers can mark a non-EVM chain active, but the watcher will never credit
-a deposit on it. "Multichain" today means "the same EVM contracts on several EVM
-chains".
+`deposit_watcher.go` / `BlockchainClient` are EVM-only (`ethclient`). A chain
+row an operator marks with a non-EVM type is now refused by
+`LoadChainRPCs` rather than dialled with an `ethclient`, so a non-EVM chain is
+inert rather than misconfigured. "Multichain" today means "the same EVM contracts
+on several EVM chains"; there is still no non-EVM deposit path.
 
 ### 3.3 Bridge relayer holds the whole validator set (open)
 
