@@ -53,6 +53,10 @@ import type {
   OnChainOrder,
   OnChainPerpMarket,
   OnChainPerpPosition,
+  PerpBookDepth,
+  PerpBookMarket,
+  PerpBookOrder,
+  PerpBookPosition,
   OnChainTwammOrder,
   PerpMarket,
   PerpOrder,
@@ -480,6 +484,201 @@ export function useBuildOnChainLiquidity() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "markets"] });
       void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "positions"] });
+    },
+  });
+}
+
+// ---- On-chain perpetual order book ----
+
+/** The on-chain perpetual order book markets across every configured chain. */
+export function usePerpBookMarkets(): UseQueryResult<PerpBookMarket[], Error> {
+  return useQuery<PerpBookMarket[], Error>({
+    queryKey: ["onchain", "perp-book", "markets"],
+    queryFn: () => endpoints.getPerpBookMarkets(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The aggregate depth of one on-chain perpetual market. */
+export function usePerpBookDepth(
+  chainId: number | null,
+  marketId: string | null,
+): UseQueryResult<PerpBookDepth, Error> {
+  return useQuery<PerpBookDepth, Error>({
+    queryKey: ["onchain", "perp-book", "depth", chainId, marketId],
+    queryFn: () => endpoints.getPerpBookDepth(chainId as number, marketId as string),
+    enabled: chainId !== null && marketId !== null,
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's order book positions for one chain. */
+export function usePerpBookPositions(
+  chainId: number | null,
+): UseQueryResult<PerpBookPosition[], Error> {
+  return useQuery<PerpBookPosition[], Error>({
+    queryKey: ["onchain", "perp-book", "positions", chainId],
+    queryFn: () => endpoints.getPerpBookPositions(chainId as number),
+    enabled: chainId !== null && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's resting order book orders for one chain. */
+export function usePerpBookOrders(chainId: number | null): UseQueryResult<PerpBookOrder[], Error> {
+  return useQuery<PerpBookOrder[], Error>({
+    queryKey: ["onchain", "perp-book", "orders", chainId],
+    queryFn: () => endpoints.getPerpBookOrders(chainId as number),
+    enabled: chainId !== null && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/** Builds, signs and broadcasts a margin deposit to an on-chain market. */
+export function useBuildPerpBookDeposit() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      amount: string;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookDeposit({
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+        amount: params.amount,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts a free-margin withdrawal from an on-chain market. */
+export function useBuildPerpBookWithdraw() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      amount: string;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookWithdraw({
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+        amount: params.amount,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts a limit order on the on-chain order book. */
+export function useBuildPerpBookOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      quantity: string;
+      price: string;
+      side: 'buy' | 'sell';
+      time_in_force?: 'gtc' | 'ioc' | 'fok' | 'post_only';
+      reduce_only?: boolean;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookOrder({
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+        quantity: params.quantity,
+        price: params.price,
+        side: params.side,
+        time_in_force: params.time_in_force,
+        reduce_only: params.reduce_only,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts a cancel for one of the caller's own orders. */
+export function useBuildPerpBookCancel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      order_id: string;
+      chain_id: number;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookCancel(params.order_id, params.chain_id);
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts an LP liquidity add to an on-chain perp pool. */
+export function useBuildPerpBookLiquidity() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      amount: string;
+      remove?: boolean;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const payload = {
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+        amount: params.amount,
+      };
+      const call = params.remove
+        ? await endpoints.buildPerpBookRemoveLiquidity(payload)
+        : await endpoints.buildPerpBookAddLiquidity(payload);
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts an insurance-fund top-up for an on-chain market. */
+export function useBuildPerpBookInsurance() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      market_id: string;
+      amount: string;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildPerpBookDepositInsurance({
+        chain_id: params.chain_id,
+        market_id: params.market_id,
+        amount: params.amount,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perp-book"] });
     },
   });
 }

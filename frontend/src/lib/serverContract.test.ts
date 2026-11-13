@@ -51,6 +51,10 @@ import {
   priceListValidator,
   swapQuoteValidator,
   tokenListValidator,
+  perpBookDepthValidator,
+  perpBookMarketListValidator,
+  perpBookOrderListValidator,
+  perpBookPositionListValidator,
   topTraderListValidator,
   tradeListValidator,
   volumeSeriesValidator,
@@ -695,4 +699,122 @@ test("live /user/transactions payload satisfies userTransactionListValidator", (
   assert.equal(txs[0].chainId, 1);
   assert.equal(txs[0].tokenSymbol, "ETH");
   assert.equal(txs[0].status, "confirmed");
+});
+
+// The on-chain perpetual order book fixtures below are captured from the Go
+// handlers in `backend/services/onchain_perp_book.go`, so a wire-shape change on
+// the server side fails this test instead of silently dropping rows in the UI.
+
+const SERVER_PERP_BOOK_MARKETS = {
+  markets: [
+    {
+      chain_id: 1,
+      symbol: "BTC/RUSD",
+      market_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      token: "0x2222222222222222222222222222222222222222",
+      oracle_asset: "0x3333333333333333333333333333333333333333",
+      taker_fee: "1000000000000000",
+      maker_fee: "500000000000000",
+      initial_margin: "100000000000000000",
+      maintenance_margin: "50000000000000000",
+      liquidation_fee: "10000000000000000",
+      max_leverage: "20000000000000000000",
+      min_order_size: "1000000000000",
+      lot_size: "1000000000000",
+      open_interest: "5000000000000000000",
+      max_open_interest: "1000000000000000000000",
+      mark_price: "60000000000000000000000",
+      index_price: "59990000000000000000000",
+      is_active: true,
+    },
+  ],
+  count: 1,
+};
+
+test("live /onchain/perp-book/markets payload satisfies perpBookMarketListValidator", () => {
+  const markets = parse(
+    perpBookMarketListValidator,
+    JSON.stringify(SERVER_PERP_BOOK_MARKETS.markets),
+    "markets",
+  );
+  assert.equal(markets.length, 1);
+  assert.equal(markets[0].symbol, "BTC/RUSD");
+  assert.equal(markets[0].max_leverage, "20000000000000000000");
+  assert.equal(markets[0].open_interest, "5000000000000000000");
+  assert.equal(markets[0].is_active, true);
+});
+
+const SERVER_PERP_BOOK_DEPTH = {
+  chain_id: 1,
+  market_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+  symbol: "BTC/RUSD",
+  bid_prices: ["59990000000000000000000", "59980000000000000000000"],
+  bid_qty: ["1000000000000000000", "2000000000000000000"],
+  ask_prices: ["60010000000000000000000"],
+  ask_qty: ["1500000000000000000"],
+  best_bid: "59990000000000000000000",
+  best_ask: "60010000000000000000000",
+  mark_price: "60000000000000000000000",
+  index_price: "59990000000000000000000",
+};
+
+test("live /onchain/perp-book/depth payload satisfies perpBookDepthValidator", () => {
+  const depth = parse(perpBookDepthValidator, JSON.stringify(SERVER_PERP_BOOK_DEPTH), "depth");
+  assert.equal(depth.symbol, "BTC/RUSD");
+  assert.equal(depth.bid_prices.length, 2);
+  assert.equal(depth.bid_qty.length, 2);
+  assert.equal(depth.best_ask, "60010000000000000000000");
+});
+
+const SERVER_PERP_BOOK_POSITIONS = [
+  {
+    chain_id: 1,
+    symbol: "BTC/RUSD",
+    market_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    trader: "0x4444444444444444444444444444444444444444",
+    side: "long",
+    size: "1000000000000000000",
+    entry_price: "60000000000000000000000",
+    margin: "5000000000000000000",
+    unrealized_pnl: "-250000000000000000",
+    equity: "4750000000000000000",
+  },
+];
+
+test("live /onchain/perp-book/positions payload satisfies perpBookPositionListValidator", () => {
+  const positions = parse(
+    perpBookPositionListValidator,
+    JSON.stringify(SERVER_PERP_BOOK_POSITIONS),
+    "positions",
+  );
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].side, "long");
+  assert.equal(positions[0].unrealized_pnl, "-250000000000000000");
+});
+
+const SERVER_PERP_BOOK_ORDERS = {
+  orders: [
+    {
+      order_id: "1",
+      market_id: "0x1111111111111111111111111111111111111111111111111111111111111111",
+      symbol: "BTC/RUSD",
+      trader: "0x4444444444444444444444444444444444444444",
+      price: "60000000000000000000000",
+      quantity: "1000000000000000000",
+      filled: "0",
+      is_long: true,
+      reduce_only: false,
+      post_only: true,
+      active: true,
+      created_at: "1700000000",
+    },
+  ],
+  count: 1,
+};
+
+test("live /onchain/perp-book/orders payload satisfies perpBookOrderListValidator", () => {
+  const orders = parse(perpBookOrderListValidator, JSON.stringify(SERVER_PERP_BOOK_ORDERS.orders), "orders");
+  assert.equal(orders.length, 1);
+  assert.equal(orders[0].symbol, "BTC/RUSD");
+  assert.equal(orders[0].post_only, true);
 });

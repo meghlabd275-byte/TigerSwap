@@ -57,6 +57,10 @@ import {
   OnChainOrder,
   OnChainPerpMarket,
   OnChainPerpPosition,
+  PerpBookDepth,
+  PerpBookMarket,
+  PerpBookOrder,
+  PerpBookPosition,
   OnChainTwammOrder,
   OptionBuyResult,
   OptionExerciseResult,
@@ -114,6 +118,10 @@ import {
   optionSeriesEnvelopeValidator,
   optionSeriesViewListValidator,
   optionSeriesViewValidator,
+  perpBookDepthValidator,
+  perpBookMarketListValidator,
+  perpBookOrderListValidator,
+  perpBookPositionListValidator,
   feeConfigValidator,
   futuresMarketListValidator,
   futuresMarketValidator,
@@ -537,6 +545,110 @@ export const endpoints = {
     amount: string;
   }): Promise<OnChainCall> {
     const body = await api.post("/onchain/perps/liquidity", payload);
+    return onChainCallValidator(body);
+  },
+
+  /**
+   * The on-chain perpetual order book markets for every configured chain. The
+   * contract is the source of truth; the response is validated before a
+   * component sees it.
+   */
+  async getPerpBookMarkets(): Promise<PerpBookMarket[]> {
+    const body = await apiRequest("/onchain/perp-book/markets", { authenticated: false, timeoutMs: 12000 });
+    return perpBookMarketListValidator(body);
+  },
+
+  /** The aggregate depth of one on-chain perpetual market. */
+  async getPerpBookDepth(chainId: number, marketId: string): Promise<PerpBookDepth> {
+    const body = await api.get("/onchain/perp-book/depth", {
+      query: { chain_id: chainId, market_id: marketId },
+    });
+    return perpBookDepthValidator(body);
+  },
+
+  /** The authenticated caller's order book positions, resolved from their wallet. */
+  async getPerpBookPositions(chainId: number): Promise<PerpBookPosition[]> {
+    const body = await api.get("/onchain/perp-book/positions", { query: { chain_id: chainId } });
+    return perpBookPositionListValidator(body);
+  },
+
+  /** The authenticated caller's resting orders on the on-chain order book. */
+  async getPerpBookOrders(chainId: number): Promise<PerpBookOrder[]> {
+    const body = await api.get("/onchain/perp-book/orders", { query: { chain_id: chainId } });
+    return perpBookOrderListValidator(body);
+  },
+
+  /** Unsigned calldata that deposits margin into an on-chain market. */
+  async buildPerpBookDeposit(payload: {
+    chain_id: number;
+    market_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/deposit", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that withdraws free margin from an on-chain market. */
+  async buildPerpBookWithdraw(payload: {
+    chain_id: number;
+    market_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/withdraw", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that places a limit order on the on-chain order book. */
+  async buildPerpBookOrder(payload: {
+    chain_id: number;
+    market_id: string;
+    quantity: string;
+    price: string;
+    side: 'buy' | 'sell';
+    time_in_force?: 'gtc' | 'ioc' | 'fok' | 'post_only';
+    reduce_only?: boolean;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/orders", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that cancels one of the caller's own order book orders. */
+  async buildPerpBookCancel(orderId: string, chainId: number): Promise<OnChainCall> {
+    const body = await api.post(
+      `/onchain/perp-book/orders/${encodeURIComponent(orderId)}/cancel`,
+      undefined,
+      { query: { chain_id: chainId } },
+    );
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that adds LP liquidity to an on-chain perp pool. */
+  async buildPerpBookAddLiquidity(payload: {
+    chain_id: number;
+    market_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/liquidity/add", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that removes LP liquidity from an on-chain perp pool. */
+  async buildPerpBookRemoveLiquidity(payload: {
+    chain_id: number;
+    market_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/liquidity/remove", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that tops up a market's on-chain insurance fund. */
+  async buildPerpBookDepositInsurance(payload: {
+    chain_id: number;
+    market_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perp-book/insurance", payload);
     return onChainCallValidator(body);
   },
 

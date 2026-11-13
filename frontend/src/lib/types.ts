@@ -2565,3 +2565,131 @@ export const analyticsRollupValidator = object<AnalyticsRollupResult>({
   from: timestamp,
   to: timestamp,
 });
+
+/**
+ * A market on the on-chain perpetual order book (`TigerSwapPerpOrderBook`).
+ * Every field is chain state: the contract holds the market and its
+ * configuration, and the indexer mirrors open interest for the panel.
+ */
+export interface PerpBookMarket {
+  chain_id: number;
+  symbol: string;
+  market_id: string;
+  token: string;
+  max_leverage: string;
+  taker_fee: string;
+  maker_fee: string;
+  maintenance_margin: string;
+  initial_margin: string;
+  max_open_interest: string;
+  open_interest: string;
+  is_active: boolean;
+}
+
+export const perpBookMarketValidator = object<PerpBookMarket>({
+  chain_id: integer,
+  symbol: marketSymbol,
+  market_id: string,
+  token: string,
+  max_leverage: string,
+  taker_fee: string,
+  maker_fee: string,
+  maintenance_margin: string,
+  initial_margin: string,
+  max_open_interest: string,
+  open_interest: string,
+  is_active: boolean,
+});
+
+export const perpBookMarketListValidator = listingArray(perpBookMarketValidator);
+
+/** The aggregate depth of one on-chain perpetual market. */
+export interface PerpBookDepth {
+  chain_id: number;
+  market_id: string;
+  symbol: string;
+  bid_prices: string[];
+  bid_qty: string[];
+  ask_prices: string[];
+  ask_qty: string[];
+  best_bid: string;
+  best_ask: string;
+  mark_price: string;
+  index_price: string;
+}
+
+export const perpBookDepthValidator = object<PerpBookDepth>({
+  chain_id: integer,
+  market_id: string,
+  symbol: marketSymbol,
+  bid_prices: array(string),
+  bid_qty: array(string),
+  ask_prices: array(string),
+  ask_qty: array(string),
+  best_bid: string,
+  best_ask: string,
+  mark_price: string,
+  index_price: string,
+});
+
+/** The authenticated caller's position on one on-chain perpetual market. */
+export interface PerpBookPosition {
+  chain_id: number;
+  symbol: string;
+  market_id: string;
+  trader: string;
+  side: 'long' | 'short' | 'flat';
+  size: string;
+  entry_price: string;
+  margin: string;
+  unrealized_pnl: string;
+  equity: string;
+}
+
+export const perpBookPositionValidator = object<PerpBookPosition>({
+  chain_id: integer,
+  symbol: marketSymbol,
+  market_id: string,
+  trader: string,
+  side: oneOf(['long', 'short', 'flat'] as const),
+  size: string,
+  entry_price: string,
+  margin: string,
+  unrealized_pnl: string,
+  equity: string,
+});
+
+export const perpBookPositionListValidator = listingArray(perpBookPositionValidator);
+
+/** One resting order on the on-chain perpetual order book. */
+export interface PerpBookOrder {
+  order_id: string;
+  market_id: string;
+  symbol: string;
+  trader: string;
+  price: string;
+  quantity: string;
+  filled: string;
+  is_long: boolean;
+  reduce_only: boolean;
+  post_only: boolean;
+  active: boolean;
+  created_at: string;
+}
+
+export const perpBookOrderValidator = object<PerpBookOrder>({
+  order_id: string,
+  market_id: string,
+  symbol: withDefault(marketSymbol, ''),
+  trader: string,
+  price: string,
+  quantity: string,
+  filled: string,
+  is_long: boolean,
+  reduce_only: boolean,
+  post_only: boolean,
+  active: boolean,
+  created_at: string,
+});
+
+export const perpBookOrderListValidator = listingArray(perpBookOrderValidator);

@@ -30,6 +30,7 @@ import {
   Users,
   Gem,
   BarChart3,
+  BookOpen,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains, useMarketStats, useRecentTrades } from '@/hooks/useApi';
@@ -41,6 +42,7 @@ import { ChainSelector } from '@/components/ChainSelector';
 import { Portfolio } from '@/components/Portfolio';
 import { PerpetualTrading } from '@/components/PerpetualTrading';
 import { OnChainPerpetuals } from '@/components/OnChainPerpetuals';
+import { PerpOrderBook } from '@/components/PerpOrderBook';
 import { CrossChain } from '@/components/CrossChain';
 import { Governance } from '@/components/Governance';
 import { MarginTrading } from '@/components/MarginTrading';
@@ -53,7 +55,7 @@ import { OptionsTrading } from '@/components/OptionsTrading';
 import { NFTMarketplace } from '@/components/NFTMarketplace';
 import { Analytics } from '@/components/Analytics';
 
-type Tab = 'swap' | 'perpetuals' | 'onchain-perps' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'orders' | 'bots' | 'copy-trading' | 'analytics';
+type Tab = 'swap' | 'perpetuals' | 'onchain-perps' | 'perp-book' | 'margin' | 'options' | 'nft' | 'cross-chain' | 'portfolio' | 'governance' | 'farming' | 'otc' | 'orders' | 'bots' | 'copy-trading' | 'analytics';
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>('swap');
@@ -81,6 +83,7 @@ export default function Home() {
     { id: 'swap' as const, label: 'Swap', icon: ArrowRightLeft },
     { id: 'perpetuals' as const, label: 'Perpetuals', icon: TrendingUp },
     { id: 'onchain-perps' as const, label: 'On-chain Perps', icon: Shield },
+    { id: 'perp-book' as const, label: 'Perp Order Book', icon: BookOpen },
     { id: 'margin' as const, label: 'Margin', icon: Coins },
     { id: 'options' as const, label: 'Options', icon: LineChart },
     { id: 'nft' as const, label: 'NFT', icon: Gem },
@@ -158,6 +161,7 @@ export default function Home() {
                 {activeTab === 'swap' && <SwapInterface />}
                 {activeTab === 'perpetuals' && <PerpetualTrading />}
                 {activeTab === 'onchain-perps' && <OnChainPerpetuals />}
+                {activeTab === 'perp-book' && <PerpOrderBook />}
                 {activeTab === 'margin' && <MarginTrading />}
                 {activeTab === 'options' && <OptionsTrading />}
                 {activeTab === 'nft' && <NFTMarketplace />}
