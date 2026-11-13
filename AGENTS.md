@@ -267,6 +267,14 @@ listing changes take effect without a restart:
   operation. An unlisted or inactive pair is rejected. Collateral and debt are
   valued from the oracle; a missing or non-positive price is an error, never a
   default.
+- The risk decision is exact: `computeHealth` values collateral and debt in
+  `*big.Rat` and the liquidation check compares the health factor against
+  exactly 1, so an account sitting on the threshold is neither listed nor
+  liquidated. The public view carries `health_factor` as a decimal string
+  because a debt-free account's factor is infinite and `encoding/json` cannot
+  encode an infinity into a `float64` field — it fails the whole response. A
+  debt-free account reports `"Infinity"`; the frontend's `healthFactor`
+  validator turns that back into a number.
 
 Margin accounts live in `margin_accounts`, with `margin_collaterals` and
 `margin_borrows` per account. Borrow interest accrues on read from
