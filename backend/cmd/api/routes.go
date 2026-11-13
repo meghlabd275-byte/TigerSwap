@@ -31,6 +31,7 @@ type apiDeps struct {
 	marginEngine       *services.MarginEngine
 	perpetualEngine    *services.PerpetualEngine
 	onChainPerps       *services.OnChainPerpsService
+	onChainPerpBook    *services.OnChainPerpBookService
 	onChainOrders      *services.OnChainOrdersService
 	copyTradingEngine  *services.CopyTradingEngine
 	bridgeService      *services.BridgeService
@@ -170,7 +171,6 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.POST("/swap/execute", tradingGate(deps.swapService.ExecuteSwap))
 			protected.POST("/swap/approve", deps.swapService.ApproveToken)
 
-
 			// Liquidity routes
 			protected.POST("/liquidity/add", tradingGate(deps.swapService.AddLiquidity))
 			protected.POST("/liquidity/remove", tradingGate(deps.swapService.RemoveLiquidity))
@@ -272,7 +272,6 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			protected.GET("/otc/orders/open", deps.otcService.ListOpenOrders)
 			protected.POST("/otc/orders/:id/take", deps.otcService.TakeOrder)
 			protected.DELETE("/otc/orders/:id", tradingGate(deps.otcService.CancelOrder))
-
 
 			// Trading bots: each strategy is an engine in the Rust bots crate.
 			protected.POST("/bots", tradingGate(deps.botsService.CreateBot))
@@ -482,6 +481,12 @@ func setupRouter(deps apiDeps) *gin.Engine {
 		// live markets and open interest.
 		if deps.onChainPerps != nil {
 			public.GET("/onchain/perps/markets", deps.onChainPerps.MarketsHandler)
+		}
+
+		// On-chain perpetual order book markets and depth (public read).
+		if deps.onChainPerpBook != nil {
+			public.GET("/onchain/perp-book/markets", deps.onChainPerpBook.MarketsHandler)
+			public.GET("/onchain/perp-book/depth", deps.onChainPerpBook.DepthHandler)
 		}
 
 		// Spot-margin markets (public read): the tradable pairs shown in the

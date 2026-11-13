@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/joho/godotenv"
 	"tigerswap/backend/config"
+	orderbookpkg "tigerswap/backend/go/orderbook"
 	orderspkg "tigerswap/backend/go/orders"
 	perpspkg "tigerswap/backend/go/perps"
 	"tigerswap/backend/models"
@@ -142,6 +143,9 @@ func main() {
 		&models.OnChainPerpPosition{},
 		&models.OnChainPerpCursor{},
 		&models.OnChainPerpLiquidation{},
+		&models.OnChainBookPosition{},
+		&models.OnChainBookCursor{},
+		&models.OnChainBookLiquidation{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -242,6 +246,32 @@ func main() {
 	}
 	if err := onChainOrders.LoadDeployments(); err != nil {
 		log.Printf("warning: on-chain orders deployments not loaded: %v", err)
+	}
+
+	// On-chain perpetual order book: the deployed TigerSwapPerpOrderBook
+	// contract is the derivatives settlement layer — orders, matching, margin,
+	// funding and liquidation all live on-chain (the Hyperliquid/dYdX model).
+	// Order building returns unsigned calldata the caller's own wallet signs.
+	onChainPerpBook := services.NewOnChainPerpBookService(db, priceAggregator)
+	if key, ok := orderbookpkg.LoadSigner(); ok {
+		if parsed, err := crypto.HexToECDSA(key); err == nil {
+			onChainPerpBook.SetKeeperKey(parsed)
+		} else {
+			log.Printf("warning: TIGERSWAP_ORDERBOOK_KEEPER_KEY is not a valid key: %v", err)
+		}
+	}
+	if key, ok := orderbookpkg.LoadOwnerKey(); ok {
+		if parsed, err := crypto.HexToECDSA(key); err == nil {
+			onChainPerpBook.SetOwnerKey(parsed)
+		} else {
+			log.Printf("warning: TIGERSWAP_ORDERBOOK_OWNER_KEY is not a valid key: %v", err)
+		}
+	}
+	if err := onChainPerpBook.LoadDeployments(); err != nil {
+		log.Printf("warning: on-chain perp order book deployments not loaded: %v", err)
+	}
+	if err := onChainPerpBook.ReloadSymbols(); err != nil {
+		log.Printf("warning: could not map order book symbols: %v", err)
 	}
 
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator).SetDB(db)
@@ -353,6 +383,7 @@ func main() {
 	// on-chain condition is met. Started only when an executor key and an orders
 	// deployment are configured; otherwise it is a no-op.
 	onChainOrders.Start(realtimeCtx)
+	onChainPerpBook.Start(realtimeCtx)
 	services.StartPriceSampler(realtimeCtx, priceAggregator, services.DefaultPriceSampleInterval)
 
 	// Drive every active bot against live market data. The Rust engine is the
@@ -386,6 +417,7 @@ func main() {
 		marginEngine:       marginEngine,
 		perpetualEngine:    perpetualEngine,
 		onChainPerps:       onChainPerps,
+		onChainPerpBook:    onChainPerpBook,
 		onChainOrders:      onChainOrders,
 		copyTradingEngine:  copyTradingEngine,
 		bridgeService:      bridgeService,

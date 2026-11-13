@@ -12,6 +12,7 @@ import {TigerSwapLending} from "../TigerSwapLending.sol";
 import {TigerSwapBridge} from "../TigerSwapBridge.sol";
 import {TigerSwapAdvancedOrders} from "../TigerSwapAdvancedOrders.sol";
 import {TigerSwapTWAMM} from "../TigerSwapTWAMM.sol";
+import {TigerSwapPerpOrderBook} from "../TigerSwapPerpOrderBook.sol";
 
 /**
  * @title Deploy
@@ -62,6 +63,12 @@ contract Deploy is Script {
         // price from the same oracle the rest of the protocol uses.
         TigerSwapAdvancedOrders orders = new TigerSwapAdvancedOrders(address(oracle), address(router));
 
+        // The on-chain perpetual order book: the derivatives settlement layer.
+        // Traders margin a settlement token, rest price-time-priority limit
+        // orders, and a taker crosses them in one transaction. Its oracle is the
+        // keeper address, the same one that pushes perps prices.
+        TigerSwapPerpOrderBook perpOrderBook = new TigerSwapPerpOrderBook(perpsOracle);
+
         // TigerSwapTWAMM is a per-pair pool, so it is deployed only when the pair
         // is configured. Without a pair there is nothing for a long-term order to
         // trade against, and the registry records the zero address.
@@ -81,8 +88,9 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         _seedMarkets(perps);
+        _seedOrderBookMarkets(perpOrderBook);
 
-        _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth, address(orders), twamm);
+        _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth, address(orders), twamm, address(perpOrderBook));
 
         console2.log("TigerSwap deployed on chain", chainId);
         console2.log("  factory", address(factory));
@@ -138,6 +146,53 @@ contract Deploy is Script {
         vm.stopBroadcast();
     }
 
+    /// @notice Optionally create perpetual order book markets. Each entry is
+    ///         `SYMBOL:SETTLEMENT_TOKEN:ORACLE_ASSET:MAX_LEVERAGE`, comma-separated.
+    ///         Risk parameters use protocol defaults (maintenance 5%, initial
+    ///         margin = 1/leverage, taker 0.05%, maker 0.02%, lot 0.001 base
+    ///         units). Idempotent: an existing market is skipped.
+    function _seedOrderBookMarkets(TigerSwapPerpOrderBook book) internal {
+        string memory raw = vm.envOr("TIGERSWAP_ORDERBOOK_MARKETS", string(""));
+        if (bytes(raw).length == 0) {
+            return;
+        }
+
+        vm.startBroadcast();
+        string[] memory entries = vm.split(raw, ",");
+        for (uint256 i = 0; i < entries.length; i++) {
+            string[] memory parts = vm.split(entries[i], ":");
+            require(parts.length == 4, "Deploy: order book entry must be SYMBOL:TOKEN:ORACLE_ASSET:LEVERAGE");
+            bytes32 marketId = keccak256(bytes(parts[0]));
+            if (book.getMarket(marketId).token != address(0)) {
+                continue;
+            }
+            address token = vm.parseAddress(parts[1]);
+            address oracleAsset = vm.parseAddress(parts[2]);
+            uint256 leverage = vm.parseUint(parts[3]);
+            require(token != address(0) && oracleAsset != address(0), "Deploy: token and oracle asset are required");
+            require(leverage >= 1 && leverage <= 101, "Deploy: leverage out of range");
+
+            uint256 wad = book.WAD();
+            book.createMarket(
+                marketId,
+                token,
+                oracleAsset,
+                wad / 2000, // 0.05% taker fee
+                wad / 5000, // 0.02% maker fee
+                wad / leverage, // initial margin
+                wad / 20, // 5% maintenance margin
+                wad / 20, // 5% liquidation fee
+                leverage * wad, // max leverage
+                0, // uncapped open interest
+                1e15, // min order size: 0.001 base units
+                1e15 // lot size
+            );
+            book.setMarketActive(marketId, true);
+            console2.log("seeded order book market", parts[0]);
+        }
+        vm.stopBroadcast();
+    }
+
     function _write(
         uint256 chainId,
         address factory,
@@ -149,7 +204,8 @@ contract Deploy is Script {
         address bridge,
         address weth,
         address orders,
-        address twamm
+        address twamm,
+        address perpOrderBook
     ) internal {
         string memory json = string.concat(
             "{\n",
@@ -163,7 +219,8 @@ contract Deploy is Script {
             '  "twamm": "', vm.toString(twamm), '",\n',
             '  "lending": "', vm.toString(lending), '",\n',
             '  "bridge": "', vm.toString(bridge), '",\n',
-            '  "weth": "', vm.toString(weth), '"\n',
+            '  "weth": "', vm.toString(weth), '",\n',
+            '  "perp_order_book": "', vm.toString(perpOrderBook), '"\n',
             "}\n"
         );
         string memory path = string.concat("deployments/", vm.toString(chainId), ".json");
