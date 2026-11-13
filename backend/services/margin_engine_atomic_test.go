@@ -130,3 +130,59 @@ func TestMarginRepayReadsDebtUnderTransaction(t *testing.T) {
 		t.Fatal("repay must read the borrow row inside the transaction, under the row lock")
 	}
 }
+
+// TestMarginLiquidateDecidesInsideTheTransaction proves the health that decides
+// liquidatability and the repayable/seize amounts are computed inside the
+// settlement transaction, after the account row is locked. Computing them from a
+// snapshot read before the lock let two concurrent liquidators each act on the
+// pre-liquidation state and seize the same collateral twice.
+//
+// The query observer records whether the account row read that drives the
+// decision ran inside a transaction: on the old code the health read happened
+// before the transaction opened, so the guard fires.
+func TestMarginLiquidateDecidesInsideTheTransaction(t *testing.T) {
+	ctx := context.Background()
+	prices := map[string]float64{"BTC": 60000, "RUSD": 1}
+	env := newMarginTestEnv(t, prices)
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "40000"); err != nil {
+		t.Fatalf("borrow: %v", err)
+	}
+
+	// Collapse the collateral price so the account becomes liquidatable.
+	prices["BTC"] = 30000
+
+	var collateralReadInTx, collateralReadOutsideTx bool
+	if err := env.db.Callback().Query().Before("gorm:query").
+		Register("test:watch_margin_collateral_read", func(tx *gorm.DB) {
+			if tx.Statement == nil || tx.Statement.Table != "margin_collaterals" {
+				return
+			}
+			if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); ok {
+				collateralReadInTx = true
+			} else {
+				collateralReadOutsideTx = true
+			}
+		}); err != nil {
+		t.Fatalf("register query observer: %v", err)
+	}
+
+	if _, err := env.engine.Liquidate(ctx, account.ID, "liquidator"); err != nil {
+		t.Fatalf("liquidate: %v", err)
+	}
+
+	if !collateralReadInTx {
+		t.Fatal("liquidation must read the collateral it settles inside the transaction")
+	}
+	if collateralReadOutsideTx {
+		t.Fatal("liquidation must not decide from collateral read outside the transaction, before the row lock")
+	}
+}

@@ -424,8 +424,15 @@ func borrowRateAPY(cfg *marginMarketConfig, utilization float64) float64 {
 // utilization is tracked per market, so the base rate is the honest rate here
 // rather than a fabricated utilization.
 func (e *MarginEngine) accrueAccountInterest(accountID uuid.UUID, cfg *marginMarketConfig, now time.Time) error {
+	return e.accrueAccountInterestTx(e.db, accountID, cfg, now)
+}
+
+// accrueAccountInterestTx is the transaction-scoped form of
+// accrueAccountInterest, so a settlement can bring interest up to date inside
+// the same transaction that locks the account rather than from a stale snapshot.
+func (e *MarginEngine) accrueAccountInterestTx(db *gorm.DB, accountID uuid.UUID, cfg *marginMarketConfig, now time.Time) error {
 	var borrows []models.MarginBorrow
-	if err := e.db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
+	if err := db.Where("account_id = ?", accountID).Find(&borrows).Error; err != nil {
 		return err
 	}
 
@@ -457,7 +464,7 @@ func (e *MarginEngine) accrueAccountInterest(accountID uuid.UUID, cfg *marginMar
 			newInterest = new(big.Rat)
 		}
 		storedInterest := amountValueString(newInterest)
-		if err := e.db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
+		if err := db.Model(&models.MarginBorrow{}).Where("id = ?", borrows[i].ID).
 			Updates(map[string]interface{}{
 				"accrued_interest": storedInterest,
 				"last_accrual":     now,
@@ -811,16 +818,6 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 	if err != nil {
 		return nil, err
 	}
-	if err := e.accrueAccountInterest(accountID, cfg, time.Now().UTC()); err != nil {
-		return nil, err
-	}
-	health, err := e.computeHealth(ctx, e.db, accountID, cfg)
-	if err != nil {
-		return nil, err
-	}
-	if !health.isLiquidatable() {
-		return nil, fmt.Errorf("%w: %s", ErrMarginNotLiquidatable, accountID)
-	}
 
 	// The close factor caps how much of the debt one liquidation may repay,
 	// which keeps a large account from being closed in a single step.
@@ -828,18 +825,15 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 	if closeFactor.Sign() <= 0 || closeFactor.Cmp(big.NewRat(1, 1)) > 0 {
 		closeFactor = big.NewRat(1, 1)
 	}
-	repayable := new(big.Rat).Mul(health.DebtUSD, closeFactor)
-	seizeValue := new(big.Rat).Mul(repayable, new(big.Rat).Add(big.NewRat(1, 1), cfg.LiquidationBonus))
-	if seizeValue.Cmp(health.CollateralUSD) > 0 {
-		seizeValue = health.CollateralUSD
-	}
 
 	// Seizing collateral and repaying debt must be one unit of work: if the
 	// process died between the two, the trader would lose collateral while the
-	// debt stayed on the books. The account row is locked FOR UPDATE so two
-	// liquidators cannot both settle the same account from the same snapshot,
-	// and every read and write below runs inside this transaction so it sees a
-	// consistent view.
+	// debt stayed on the books. The account row is locked FOR UPDATE and the
+	// health that decides liquidatability, the repayable amount and the seized
+	// value are all recomputed inside the transaction, so two liquidators cannot
+	// both settle the same account from the same pre-liquidation snapshot and
+	// seize it twice.
+	var health *marginHealth
 	err = e.db.Transaction(func(tx *gorm.DB) error {
 		var locked models.MarginAccount
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -848,6 +842,23 @@ func (e *MarginEngine) Liquidate(ctx context.Context, accountID uuid.UUID, liqui
 		}
 		if locked.Status != models.MarginAccountActive {
 			return fmt.Errorf("margin account is %s", locked.Status)
+		}
+		if err := e.accrueAccountInterestTx(tx, accountID, cfg, time.Now().UTC()); err != nil {
+			return err
+		}
+		settled, err := e.computeHealth(ctx, tx, accountID, cfg)
+		if err != nil {
+			return err
+		}
+		if !settled.isLiquidatable() {
+			return fmt.Errorf("%w: %s", ErrMarginNotLiquidatable, accountID)
+		}
+		health = settled
+
+		repayable := new(big.Rat).Mul(settled.DebtUSD, closeFactor)
+		seizeValue := new(big.Rat).Mul(repayable, new(big.Rat).Add(big.NewRat(1, 1), cfg.LiquidationBonus))
+		if seizeValue.Cmp(settled.CollateralUSD) > 0 {
+			seizeValue = settled.CollateralUSD
 		}
 		if err := e.seizeCollateral(ctx, tx, accountID, seizeValue, liquidator); err != nil {
 			return err
