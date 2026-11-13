@@ -25,6 +25,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -612,7 +613,7 @@ func decryptWebhookSecret(encoded string) (string, error) {
 }
 
 func deriveWebhookKey() ([]byte, error) {
-	secret := os.Getenv("WALLET_ENCRYPTION_KEY")
+	secret := config.Secret("WALLET_ENCRYPTION_KEY")
 	if len(secret) < 32 {
 		return nil, errors.New("WALLET_ENCRYPTION_KEY must be set (32+ chars) to register a webhook")
 	}

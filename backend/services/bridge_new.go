@@ -196,7 +196,7 @@ func (s *BridgeService) bridgeSigningKey(sender string) (*ecdsa.PrivateKey, erro
 // holds. Keys come from TIGERBRIDGE_VALIDATOR_KEYS (comma-separated hex); a
 // single key is accepted for single-validator test deployments.
 func validatorKeys() ([]*ecdsa.PrivateKey, error) {
-	raw := strings.TrimSpace(os.Getenv("TIGERBRIDGE_VALIDATOR_KEYS"))
+	raw := strings.TrimSpace(config.Secret("TIGERBRIDGE_VALIDATOR_KEYS"))
 	if raw == "" {
 		return nil, fmt.Errorf("TIGERBRIDGE_VALIDATOR_KEYS is not configured")
 	}
@@ -249,7 +249,7 @@ func tigerBridgeRouter(chainID int64) string {
 
 // relayerKey loads the TigerBridge relayer signing key.
 func relayerKey() (*ecdsa.PrivateKey, error) {
-	raw := os.Getenv("TIGERBRIDGE_RELAYER_KEY")
+	raw := config.Secret("TIGERBRIDGE_RELAYER_KEY")
 	if raw == "" {
 		return nil, fmt.Errorf("TIGERBRIDGE_RELAYER_KEY is not configured")
 	}

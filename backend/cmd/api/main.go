@@ -381,7 +381,7 @@ func main() {
 	portfolioService.SetPositionSource(perpetualEngine)
 
 	var walletService *services.WalletService
-	if os.Getenv("WALLET_ENCRYPTION_KEY") != "" {
+	if config.Secret("WALLET_ENCRYPTION_KEY") != "" {
 		walletService = services.NewWalletService(db)
 		walletService.SetDependencies(blockchainClient, swapExecutor, perpetualEngine, copyTradingEngine)
 		walletService.SetLedger(ledgerService)

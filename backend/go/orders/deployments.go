@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/config/deployments"
 )
 
@@ -102,7 +103,7 @@ func rpcForChain(suffix string) string {
 // a key only to submit fills; read paths work without one.
 func LoadSigner() (string, bool) {
 	for _, key := range []string{"TIGERSWAP_ORDERS_EXECUTOR_KEY", "TIGERSWAP_PERPS_KEEPER_KEY", "TIGERSWAP_SIGNER_KEY"} {
-		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if v := strings.TrimSpace(config.Secret(key)); v != "" {
 			return v, true
 		}
 	}

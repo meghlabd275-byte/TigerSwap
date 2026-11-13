@@ -189,6 +189,15 @@ there are no defaults, by design. `WALLET_ENCRYPTION_KEY` enables custody
 endpoints. `PLATFORM_SIGNER_KEY` signs withdrawals. `WALLET_HD_SEED` derives
 deposit addresses.
 
+Every secret (`WALLET_ENCRYPTION_KEY`, `WALLET_HD_SEED`, `PLATFORM_SIGNER_KEY`,
+`TIGERSWAP_SIGNER_KEY`, `TIGERSWAP_PERPS_KEEPER_KEY`,
+`TIGERSWAP_PERPS_OWNER_KEY`, `TIGERSWAP_ORDERS_EXECUTOR_KEY`,
+`TIGERBRIDGE_RELAYER_KEY`, `TIGERBRIDGE_VALIDATOR_KEYS`) can instead be supplied
+as a mounted file through the `_FILE` sibling (`config.Secret`), which is how
+Docker secrets and Kubernetes Secret volumes expose a value. The environment
+variable wins when both are set, and a mounted file's trailing newline is
+trimmed.
+
 ## On-chain perpetuals (funding, markets, deployment registry)
 
 `TigerSwapPerpetuals` is the on-chain settlement layer. Its funding, the keeper

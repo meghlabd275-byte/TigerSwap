@@ -9,12 +9,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -34,7 +34,7 @@ const totpIssuer = "TigerSwap"
 // WALLET_ENCRYPTION_KEY. A missing key is an explicit error, not a silent
 // fallback to a weaker key.
 func deriveTOTPKey() ([]byte, error) {
-	secret := os.Getenv("WALLET_ENCRYPTION_KEY")
+	secret := config.Secret("WALLET_ENCRYPTION_KEY")
 	if len(secret) < 32 {
 		return nil, errors.New("WALLET_ENCRYPTION_KEY must be set (32+ chars) to enrol two-factor authentication")
 	}

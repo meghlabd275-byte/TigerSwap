@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/go/amm"
 	"tigerswap/backend/go/tigerswap"
 )
@@ -724,7 +724,7 @@ func (s *SwapExecutor) GetSupportedDEXHandler(c *gin.Context) {
 
 // LoadExecutorSigner reads the TigerSwap signer from the environment.
 func LoadExecutorSigner() (*ecdsa.PrivateKey, error) {
-	raw := os.Getenv("TIGERSWAP_SIGNER_KEY")
+	raw := config.Secret("TIGERSWAP_SIGNER_KEY")
 	if raw == "" {
 		return nil, errors.New("TIGERSWAP_SIGNER_KEY is not configured")
 	}

@@ -13,7 +13,6 @@ import (
 	"log"
 	"math/big"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
+	"tigerswap/backend/config"
 	"tigerswap/backend/models"
 )
 
@@ -57,7 +57,7 @@ type WalletService struct {
 // WALLET_ENCRYPTION_KEY; the service refuses to start without it so private
 // keys are never persisted in plaintext.
 func NewWalletService(db *gorm.DB) *WalletService {
-	encKey := os.Getenv("WALLET_ENCRYPTION_KEY")
+	encKey := config.Secret("WALLET_ENCRYPTION_KEY")
 	if len(encKey) < 32 {
 		panic("WALLET_ENCRYPTION_KEY must be set to at least 32 characters")
 	}
@@ -69,7 +69,7 @@ func NewWalletService(db *gorm.DB) *WalletService {
 		encryptionKey: derived[:],
 	}
 	// A persistent HD seed keeps deposit addresses stable across restarts.
-	if seed := os.Getenv("WALLET_HD_SEED"); seed != "" {
+	if seed := config.Secret("WALLET_HD_SEED"); seed != "" {
 		svc.hdSeed = []byte(seed)
 	}
 	return svc
@@ -1169,7 +1169,7 @@ func (s *WalletService) deriveDepositAddress(userID string, chainID int64) (stri
 
 // platformKey returns the signing key for platform withdrawals.
 func (s *WalletService) platformKey() (*ecdsa.PrivateKey, error) {
-	raw := os.Getenv("PLATFORM_SIGNER_KEY")
+	raw := config.Secret("PLATFORM_SIGNER_KEY")
 	if raw == "" {
 		return nil, fmt.Errorf("PLATFORM_SIGNER_KEY is not configured")
 	}

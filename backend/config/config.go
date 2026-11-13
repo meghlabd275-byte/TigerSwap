@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -110,4 +111,31 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// Secret returns the value of an environment variable, falling back to a file
+// named by the variable's `_FILE` sibling. A deployment that mounts secrets
+// (Docker secrets, Kubernetes mounted Secret volumes) exposes the value as a
+// file rather than an environment variable, so a key set only as `KEY_FILE`
+// would otherwise be invisible. The environment variable wins when both are
+// set, so a local `.env` keeps working.
+//
+// The file contents are trimmed of a single trailing newline, because a mounted
+// secret commonly ends in one and a signer key with a stray newline would fail
+// to parse. A read error or an empty value is returned as the empty string; the
+// caller reports the missing key, exactly as it does for an unset variable.
+func Secret(key string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	path := os.Getenv(key + "_FILE")
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		log.Printf("warning: cannot read secret file for %s: %v", key, err)
+		return ""
+	}
+	return strings.TrimRight(string(data), "\r\n")
 }

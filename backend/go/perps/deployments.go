@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
+	"tigerswap/backend/config"
 	"tigerswap/backend/config/deployments"
 )
 
@@ -104,7 +105,7 @@ func rpcForChain(suffix string) string {
 // liquidations and oracle updates; read paths work without one.
 func LoadSigner() (string, bool) {
 	for _, key := range []string{"TIGERSWAP_PERPS_KEEPER_KEY", "TIGERSWAP_SIGNER_KEY"} {
-		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if v := strings.TrimSpace(config.Secret(key)); v != "" {
 			return v, true
 		}
 	}
@@ -115,7 +116,7 @@ func LoadSigner() (string, bool) {
 // signs owner-only calls (createMarket); without it those calls are skipped
 // rather than attempted with the keeper key, which the contract would reject.
 func LoadOwnerKey() (string, bool) {
-	if v := strings.TrimSpace(os.Getenv("TIGERSWAP_PERPS_OWNER_KEY")); v != "" {
+	if v := strings.TrimSpace(config.Secret("TIGERSWAP_PERPS_OWNER_KEY")); v != "" {
 		return v, true
 	}
 	return "", false
