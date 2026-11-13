@@ -2,17 +2,23 @@
 
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Wallet, Menu, X, ChevronDown, Rocket, Zap, Shield, Globe } from 'lucide-react';
+import { Wallet, Menu, X, ChevronDown, Rocket, Zap, Shield, Globe, User, LogOut } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import { useChains } from '@/hooks/useApi';
+import { useSession } from '@/hooks/useSession';
+import { AuthPanel } from '@/components/AuthPanel';
+import { logout } from '@/lib/auth';
 import Link from 'next/link';
 
 export function Header() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [walletDropdownOpen, setWalletDropdownOpen] = useState(false);
+  const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
+  const [authPanelOpen, setAuthPanelOpen] = useState(false);
   const { connected, address, connectWallet, disconnectWallet } = useStore();
   const { data: chains } = useChains();
+  const { user } = useSession();
 
   const formatAddress = (addr: string) => {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -88,6 +94,49 @@ export function Header() {
               </span>
             </button>
 
+            {/* Account (session) */}
+            {user ? (
+              <div className="relative">
+                <button
+                  onClick={() => setAccountDropdownOpen(!accountDropdownOpen)}
+                  className="flex items-center space-x-2 px-3 py-2 bg-white/5 border border-white/10 rounded-xl hover:bg-white/10 transition-colors"
+                >
+                  <User className="w-4 h-4 text-tiger-orange" />
+                  <span className="hidden sm:inline text-white text-sm max-w-[10rem] truncate">
+                    {user.email || user.id}
+                  </span>
+                  <ChevronDown className="w-4 h-4 text-gray-400" />
+                </button>
+                {accountDropdownOpen && (
+                  <div className="absolute right-0 mt-2 w-48 py-2 bg-tiger-dark border border-white/10 rounded-xl shadow-xl">
+                    <div className="px-4 py-2 text-xs text-gray-500 truncate">{user.email || user.id}</div>
+                    <hr className="my-1 border-white/10" />
+                    <Link
+                      href="/wallet"
+                      className="block px-4 py-2 text-left text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+                    >
+                      My Wallet
+                    </Link>
+                    <button
+                      onClick={() => void logout()}
+                      className="w-full flex items-center space-x-2 px-4 py-2 text-left text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      <span>Sign out</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button
+                onClick={() => setAuthPanelOpen(true)}
+                className="flex items-center space-x-2 px-4 py-2 bg-white/5 border border-white/10 rounded-xl text-white font-medium hover:bg-white/10 transition-colors"
+              >
+                <User className="w-4 h-4 text-tiger-orange" />
+                <span>Sign in</span>
+              </button>
+            )}
+
             {/* Wallet Button */}
             {connected ? (
               <div className="relative">
@@ -157,9 +206,22 @@ export function Header() {
             <MobileNavLink href="#staking">Staking</MobileNavLink>
             <MobileNavLink href="#dca">DCA Bot</MobileNavLink>
             <MobileNavLink href="#copy">Copy Trading</MobileNavLink>
+            {!user && (
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setAuthPanelOpen(true);
+                }}
+                className="block w-full text-left px-4 py-2 text-tiger-orange hover:bg-white/5 rounded-lg transition-colors"
+              >
+                Sign in
+              </button>
+            )}
           </div>
         </motion.div>
       )}
+
+      {authPanelOpen && <AuthPanel onClose={() => setAuthPanelOpen(false)} />}
     </header>
   );
 }

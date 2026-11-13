@@ -124,6 +124,7 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 		// Auth routes
 		auth := v1.Group("/auth")
+		auth.Use(middleware.AuthRateLimiter(deps.redis))
 		{
 			auth.POST("/register", deps.authService.Register)
 			auth.POST("/login", deps.authService.Login)

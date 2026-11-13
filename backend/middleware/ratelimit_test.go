@@ -38,6 +38,60 @@ func TestRedisRateLimiterFallsBackWhenRedisUnavailable(t *testing.T) {
 	}
 }
 
+// TestAuthRateLimiterIsTighterThanGlobal pins that credential endpoints get
+// their own, tighter budget. Without a separate limiter a password-guessing run
+// shared the 100/min global bucket, which is far too permissive for sign-in.
+func TestAuthRateLimiterIsTighterThanGlobal(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(AuthRateLimiter(nil))
+	router.POST("/login", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	status := func() int {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.RemoteAddr = "198.51.100.5:12345"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 10; i++ {
+		if code := status(); code != http.StatusOK {
+			t.Fatalf("login attempt %d should be allowed, got %d", i+1, code)
+		}
+	}
+	if code := status(); code != http.StatusTooManyRequests {
+		t.Fatalf("the 11th login attempt in a minute must be limited, got %d", code)
+	}
+}
+
+// The auth limiter and the global limiter must not share a bucket, so a burst of
+// ordinary API traffic cannot exhaust an account's sign-in budget.
+func TestAuthAndGlobalLimitersUseSeparateBuckets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.Use(RedisRateLimiter(nil))
+	router.POST("/login", AuthRateLimiter(nil), func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+
+	// Exhaust the auth bucket for this client.
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.RemoteAddr = "198.51.100.7:12345"
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d should be allowed, got %d", i+1, rec.Code)
+		}
+	}
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "198.51.100.7:12345"
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("auth bucket should be exhausted, got %d", rec.Code)
+	}
+}
+
 func TestHealthCheckIsNotRateLimited(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

@@ -1019,7 +1019,16 @@ func (s *AuthService) Login(c *gin.Context) {
 		return
 	}
 
+	// A locked account is refused before the password is checked, so a locked
+	// account cannot be probed for a correct password. The message is the same as
+	// a bad password so the endpoint does not confirm that the account exists.
+	if user.LockedUntil != nil && user.LockedUntil.After(time.Now()) {
+		c.JSON(401, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		s.recordFailedLogin(&user)
 		c.JSON(401, gin.H{"error": "Invalid credentials"})
 		return
 	}
@@ -1032,6 +1041,14 @@ func (s *AuthService) Login(c *gin.Context) {
 		return
 	}
 
+	// A correct password clears the failure counter and any expired lock.
+	if user.FailedLoginAttempts != 0 || user.LockedUntil != nil {
+		s.db.Model(&models.User{}).Where("id = ?", user.ID).
+			Updates(map[string]interface{}{"failed_login_attempts": 0, "locked_until": nil})
+		user.FailedLoginAttempts = 0
+		user.LockedUntil = nil
+	}
+
 	token, err := s.generateToken(user.ID, user.Email, user.Role)
 	if err != nil {
 		c.JSON(500, gin.H{"error": "Failed to create session"})
@@ -1042,6 +1059,32 @@ func (s *AuthService) Login(c *gin.Context) {
 		"user":  user,
 		"token": token,
 	})
+}
+
+// loginMaxFailures and loginLockoutDuration bound a password-guessing run against
+// one account. The counter is per account, so an attacker rotating source
+// addresses still trips it; the IP rate limiter bounds the same attack spread
+// across many accounts.
+const (
+	loginMaxFailures     = 5
+	loginLockoutDuration = 15 * time.Minute
+)
+
+// recordFailedLogin increments the account's failure counter and locks it once
+// the run reaches the threshold. The write is best-effort: a failure to record
+// must not turn a rejected sign-in into a 500.
+func (s *AuthService) recordFailedLogin(user *models.User) {
+	attempts := user.FailedLoginAttempts + 1
+	updates := map[string]interface{}{"failed_login_attempts": attempts}
+	if attempts >= loginMaxFailures {
+		until := time.Now().Add(loginLockoutDuration)
+		updates["locked_until"] = until
+		// Reset the counter so the next window starts fresh after the lock expires.
+		updates["failed_login_attempts"] = 0
+	}
+	if err := s.db.Model(&models.User{}).Where("id = ?", user.ID).Updates(updates).Error; err != nil {
+		log.Printf("failed to record login attempt for %s: %v", user.ID, err)
+	}
 }
 
 // RefreshToken issues a new access token from a still-valid bearer token.

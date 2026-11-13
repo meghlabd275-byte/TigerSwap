@@ -211,10 +211,22 @@ func (l *localRateLimiter) evictNearestResetLocked() {
 // is unreachable it falls back to an in-process limiter rather than allowing
 // every request through, so a Redis outage cannot be used to bypass the limit.
 func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
-	const (
-		limit  = 100 // requests per minute per client
-		window = time.Minute
-	)
+	return rateLimiter(redisClient, "rate_limit:", 100, time.Minute)
+}
+
+// AuthRateLimiter bounds credential endpoints far below the global limit. A
+// distributed password-guessing run hits the per-account lockout; this bounds
+// the same run spread across many accounts from one source. It is deliberately
+// tighter than RedisRateLimiter because sign-in, registration and refresh are
+// the only endpoints where a cheap request can be turned into account access.
+func AuthRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
+	return rateLimiter(redisClient, "auth_rate_limit:", 10, time.Minute)
+}
+
+// rateLimiter builds a fixed-window per-IP limiter. The key prefix lets the
+// global and auth limits count independently, so a burst of ordinary API traffic
+// cannot consume an account's sign-in budget and vice versa.
+func rateLimiter(redisClient *redis.Client, prefix string, limit int, window time.Duration) gin.HandlerFunc {
 	fallback := newLocalRateLimiter(limit, window)
 
 	return func(c *gin.Context) {
@@ -225,7 +237,7 @@ func RedisRateLimiter(redisClient *redis.Client) gin.HandlerFunc {
 		}
 
 		ip := c.ClientIP()
-		key := "rate_limit:" + ip
+		key := prefix + ip
 
 		if redisClient != nil {
 			count, err := redisClient.Incr(c.Request.Context(), key).Result()

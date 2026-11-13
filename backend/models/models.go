@@ -41,6 +41,12 @@ type User struct {
 	UpdatedAt     time.Time      `json:"updated_at"`
 	DeletedAt     gorm.DeletedAt `gorm:"index" json:"-"`
 
+	// Brute-force protection. A run of failed sign-ins locks the account until
+	// LockedUntil; a success clears the counter. These are never serialised to a
+	// client, so a response cannot reveal how close an account is to a lockout.
+	FailedLoginAttempts int        `gorm:"default:0" json:"-"`
+	LockedUntil         *time.Time `json:"-"`
+
 	// Relations
 	Tokens       []Token       `gorm:"foreignKey:CreatedBy" json:"-"`
 	Transactions []Transaction `gorm:"foreignKey:UserID" json:"-"`
