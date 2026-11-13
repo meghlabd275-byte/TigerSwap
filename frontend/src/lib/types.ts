@@ -11,6 +11,7 @@ import {
   arrayLenient,
   boolean,
   displayText,
+  healthFactor,
   hex,
   httpURL,
   integer,
@@ -635,7 +636,7 @@ export const marginAccountViewValidator = object<MarginAccountView>({
   collateral_value_usd: nonNegative,
   debt_value_usd: nonNegative,
   equity_usd: number,
-  health_factor: number,
+  health_factor: healthFactor,
   liquidation_value_usd: nonNegative,
 });
 

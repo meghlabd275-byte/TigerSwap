@@ -70,14 +70,18 @@ type marginMarketConfig struct {
 // MarginAccountView is the public risk description of a margin account. All
 // values are denominated in USD.
 type MarginAccountView struct {
-	ID                  string  `json:"id"`
-	MarginMode          string  `json:"margin_mode"`
-	Pair                string  `json:"pair"`
-	Status              string  `json:"status"`
+	ID         string `json:"id"`
+	MarginMode string `json:"margin_mode"`
+	Pair       string `json:"pair"`
+	Status     string `json:"status"`
+	// HealthFactor is a decimal string. A debt-free account has no finite health
+	// factor and is reported as "Infinity"; a float64 field cannot carry that
+	// value through encoding/json, which fails the whole response, so the view
+	// is only readable for an account that already has debt.
 	CollateralValueUSD  float64 `json:"collateral_value_usd"`
 	DebtValueUSD        float64 `json:"debt_value_usd"`
 	EquityUSD           float64 `json:"equity_usd"`
-	HealthFactor        float64 `json:"health_factor"`
+	HealthFactor        string  `json:"health_factor"`
 	LiquidationValueUSD float64 `json:"liquidation_value_usd"`
 }
 
@@ -380,6 +384,17 @@ func (h *marginHealth) healthFactorFloat() float64 {
 	}
 	f, _ := h.HealthFactor.Float64()
 	return f
+}
+
+// healthFactorString renders the health factor as a decimal string for the wire.
+// A debt-free account has no finite health factor and is reported as
+// "Infinity"; encoding/json cannot carry a float64 infinity, so a string keeps
+// the whole view serialisable.
+func (h *marginHealth) healthFactorString() string {
+	if h.HealthFactor == nil {
+		return "Infinity"
+	}
+	return formatDecimal(h.HealthFactor, 8)
 }
 
 // borrowRateAPY applies the listing's two-slope curve: the base rate up to the
@@ -1045,7 +1060,7 @@ func (e *MarginEngine) GetAccountView(ctx context.Context, userID string, accoun
 		CollateralValueUSD:  collateralFloat,
 		DebtValueUSD:        debtFloat,
 		EquityUSD:           equityFloat,
-		HealthFactor:        health.healthFactorFloat(),
+		HealthFactor:        health.healthFactorString(),
 		LiquidationValueUSD: liquidationFloat,
 	}, nil
 }

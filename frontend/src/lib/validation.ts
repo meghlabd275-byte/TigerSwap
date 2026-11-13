@@ -58,6 +58,22 @@ export const nonNegative = (value: unknown, path = "value"): number => {
   return parsed;
 };
 
+/**
+ * Validates a margin health factor.
+ *
+ * A debt-free account has no finite health factor; the API reports it as the
+ * string `"Infinity"` because a JSON number cannot carry an infinity. A finite
+ * factor arrives as a number or a numeric string. The value is returned as a
+ * number, so a caller can keep using `Number.isFinite` to detect the infinite
+ * case.
+ */
+export const healthFactor = (value: unknown, path = "value"): number => {
+  if (value === "Infinity") {
+    return Infinity;
+  }
+  return number(value, path);
+};
+
 /** Validates a boolean. */
 export const boolean = (value: unknown, path = "value"): boolean => {
   if (typeof value !== "boolean") {

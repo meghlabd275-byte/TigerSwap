@@ -2,10 +2,12 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -242,8 +244,8 @@ func TestMarginHealthAndLiquidation(t *testing.T) {
 		t.Fatalf("view: %v", err)
 	}
 	// health = 60000*0.75/40000 = 1.125
-	if math.Abs(view.HealthFactor-1.125) > 1e-6 {
-		t.Fatalf("expected health factor 1.125, got %v", view.HealthFactor)
+	if hf := mustParseHealth(t, view.HealthFactor); math.Abs(hf-1.125) > 1e-6 {
+		t.Fatalf("expected health factor 1.125, got %s", view.HealthFactor)
 	}
 	if candidates, err := env.engine.LiquidatableAccounts(ctx); err != nil || len(candidates) != 0 {
 		t.Fatalf("healthy account must not be liquidatable (err=%v, candidates=%d)", err, len(candidates))
@@ -273,6 +275,45 @@ func TestMarginHealthAndLiquidation(t *testing.T) {
 	}
 	if after.CollateralValueUSD >= view.CollateralValueUSD {
 		t.Fatalf("liquidation should seize collateral: before %v after %v", view.CollateralValueUSD, after.CollateralValueUSD)
+	}
+}
+
+// mustParseHealth parses a health-factor string from the API view, treating the
+// debt-free sentinel "Infinity" as +Inf.
+func mustParseHealth(t *testing.T, value string) float64 {
+	t.Helper()
+	if value == "Infinity" {
+		return math.Inf(1)
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		t.Fatalf("health factor %q is not parseable: %v", value, err)
+	}
+	return parsed
+}
+
+// TestMarginDebtFreeViewIsSerialisable verifies a freshly opened, debt-free
+// account can be read back as JSON. Its health factor is infinite, which a
+// float64 field cannot encode, so the view carries it as the string
+// "Infinity".
+func TestMarginDebtFreeViewIsSerialisable(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	view, err := env.engine.GetAccountView(ctx, "user-1", account.ID)
+	if err != nil {
+		t.Fatalf("view: %v", err)
+	}
+	if view.HealthFactor != "Infinity" {
+		t.Fatalf("a debt-free account should report an infinite health factor, got %q", view.HealthFactor)
+	}
+	if _, err := json.Marshal(view); err != nil {
+		t.Fatalf("a debt-free account view must be JSON-encodable: %v", err)
 	}
 }
 

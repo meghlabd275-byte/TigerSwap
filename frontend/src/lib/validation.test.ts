@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { chainValidator } from "./types";
+import { chainValidator, marginAccountViewValidator } from "./types";
 import {
   ValidationError,
   address,
   array,
   boolean,
   displayText,
+  healthFactor,
   httpURL,
   integer,
   marketSymbol,
@@ -40,6 +41,29 @@ test("integer rejects fractional values", () => {
 test("nonNegative rejects negative values", () => {
   assert.equal(nonNegative(0), 0);
   assert.throws(() => nonNegative(-1), ValidationError);
+});
+
+test("healthFactor accepts a finite factor, a numeric string and Infinity", () => {
+  assert.equal(healthFactor(1.125), 1.125);
+  assert.equal(healthFactor("1.125"), 1.125);
+  assert.equal(healthFactor("Infinity"), Number.POSITIVE_INFINITY);
+  assert.throws(() => healthFactor("Infinity "), ValidationError);
+  assert.throws(() => healthFactor(Number.NaN), ValidationError);
+});
+
+test("marginAccountViewValidator parses an infinite health factor", () => {
+  const view = marginAccountViewValidator({
+    id: "acc-1",
+    margin_mode: "cross",
+    pair: "BTC/RUSD",
+    status: "active",
+    collateral_value_usd: 60000,
+    debt_value_usd: 0,
+    equity_usd: 60000,
+    health_factor: "Infinity",
+    liquidation_value_usd: 45000,
+  });
+  assert.equal(view.health_factor, Number.POSITIVE_INFINITY);
 });
 
 test("boolean accepts only booleans", () => {
