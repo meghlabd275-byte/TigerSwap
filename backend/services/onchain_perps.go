@@ -67,8 +67,25 @@ func NewOnChainPerpsService(db *gorm.DB, priceAgg priceSource) *OnChainPerpsServ
 // SetKeeperKey wires the signer used for liquidations and oracle updates. It is
 // optional: without it the read and order-building endpoints still work, and the
 // keeper loop is simply not started.
+//
+// A client is built with the signer it will send with, so setting the key after
+// the deployments are loaded rebuilds each client. Without this the keeper would
+// hold read-only clients and every liquidation and price push would fail with
+// "no signer configured" — a failure that only appears at runtime, on chain.
 func (s *OnChainPerpsService) SetKeeperKey(key *ecdsa.PrivateKey) {
+	s.mu.Lock()
 	s.keeperKey = key
+	deployments := make([]perps.Deployment, 0, len(s.clients))
+	for _, client := range s.clients {
+		deployments = append(deployments, client.Deployment())
+	}
+	s.mu.Unlock()
+
+	for _, d := range deployments {
+		if err := s.RegisterDeployment(d); err != nil {
+			log.Printf("on-chain perps: could not re-key chain %d: %v", d.ChainID, err)
+		}
+	}
 }
 
 // LoadDeployments registers every configured on-chain perps deployment. It is a
@@ -582,6 +599,9 @@ func (s *OnChainPerpsService) Start(ctx context.Context) {
 				s.runKeeper(ctx, id)
 			}(chainID)
 		}
+		// The oracle writer shares the keeper key: the contract's updatePrice is
+		// oracle-gated, so the same signer that liquidates also publishes marks.
+		s.startOracleWriter(ctx)
 	}
 }
 

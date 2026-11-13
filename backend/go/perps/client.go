@@ -149,6 +149,10 @@ func (c *Client) RPC() *ethclient.Client { return c.client }
 // PerpetualsAddress returns the configured contract address.
 func (c *Client) PerpetualsAddress() common.Address { return c.deployment.Perpetuals }
 
+// Deployment returns the deployment this client is bound to, so a service that
+// holds only clients can rebuild them (for example after the signer is set).
+func (c *Client) Deployment() Deployment { return c.deployment }
+
 // call packs and executes an eth_call against the perps contract, returning the
 // raw ABI-encoded output.
 func (c *Client) call(ctx context.Context, method string, args ...interface{}) ([]byte, error) {
@@ -231,6 +235,26 @@ func (c *Client) Position(ctx context.Context, id common.Hash) (*Position, error
 		LastUpdate: toBig(vals[5]),
 		IsLong:     toBool(vals[6]),
 	}, nil
+}
+
+// PriceOracle returns the address the contract permits to push prices and
+// funding. It is the contract's public `priceOracle` getter, so a writer can
+// confirm its signer is authorised before submitting a transaction the contract
+// would reject.
+func (c *Client) PriceOracle(ctx context.Context) (common.Address, error) {
+	out, err := c.call(ctx, "priceOracle")
+	if err != nil {
+		return common.Address{}, err
+	}
+	vals, err := perpsABI.Unpack("priceOracle", out)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("unpack priceOracle: %w", err)
+	}
+	addr, ok := first(vals).(common.Address)
+	if !ok {
+		return common.Address{}, fmt.Errorf("priceOracle returned %T, not an address", first(vals))
+	}
+	return addr, nil
 }
 
 // MarkPrice reads the mark price the contract uses for PnL and margin.

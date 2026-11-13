@@ -198,15 +198,18 @@ func main() {
 	// than only in the platform ledger. The service dials only TigerSwap's own
 	// nodes and needs no user key — order building returns unsigned calldata.
 	onChainPerps := services.NewOnChainPerpsService(db, priceAggregator)
-	if err := onChainPerps.LoadDeployments(); err != nil {
-		log.Printf("warning: on-chain perps deployments not loaded: %v", err)
-	}
+	// Set the keeper key before loading deployments: a client is built with the
+	// signer it sends with, so the keeper that liquidates and the oracle writer
+	// that publishes marks can actually submit a transaction.
 	if signerKey, ok := perpspkg.LoadSigner(); ok {
 		if key, err := crypto.HexToECDSA(signerKey); err == nil {
 			onChainPerps.SetKeeperKey(key)
 		} else {
 			log.Printf("warning: TIGERSWAP_PERPS_KEEPER_KEY is not a valid key: %v", err)
 		}
+	}
+	if err := onChainPerps.LoadDeployments(); err != nil {
+		log.Printf("warning: on-chain perps deployments not loaded: %v", err)
 	}
 	if err := onChainPerps.ReloadSymbols(); err != nil {
 		log.Printf("warning: could not map perp market symbols: %v", err)
