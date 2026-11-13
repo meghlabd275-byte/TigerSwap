@@ -1094,6 +1094,38 @@ func (s *OnChainPerpBookService) liquidateUnhealthy(ctx context.Context, chainID
 	return nil
 }
 
+// bookMarkBand caps how far the book mid may pull the mark away from the
+// index, in basis points. The band keeps a thin or briefly dislocated book
+// from moving funding (and therefore every position's PnL) without limit.
+const bookMarkBandBps = 500
+
+// markFromBook returns the mark price used for funding and margin: the mid of
+// the best bid and ask, clamped to +/- bookMarkBandBps around the index. With
+// one side of the book empty the mid is undefined, so the index is used and the
+// funding rate stays zero rather than being invented from a one-sided quote.
+func markFromBook(bid, ask, index *big.Int) *big.Int {
+	if index == nil || index.Sign() <= 0 {
+		return new(big.Int)
+	}
+	if bid == nil || ask == nil || bid.Sign() <= 0 || ask.Sign() <= 0 {
+		return new(big.Int).Set(index)
+	}
+	mid := new(big.Int).Add(bid, ask)
+	mid.Div(mid, big.NewInt(2))
+
+	band := new(big.Int).Mul(index, big.NewInt(bookMarkBandBps))
+	band.Div(band, big.NewInt(10000))
+	low := new(big.Int).Sub(index, band)
+	high := new(big.Int).Add(index, band)
+	if mid.Cmp(low) < 0 {
+		return low
+	}
+	if mid.Cmp(high) > 0 {
+		return high
+	}
+	return mid
+}
+
 // bookBelowMaintenance reports whether equity is below the maintenance margin,
 // mirroring the contract's check. Equity and the requirement are exact integers;
 // the requirement is `abs(size) * mark / WAD * maintenanceMargin / WAD`.
@@ -1161,14 +1193,26 @@ func (s *OnChainPerpBookService) pushMarkPrices(ctx context.Context, chainID int
 			}
 			continue
 		}
-		price, err := usdFloatToWAD(priceData.USD)
+		index, err := usdFloatToWAD(priceData.USD)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
-		call, err := client.BuildAccrueFunding(marketID, price, price)
+		// The mark is the market's own book mid, banded around the index. With
+		// mark == index the contract's funding rate is always zero, so funding
+		// would be inert and a perp book would be indistinguishable from a
+		// zero-interest one.
+		bidPrice, _, askPrice, _, err := client.BestBidAsk(ctx, marketID)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		mark := markFromBook(bidPrice, askPrice, index)
+		call, err := client.BuildAccrueFunding(marketID, mark, index)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = err
