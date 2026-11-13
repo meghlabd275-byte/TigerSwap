@@ -357,6 +357,105 @@ export const perpPositionValidator = object<PerpPosition>({
 
 export const perpPositionListValidator = listingArray(perpPositionValidator);
 
+/**
+ * An on-chain perpetual market, as returned by `/onchain/perps/markets`. Every
+ * rate and amount is an exact integer string in the settlement token's smallest
+ * unit, read from the deployed `TigerSwapPerpetuals` contract; the API never
+ * converts it to a float.
+ */
+export interface OnChainPerpMarket {
+  chain_id: number;
+  symbol: string;
+  market_id: string;
+  token: string;
+  max_leverage: string;
+  liquidation_fee: string;
+  maintenance_margin_rate: string;
+  initial_margin_rate: string;
+  open_fee: string;
+  max_open_interest: string;
+  open_interest: string;
+  is_active: boolean;
+}
+
+export const onChainPerpMarketValidator = object<OnChainPerpMarket>({
+  chain_id: integer,
+  symbol: marketSymbol,
+  market_id: string,
+  token: string,
+  max_leverage: string,
+  liquidation_fee: string,
+  maintenance_margin_rate: string,
+  initial_margin_rate: string,
+  open_fee: string,
+  max_open_interest: string,
+  open_interest: string,
+  is_active: boolean,
+});
+
+export const onChainPerpMarketListValidator = listingArray(onChainPerpMarketValidator);
+
+/**
+ * An on-chain perpetual position. Identity and price come from the chain: the
+ * contract holds the position, and the mark price, PnL and accrued funding are
+ * read from the deployed oracle and contract state.
+ */
+export interface OnChainPerpPosition {
+  chain_id: number;
+  position_id: string;
+  market_id: string;
+  symbol: string;
+  trader: string;
+  is_long: boolean;
+  side: 'long' | 'short';
+  size: string;
+  collateral: string;
+  entry_price: string;
+  mark_price: string;
+  unrealized_pnl: string;
+  accrued_funding: string;
+  funded_collateral: string;
+  on_chain: boolean;
+}
+
+export const onChainPerpPositionValidator = object<OnChainPerpPosition>({
+  chain_id: integer,
+  position_id: string,
+  market_id: string,
+  symbol: marketSymbol,
+  trader: string,
+  is_long: boolean,
+  side: oneOf(['long', 'short'] as const),
+  size: string,
+  collateral: string,
+  entry_price: string,
+  mark_price: string,
+  unrealized_pnl: string,
+  accrued_funding: string,
+  funded_collateral: string,
+  on_chain: boolean,
+});
+
+export const onChainPerpPositionListValidator = listingArray(onChainPerpPositionValidator);
+
+/**
+ * Unsigned calldata returned by an order-building endpoint. The caller's own
+ * wallet signs it; the server never holds a user key.
+ */
+export interface OnChainCall {
+  to: string;
+  data: string;
+  value: string;
+  chain_id: number;
+}
+
+export const onChainCallValidator = object<OnChainCall>({
+  to: address,
+  data: hex,
+  value: string,
+  chain_id: integer,
+});
+
 /** Result of opening a perpetual position. */
 export interface PerpOpenResult {
   success: boolean;

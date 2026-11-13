@@ -38,6 +38,9 @@ import {
   optionSeriesEnvelopeValidator,
   optionSeriesViewListValidator,
   otcOrderListValidator,
+  onChainCallValidator,
+  onChainPerpMarketListValidator,
+  onChainPerpPositionListValidator,
   perpMarketListValidator,
   perpsListingListValidator,
   pairAnalyticsListValidator,
@@ -92,6 +95,16 @@ const SERVER_ADMIN_SETTINGS = `{"id":1,"key":"default","maintenance_mode":false,
 const SERVER_ADMIN_LOGS = `{"count":0,"logs":[]}`;
 
 const SERVER_PERP_MARKETS = `{"markets":[]}`;
+
+// The on-chain perps handlers emit these shapes. `market_id` is the keccak hash
+// the contract keys markets by; every rate and amount is an exact integer
+// string in the settlement token's smallest unit. Mirrors
+// `OnChainPerpsService.MarketsHandler` and `positionView`.
+const SERVER_ONCHAIN_PERP_MARKETS = `{"markets":[{"chain_id":8453,"symbol":"BTC/RUSD","market_id":"0x9f5a44e1a0b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c","token":"0x833589fcd6edb6e08f4c7c32d4f71b54bda02913","max_leverage":"20000000000000000000","liquidation_fee":"5000000000000000","maintenance_margin_rate":"5000000000000000","initial_margin_rate":"8000000000000000","open_fee":"0","max_open_interest":"1000000000000000000000000","open_interest":"0","is_active":true}],"count":1}`;
+
+const SERVER_ONCHAIN_PERP_POSITIONS = `{"positions":[{"chain_id":8453,"position_id":"0x1111111111111111111111111111111111111111111111111111111111111111","market_id":"0x9f5a44e1a0b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c","symbol":"BTC/RUSD","trader":"0x1234567890123456789012345678901234567890","is_long":true,"side":"long","size":"1000000000000000000000","collateral":"100000000000000000000","entry_price":"65000000000000000000000","mark_price":"65000000000000000000000","unrealized_pnl":"0","accrued_funding":"0","funded_collateral":"100000000000000000000","on_chain":true}],"count":1}`;
+
+const SERVER_ONCHAIN_CALL = `{"to":"0x2222222222222222222222222222222222222222","data":"0x12345678","value":"0","chain_id":8453}`;
 
 const SERVER_FUTURES_LIST = `{"count":1,"markets":[{"id":"186c6bc6-619b-4d36-87a6-e9be2dfdced6","symbol":"BTC/RUSD","contract_type":"RUSD_M","base_asset":"BTC","quote_asset":"RUSD","settlement":"RUSD","contract_size":"1","tick_size":"0.1","max_leverage":200,"min_order_size":"1","funding_rate":"0.0001","funding_interval_hours":8,"funding_rate_cap":"0.01","oracle_sources":"","maintenance_margin_rate":0.005,"initial_margin_rate":0.008,"liquidation_fee_rate":0.005,"insurance_fund_share":0.1,"maker_fee_rate":0,"taker_fee_rate":0.0002,"status":"paused","listing_type":"perpetual","is_tradfi":false,"created_at":"2026-10-31T04:06:45.968928Z","updated_at":"2026-10-31T04:06:45.968928Z"}]}`;
 
@@ -258,6 +271,40 @@ test("live /admin/margin/markets payload satisfies marginListingListValidator", 
 
 test("live /perpetuals/markets payload satisfies perpMarketListValidator", () => {
   assert.deepEqual(parse(perpMarketListValidator, SERVER_PERP_MARKETS, "perpMarkets"), []);
+});
+
+test("live /onchain/perps/markets payload satisfies onChainPerpMarketListValidator", () => {
+  const markets = parse(onChainPerpMarketListValidator, SERVER_ONCHAIN_PERP_MARKETS, "onChainPerpMarkets");
+  assert.equal(markets.length, 1);
+  assert.equal(markets[0].symbol, "BTC/RUSD");
+  assert.equal(markets[0].chain_id, 8453);
+  assert.equal(markets[0].max_leverage, "20000000000000000000");
+  assert.equal(markets[0].is_active, true);
+});
+
+test("live /onchain/perps/positions payload satisfies onChainPerpPositionListValidator", () => {
+  const positions = parse(
+    onChainPerpPositionListValidator,
+    SERVER_ONCHAIN_PERP_POSITIONS,
+    "onChainPerpPositions",
+  );
+  assert.equal(positions.length, 1);
+  assert.equal(positions[0].side, "long");
+  assert.equal(positions[0].on_chain, true);
+  assert.equal(positions[0].position_id.length, 66);
+});
+
+test("on-chain order-building payload satisfies onChainCallValidator", () => {
+  const call = parse(onChainCallValidator, SERVER_ONCHAIN_CALL, "onChainCall");
+  assert.equal(call.chain_id, 8453);
+  assert.equal(call.data, "0x12345678");
+});
+
+test("on-chain validators drop a row whose market_id is not a hash string", () => {
+  // A market with no id cannot be traded against; it must be dropped rather than
+  // rendered with an empty identifier.
+  const broken = `[{"chain_id":1,"symbol":"ETH/RUSD","market_id":null,"token":"0x0000000000000000000000000000000000000000","max_leverage":"1","liquidation_fee":"0","maintenance_margin_rate":"0","initial_margin_rate":"0","open_fee":"0","max_open_interest":"0","open_interest":"0","is_active":true}]`;
+  assert.deepEqual(parse(onChainPerpMarketListValidator, broken, "broken"), []);
 });
 
 test("live /swap/quote payload satisfies swapQuoteValidator", () => {

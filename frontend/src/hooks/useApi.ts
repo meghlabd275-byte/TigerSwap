@@ -49,6 +49,9 @@ import type {
   OptionPositionView,
   OptionSeriesView,
   OtcOrder,
+  OnChainCall,
+  OnChainPerpMarket,
+  OnChainPerpPosition,
   PerpMarket,
   PerpOrder,
   PerpPosition,
@@ -346,6 +349,136 @@ export function useCancelPerpOrder() {
     mutationFn: (orderId: string) => endpoints.cancelPerpOrder(orderId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["perps", "orders"] });
+    },
+  });
+}
+
+/** The on-chain perpetual markets across every configured chain. */
+export function useOnChainPerpMarkets(): UseQueryResult<OnChainPerpMarket[], Error> {
+  return useQuery<OnChainPerpMarket[], Error>({
+    queryKey: ["onchain", "perps", "markets"],
+    queryFn: () => endpoints.getOnChainPerpMarkets(),
+    refetchInterval: REFRESH.normal,
+    retry: shouldRetry,
+  });
+}
+
+/** The authenticated caller's on-chain positions for one chain. */
+export function useOnChainPerpPositions(
+  chainId: number | null,
+  enabled = true,
+): UseQueryResult<OnChainPerpPosition[], Error> {
+  return useQuery<OnChainPerpPosition[], Error>({
+    queryKey: ["onchain", "perps", "positions", chainId],
+    queryFn: () => endpoints.getOnChainPerpPositions(chainId as number),
+    enabled: enabled && chainId !== null && isAuthenticated(),
+    refetchInterval: REFRESH.fast,
+    retry: shouldRetry,
+  });
+}
+
+/**
+ * Builds unsigned calldata that opens an on-chain position, then hands it to the
+ * caller's wallet to sign and broadcast. The server never holds a user key.
+ */
+export function useBuildOnChainOpen() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      symbol: string;
+      size: string;
+      collateral: string;
+      side: 'long' | 'short';
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainOpen({
+        chain_id: params.chain_id,
+        symbol: params.symbol,
+        size: params.size,
+        collateral: params.collateral,
+        side: params.side,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "positions"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts a close for one of the caller's positions. */
+export function useBuildOnChainClose() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      position_id: string;
+      chain_id: number;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainClose(params.position_id, params.chain_id);
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "positions"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts a margin change for one of the caller's positions. */
+export function useBuildOnChainMargin() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      position_id: string;
+      amount: string;
+      add: boolean;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = params.add
+        ? await endpoints.buildOnChainAddMargin({
+            chain_id: params.chain_id,
+            position_id: params.position_id,
+            amount: params.amount,
+          })
+        : await endpoints.buildOnChainRemoveMargin({
+            chain_id: params.chain_id,
+            position_id: params.position_id,
+            amount: params.amount,
+          });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "positions"] });
+    },
+  });
+}
+
+/** Builds, signs and broadcasts an LP liquidity deposit to an on-chain pool. */
+export function useBuildOnChainLiquidity() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (params: {
+      chain_id: number;
+      symbol: string;
+      amount: string;
+      send: (transaction: OnChainCall) => Promise<string>;
+    }) => {
+      const call = await endpoints.buildOnChainLiquidity({
+        chain_id: params.chain_id,
+        symbol: params.symbol,
+        amount: params.amount,
+      });
+      return params.send(call);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "markets"] });
+      void queryClient.invalidateQueries({ queryKey: ["onchain", "perps", "positions"] });
     },
   });
 }

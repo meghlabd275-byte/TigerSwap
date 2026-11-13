@@ -53,6 +53,9 @@ import {
   NFTOfferView,
   NFTToken,
   OtcOrder,
+  OnChainCall,
+  OnChainPerpMarket,
+  OnChainPerpPosition,
   OptionBuyResult,
   OptionExerciseResult,
   OptionPositionView,
@@ -147,6 +150,9 @@ import {
   pairAnalyticsListValidator,
   otcOrderListValidator,
   otcOrderValidator,
+  onChainCallValidator,
+  onChainPerpMarketListValidator,
+  onChainPerpPositionListValidator,
   perpMarketListValidator,
   perpOpenResultValidator,
   perpOrderListValidator,
@@ -464,6 +470,73 @@ export const endpoints = {
   /** Cancels one of the authenticated caller's own pending perpetual orders. */
   async cancelPerpOrder(orderId: string): Promise<void> {
     await api.delete(`/perpetual/orders/${encodeURIComponent(orderId)}`);
+  },
+
+  /**
+   * The on-chain perpetual markets for every configured chain. The chain is the
+   * source of truth; the response is validated before a component sees it.
+   */
+  async getOnChainPerpMarkets(): Promise<OnChainPerpMarket[]> {
+    const body = await apiRequest("/onchain/perps/markets", { authenticated: false, timeoutMs: 12000 });
+    return onChainPerpMarketListValidator(body);
+  },
+
+  /** The authenticated caller's on-chain positions, resolved from their wallet. */
+  async getOnChainPerpPositions(chainId: number): Promise<OnChainPerpPosition[]> {
+    const body = await api.get("/onchain/perps/positions", { query: { chain_id: chainId } });
+    return onChainPerpPositionListValidator(body);
+  },
+
+  /** Unsigned calldata that opens an on-chain position for the caller to sign. */
+  async buildOnChainOpen(payload: {
+    chain_id: number;
+    symbol: string;
+    size: string;
+    collateral: string;
+    side: 'long' | 'short';
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perps/open", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that closes one of the caller's own on-chain positions. */
+  async buildOnChainClose(positionId: string, chainId: number): Promise<OnChainCall> {
+    const body = await api.post(
+      `/onchain/perps/positions/${encodeURIComponent(positionId)}/close`,
+      undefined,
+      { query: { chain_id: chainId } },
+    );
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that adds margin to one of the caller's own positions. */
+  async buildOnChainAddMargin(payload: {
+    chain_id: number;
+    position_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perps/margin/add", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that removes margin from one of the caller's own positions. */
+  async buildOnChainRemoveMargin(payload: {
+    chain_id: number;
+    position_id: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perps/margin/remove", payload);
+    return onChainCallValidator(body);
+  },
+
+  /** Unsigned calldata that adds LP liquidity to an on-chain perps pool. */
+  async buildOnChainLiquidity(payload: {
+    chain_id: number;
+    symbol: string;
+    amount: string;
+  }): Promise<OnChainCall> {
+    const body = await api.post("/onchain/perps/liquidity", payload);
+    return onChainCallValidator(body);
   },
 
   /** Opens a spot margin account for the authenticated caller. */
