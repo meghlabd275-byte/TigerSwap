@@ -327,16 +327,16 @@ func (s *FeeCollectorService) RecordWithdrawFee(token, amount, txHash string, ch
 	feeAmount := feeAmountFloat(feeExact)
 
 	record := &FeeRecord{
-		ID:            "withdraw_" + uuid.NewString(),
-		Type:          "withdraw",
-		Amount:        amount,
-		Token:         token,
-		ChainID:       chainID,
-		UserAddress:   userAddress,
-		TxHash:        txHash,
-		FeeCharged:    feeAmount,
-		Timestamp:     time.Now(),
-		Status:        "collected",
+		ID:          "withdraw_" + uuid.NewString(),
+		Type:        "withdraw",
+		Amount:      amount,
+		Token:       token,
+		ChainID:     chainID,
+		UserAddress: userAddress,
+		TxHash:      txHash,
+		FeeCharged:  feeAmount,
+		Timestamp:   time.Now(),
+		Status:      "collected",
 	}
 
 	if err := s.persistFeeRecord(record); err != nil {

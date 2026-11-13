@@ -46,11 +46,11 @@ type WalletService struct {
 	compliance *ComplianceService
 	// feeCollector supplies the withdrawal fee so the platform's cut is charged to
 	// the ledger rather than only recorded. It is nil in a test that does not use it.
-	feeCollector *FeeCollectorService
-	masterKeys       map[string]*ecdsa.PrivateKey
-	encryptionKey    []byte
-	hdSeed           []byte
-	mu               sync.RWMutex
+	feeCollector  *FeeCollectorService
+	masterKeys    map[string]*ecdsa.PrivateKey
+	encryptionKey []byte
+	hdSeed        []byte
+	mu            sync.RWMutex
 }
 
 // NewWalletService builds a wallet service. The encryption key is read from
