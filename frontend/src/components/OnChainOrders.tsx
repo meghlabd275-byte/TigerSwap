@@ -40,8 +40,20 @@ const NO_EXPIRY_ORDER_TYPES: readonly OrderType[] = ['gtc', 'ioc'];
 const MAX_DECIMALS = 18;
 
 async function sendCall(call: OnChainCall): Promise<string> {
-  const { sendTransaction } = await import('@/lib/wallet');
-  return sendTransaction({ to: call.to, data: call.data, value: call.value });
+  const { sendTransaction, waitForTransactionReceipt } = await import('@/lib/wallet');
+  const hash = await sendTransaction({ to: call.to, data: call.data, value: call.value });
+  await waitForTransactionReceipt(hash);
+  return hash;
+}
+
+/**
+ * Approves `amount` of `token` to the orders contract and waits for the
+ * approval to be mined, so the escrow pull that follows cannot revert.
+ */
+async function approveToken(token: string, spender: string, amount: bigint): Promise<void> {
+  const { approveErc20, waitForTransactionReceipt } = await import('@/lib/wallet');
+  const hash = await approveErc20(token, spender, amount);
+  await waitForTransactionReceipt(hash);
 }
 
 /** Converts a human decimal amount into an exact integer string of base units. */
@@ -150,6 +162,7 @@ export function OnChainOrders() {
       token_in: selectedIn.address,
       token_out: selectedOut.address,
       amount_in: amountWei,
+      approve: approveToken,
       send: sendCall,
     };
     if (amountOutMin.trim()) {
@@ -208,11 +221,18 @@ export function OnChainOrders() {
       setFormError('TWAMM duration must be a positive number of hours.');
       return;
     }
+    // The whole sellRate * duration is escrowed up front, so the approval has
+    // to cover the full escrow, not just the first interval.
+    const durationSeconds = BigInt(Math.round(hours) * 3600);
+    const escrow = (BigInt(sellRateWei) * durationSeconds).toString();
     buildTwamm.mutate({
       chain_id: activeChainId,
       is_token0: twammIsToken0,
       sell_rate: sellRateWei,
       duration_hours: Math.round(hours),
+      sell_token: sellToken?.address ?? '',
+      escrow,
+      approve: approveToken,
       send: sendCall,
     });
   };

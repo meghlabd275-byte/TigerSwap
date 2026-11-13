@@ -226,6 +226,115 @@ export async function getErc20Decimals(
 }
 
 /**
+ * Reads the ERC-20 allowance a spender may pull from an owner.
+ *
+ * `allowance(address,address)` is `0xdd62ed3e`, so the calldata is the selector
+ * followed by the two 32-byte left-padded addresses.
+ */
+export async function getErc20Allowance(
+  tokenAddress: string,
+  owner: string,
+  spender: string,
+  provider?: Eip1193Provider,
+): Promise<bigint> {
+  const active = provider ?? getInjectedProvider();
+  if (!active) {
+    throw new WalletError("No wallet detected", "no_provider");
+  }
+
+  const token = addressValidator(tokenAddress, "tokenAddress");
+  const from = addressValidator(owner, "owner");
+  const to = addressValidator(spender, "spender");
+  const data = `0xdd62ed3e${from.slice(2).toLowerCase().padStart(64, "0")}${to
+    .slice(2)
+    .toLowerCase()
+    .padStart(64, "0")}`;
+
+  const raw = await active.request({
+    method: "eth_call",
+    params: [{ to: token, data }, "latest"],
+  });
+
+  const text = string(raw, "eth_call");
+  if (!/^0x[0-9a-fA-F]*$/.test(text)) {
+    throw new ValidationError("eth_call returned a non-hex value", "eth_call");
+  }
+  return text === "0x" ? 0n : BigInt(text);
+}
+
+/**
+ * Approves a spender to pull `amount` of an ERC-20 and returns the tx hash.
+ *
+ * `approve(address,uint256)` is `0x095ea7b3`. A contract that pulls funds with
+ * `transferFrom` (the order book's deposit, liquidity and insurance calls) can
+ * only succeed after this allowance exists, so the funding flow must send it
+ * first.
+ */
+export async function approveErc20(
+  tokenAddress: string,
+  spender: string,
+  amount: bigint,
+  provider?: Eip1193Provider,
+): Promise<string> {
+  if (amount <= 0n) {
+    throw new ValidationError("approval amount must be positive", "amount");
+  }
+  const token = addressValidator(tokenAddress, "tokenAddress");
+  const to = addressValidator(spender, "spender");
+  const data = `0x095ea7b3${to.slice(2).toLowerCase().padStart(64, "0")}${amount
+    .toString(16)
+    .padStart(64, "0")}`;
+  return sendTransaction({ to: token, data }, provider);
+}
+
+/**
+ * Waits for a transaction to be mined and rejects if it reverted.
+ *
+ * A wallet returning a hash only means the transaction was broadcast; the
+ * receipt's `status` is what says the call succeeded. Polling `eth_getTransactionReceipt`
+ * is the only way to learn that, and a `0x0` status means the transaction was
+ * included but reverted.
+ */
+export async function waitForTransactionReceipt(
+  txHash: string,
+  provider?: Eip1193Provider,
+  options?: { pollIntervalMs?: number; timeoutMs?: number },
+): Promise<{ blockNumber: bigint }> {
+  const active = provider ?? getInjectedProvider();
+  if (!active) {
+    throw new WalletError("No wallet detected", "no_provider");
+  }
+  const hash = string(txHash, "txHash");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(hash)) {
+    throw new ValidationError("transaction hash is not 32 bytes", "txHash");
+  }
+
+  const pollIntervalMs = options?.pollIntervalMs ?? 1500;
+  const timeoutMs = options?.timeoutMs ?? 180_000;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const raw = await active.request({
+      method: "eth_getTransactionReceipt",
+      params: [hash],
+    });
+    if (raw !== null && raw !== undefined) {
+      const receipt = raw as { status?: unknown; blockNumber?: unknown };
+      const status = receipt.status === undefined ? undefined : string(receipt.status, "status");
+      if (status !== undefined && BigInt(status) === 0n) {
+        throw new WalletError("transaction reverted on chain", "tx_reverted");
+      }
+      const block = receipt.blockNumber === undefined ? undefined : string(receipt.blockNumber, "blockNumber");
+      return { blockNumber: block === undefined ? 0n : BigInt(block) };
+    }
+    if (Date.now() >= deadline) {
+      throw new WalletError("timed out waiting for the transaction to be mined", "tx_timeout");
+    }
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+}
+
+/**
  * Sends a transaction through the wallet and returns the transaction hash.
  *
  * The wallet signs and broadcasts; the page only constructs the request.

@@ -559,6 +559,8 @@ export function useBuildPerpBookDeposit() {
       chain_id: number;
       market_id: string;
       amount: string;
+      token?: string;
+      approve: (token: string, spender: string, amount: bigint) => Promise<void>;
       send: (transaction: OnChainCall) => Promise<string>;
     }) => {
       const call = await endpoints.buildPerpBookDeposit({
@@ -566,6 +568,11 @@ export function useBuildPerpBookDeposit() {
         market_id: params.market_id,
         amount: params.amount,
       });
+      // The contract pulls the margin with transferFrom, so the allowance has to
+      // exist before the deposit is broadcast.
+      if (params.token) {
+        await params.approve(params.token, call.to, BigInt(params.amount));
+      }
       return params.send(call);
     },
     onSuccess: () => {
@@ -654,6 +661,8 @@ export function useBuildPerpBookLiquidity() {
       chain_id: number;
       market_id: string;
       amount: string;
+      token?: string;
+      approve: (token: string, spender: string, amount: bigint) => Promise<void>;
       remove?: boolean;
       send: (transaction: OnChainCall) => Promise<string>;
     }) => {
@@ -665,6 +674,10 @@ export function useBuildPerpBookLiquidity() {
       const call = params.remove
         ? await endpoints.buildPerpBookRemoveLiquidity(payload)
         : await endpoints.buildPerpBookAddLiquidity(payload);
+      // Adding liquidity pulls the tokens; removing it does not.
+      if (!params.remove && params.token) {
+        await params.approve(params.token, call.to, BigInt(params.amount));
+      }
       return params.send(call);
     },
     onSuccess: () => {
@@ -681,6 +694,8 @@ export function useBuildPerpBookInsurance() {
       chain_id: number;
       market_id: string;
       amount: string;
+      token?: string;
+      approve: (token: string, spender: string, amount: bigint) => Promise<void>;
       send: (transaction: OnChainCall) => Promise<string>;
     }) => {
       const call = await endpoints.buildPerpBookDepositInsurance({
@@ -688,6 +703,9 @@ export function useBuildPerpBookInsurance() {
         market_id: params.market_id,
         amount: params.amount,
       });
+      if (params.token) {
+        await params.approve(params.token, call.to, BigInt(params.amount));
+      }
       return params.send(call);
     },
     onSuccess: () => {
@@ -1019,9 +1037,13 @@ export function useBuildOnChainOrder() {
       expires_in?: number;
       twap_parts?: number;
       twap_interval?: number;
+      approve: (token: string, spender: string, amount: bigint) => Promise<void>;
       send: (transaction: OnChainCall) => Promise<string>;
     }) => {
       const call = await endpoints.buildOnChainOrder(params);
+      // Creating an order escrows the input token, which the contract pulls with
+      // transferFrom, so the allowance has to be in place first.
+      await params.approve(params.token_in, call.to, BigInt(params.amount_in));
       return params.send(call);
     },
     onSuccess: () => {
@@ -1070,9 +1092,15 @@ export function useBuildOnChainTwammOrder() {
       is_token0: boolean;
       sell_rate: string;
       duration_hours: number;
+      sell_token: string;
+      escrow: string;
+      approve: (token: string, spender: string, amount: bigint) => Promise<void>;
       send: (transaction: OnChainCall) => Promise<string>;
     }) => {
       const call = await endpoints.buildOnChainTwammOrder(params);
+      // A TWAMM order escrows sellRate * duration up front, pulled from the
+      // caller, so the allowance must cover the whole escrow.
+      await params.approve(params.sell_token, call.to, BigInt(params.escrow));
       return params.send(call);
     },
     onSuccess: () => {

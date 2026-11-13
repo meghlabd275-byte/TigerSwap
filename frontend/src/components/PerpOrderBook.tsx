@@ -72,8 +72,20 @@ function toBaseUnits(amount: string): string | null {
 }
 
 async function sendCall(call: OnChainCall): Promise<string> {
-  const { sendTransaction } = await import('@/lib/wallet');
-  return sendTransaction({ to: call.to, data: call.data, value: call.value });
+  const { sendTransaction, waitForTransactionReceipt } = await import('@/lib/wallet');
+  const hash = await sendTransaction({ to: call.to, data: call.data, value: call.value });
+  await waitForTransactionReceipt(hash);
+  return hash;
+}
+
+/**
+ * Approves `amount` of `token` to the order book and waits for the approval to
+ * be mined, so the pull that follows cannot revert for a missing allowance.
+ */
+async function approveToken(token: string, spender: string, amount: bigint): Promise<void> {
+  const { approveErc20, waitForTransactionReceipt } = await import('@/lib/wallet');
+  const hash = await approveErc20(token, spender, amount);
+  await waitForTransactionReceipt(hash);
 }
 
 export function PerpOrderBook() {
@@ -141,6 +153,8 @@ export function PerpOrderBook() {
         chain_id: target.chainId,
         market_id: target.marketId,
         amount,
+        token: selected?.token,
+        approve: approveToken,
         send: sendCall,
       }),
     );
@@ -211,6 +225,8 @@ export function PerpOrderBook() {
         chain_id: target.chainId,
         market_id: target.marketId,
         amount,
+        token: selected?.token,
+        approve: approveToken,
         remove,
         send: sendCall,
       }),
@@ -230,6 +246,8 @@ export function PerpOrderBook() {
         chain_id: target.chainId,
         market_id: target.marketId,
         amount,
+        token: selected?.token,
+        approve: approveToken,
         send: sendCall,
       }),
     );
