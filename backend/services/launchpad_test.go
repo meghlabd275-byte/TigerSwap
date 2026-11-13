@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"math/big"
 	"net/http"
 	"strings"
 	"testing"
@@ -51,6 +52,8 @@ func TestParticipateHandlerUsesSessionWallet(t *testing.T) {
 	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
 		t.Fatalf("UpdateProjectStatus: %v", err)
 	}
+
+	fundLaunchpadAccount(t, svc, user.ID.String())
 
 	rec := runAuthenticatedHandler(t, svc.ParticipateHandler, user.ID.String(), gin.H{
 		"amount": "100",
@@ -164,14 +167,14 @@ func TestParticipateRequiresActiveProject(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "500"); err == nil {
+	if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "500"); err == nil {
 		t.Fatal("expected an error participating in an upcoming project")
 	}
 
 	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
 		t.Fatalf("unexpected error activating project: %v", err)
 	}
-	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "500"); err != nil {
+	if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "500"); err != nil {
 		t.Fatalf("unexpected error participating in an active project: %v", err)
 	}
 }
@@ -192,10 +195,35 @@ func TestValidLaunchpadStatusesIsClosedSet(t *testing.T) {
 func newLaunchpadWithDB(t *testing.T) (*LaunchpadService, *gorm.DB) {
 	t.Helper()
 	db := newListingTestDB(t)
-	if err := db.AutoMigrate(&models.User{}, &models.VeLock{}, &models.LaunchpadProject{}, &models.LaunchpadAllocation{}); err != nil {
+	if err := db.AutoMigrate(&models.User{}, &models.VeLock{}, &models.LaunchpadProject{}, &models.LaunchpadAllocation{}, &models.AccountBalance{}); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	return NewLaunchpadService(db, nil, nil), db
+	svc := NewLaunchpadService(db, nil, nil)
+	svc.SetLedger(NewLedgerService(db), launchpadTestChainID)
+	svc.SetSettlementResolver(launchpadTestSettlement)
+	// The direct-call tests participate as "0xuser"; fund it so a commitment can
+	// actually be escrowed.
+	fundLaunchpadAccount(t, svc, "0xuser")
+	return svc, db
+}
+
+const (
+	launchpadTestChainID = int64(1)
+	launchpadTestToken   = "0xrusd000000000000000000000000000000000001"
+)
+
+func launchpadTestSettlement(_ string) (perpSettlement, error) {
+	return perpSettlement{Symbol: "RUSD", ChainID: launchpadTestChainID, Address: launchpadTestToken, Decimals: 18}, nil
+}
+
+// fundLaunchpadAccount credits an account a large payment-token balance so a
+// commitment can be escrowed.
+func fundLaunchpadAccount(t *testing.T, svc *LaunchpadService, ownerID string) {
+	t.Helper()
+	fund := new(big.Int).Exp(big.NewInt(10), big.NewInt(24), nil)
+	if err := svc.ledger.Credit(ownerID, launchpadTestChainID, launchpadTestToken, "RUSD", 18, fund); err != nil {
+		t.Fatalf("fund launchpad account: %v", err)
+	}
 }
 
 // endProject moves a project's end time into the past directly in the store, so
@@ -225,7 +253,7 @@ func TestLaunchpadStateSurvivesRestart(t *testing.T) {
 	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "250"); err != nil {
+	if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "250"); err != nil {
 		t.Fatalf("participate: %v", err)
 	}
 
@@ -335,7 +363,7 @@ func TestParticipateRejectsMalformedAmount(t *testing.T) {
 	}
 
 	for _, bad := range []string{"abc", "", "-500", "1e5", "0x10", "5 0", "1/2", "  "} {
-		if _, err := svc.Participate(context.Background(), "0xuser", project.ID, bad); err == nil {
+		if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, bad); err == nil {
 			t.Fatalf("amount %q must be rejected", bad)
 		}
 	}
@@ -358,7 +386,7 @@ func TestParticipateAccumulatesRaisedExactly(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "0.1"); err != nil {
+		if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "0.1"); err != nil {
 			t.Fatalf("participate: %v", err)
 		}
 	}
@@ -391,7 +419,7 @@ func TestClaimRejectsZeroPrice(t *testing.T) {
 	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "500"); err != nil {
+	if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "500"); err != nil {
 		t.Fatalf("participate: %v", err)
 	}
 
@@ -418,7 +446,7 @@ func TestClaimComputesExactAmount(t *testing.T) {
 	if err := svc.UpdateProjectStatus(project.ID, "active"); err != nil {
 		t.Fatalf("activate: %v", err)
 	}
-	if _, err := svc.Participate(context.Background(), "0xuser", project.ID, "1000"); err != nil {
+	if _, err := svc.Participate(context.Background(), "0xuser", "0xuser", project.ID, "1000"); err != nil {
 		t.Fatalf("participate: %v", err)
 	}
 	endProject(t, svc, project.ID)

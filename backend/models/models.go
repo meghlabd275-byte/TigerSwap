@@ -477,6 +477,18 @@ type LaunchpadAllocation struct {
 	Tier            string     `gorm:"size:20" json:"tier"`
 	Status          string     `gorm:"size:20;index;default:'pending'" json:"status"`
 
+	// A commitment is escrowed on the platform ledger: OwnerID is the account
+	// whose balance was debited (the ledger is keyed by account, not address) and
+	// the escrow fields record the exact asset so a cancelled project can refund
+	// the committed amount. Refunded is set once the refund has been paid, so a
+	// repeated cancel can never pay twice.
+	OwnerID        string `gorm:"size:64;index" json:"owner_id"`
+	EscrowChainID  int64  `gorm:"default:0" json:"escrow_chain_id"`
+	EscrowToken    string `gorm:"size:42" json:"escrow_token"`
+	EscrowSymbol   string `gorm:"size:20" json:"escrow_symbol"`
+	EscrowDecimals int    `gorm:"default:18" json:"escrow_decimals"`
+	Refunded       bool   `gorm:"default:false" json:"refunded"`
+
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

@@ -30,6 +30,53 @@ type LaunchpadService struct {
 	priceAgg   *PriceAggregator
 	db         *gorm.DB
 	tiers      map[string]*TierConfig
+
+	// ledger escrows a participant's commitment, so a project raise moves real
+	// platform balances rather than an accounting figure. settlementChainID and
+	// settlementResolver name the payment asset a project is denominated in.
+	ledger             *LedgerService
+	settlementChainID  int64
+	settlementResolver func(asset string) (perpSettlement, error)
+}
+
+// SetLedger wires the ledger launchpad commitments escrow against and the chain
+// whose token registry names the payment asset. Without it the service refuses
+// to record a commitment rather than recording one that moves no funds.
+func (s *LaunchpadService) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	s.ledger = ledger
+	s.settlementChainID = settlementChainID
+	if s.settlementResolver == nil {
+		s.settlementResolver = resolveAssetFromConfig(settlementChainID)
+	}
+}
+
+// SetSettlementResolver overrides how a payment asset resolves to a ledger
+// entry. Tests use it to supply a fixed registry.
+func (s *LaunchpadService) SetSettlementResolver(resolver func(asset string) (perpSettlement, error)) {
+	s.settlementResolver = resolver
+}
+
+// paymentLedger resolves a project's payment asset to its ledger entry,
+// requiring both a ledger and a resolver so a deployment that forgets either
+// moves no funds.
+func (s *LaunchpadService) paymentLedger(paymentToken string) (perpSettlement, error) {
+	if s.ledger == nil {
+		return perpSettlement{}, errors.New("launchpad has no ledger configured; commitments cannot be escrowed")
+	}
+	if s.settlementResolver == nil {
+		return perpSettlement{}, fmt.Errorf("no payment asset resolver configured for %s", paymentToken)
+	}
+	resolved, err := s.settlementResolver(paymentToken)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if resolved.Symbol == "" || resolved.Address == "" {
+		return perpSettlement{}, fmt.Errorf("payment asset %s has no resolvable ledger entry", paymentToken)
+	}
+	if resolved.Decimals < 0 || resolved.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("payment asset %s has invalid decimals %d", paymentToken, resolved.Decimals)
+	}
+	return resolved, nil
 }
 
 // LaunchpadProject represents a launchpad project
@@ -197,6 +244,37 @@ func (s *LaunchpadService) UpdateProjectStatus(projectID, status string) error {
 	if err != nil {
 		return errLaunchpadProjectNotFound
 	}
+	// Cancelling a project refunds every commitment that was escrowed and not yet
+	// refunded, in one transaction with the status change, so a cancellation can
+	// never leave a participant's funds stranded.
+	if status == "cancelled" {
+		return s.db.Transaction(func(tx *gorm.DB) error {
+			var project models.LaunchpadProject
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				First(&project, "id = ?", id).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errLaunchpadProjectNotFound
+				}
+				return err
+			}
+			if project.Status == "cancelled" {
+				return nil
+			}
+			var allocations []models.LaunchpadAllocation
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("project_id = ? AND refunded = ?", project.ID, false).Find(&allocations).Error; err != nil {
+				return err
+			}
+			for i := range allocations {
+				if err := s.refundAllocation(tx, &allocations[i]); err != nil {
+					return err
+				}
+			}
+			return tx.Model(&models.LaunchpadProject{}).Where("id = ?", project.ID).
+				Update("status", "cancelled").Error
+		})
+	}
+
 	res := s.db.Model(&models.LaunchpadProject{}).Where("id = ?", id).Update("status", status)
 	if res.Error != nil {
 		return fmt.Errorf("update project status: %w", res.Error)
@@ -207,12 +285,38 @@ func (s *LaunchpadService) UpdateProjectStatus(projectID, status string) error {
 	return nil
 }
 
+// refundAllocation credits a commitment back to the participant and marks it
+// refunded in the caller's transaction, so a repeated cancellation cannot pay
+// twice. A row with no recorded escrow (a legacy commitment) is skipped rather
+// than refunded an invented amount.
+func (s *LaunchpadService) refundAllocation(tx *gorm.DB, allocation *models.LaunchpadAllocation) error {
+	if allocation.Refunded {
+		return nil
+	}
+	if allocation.OwnerID == "" || allocation.EscrowToken == "" || allocation.AllocatedAmount == "" {
+		return tx.Model(&models.LaunchpadAllocation{}).Where("id = ?", allocation.ID).
+			Update("refunded", true).Error
+	}
+	amount, err := parseDecimal(allocation.AllocatedAmount)
+	if err != nil {
+		return fmt.Errorf("stored allocation is invalid: %w", err)
+	}
+	units := scaleToBaseUnits(amount, allocation.EscrowDecimals)
+	if units.Sign() > 0 {
+		if err := s.ledger.creditWithin(tx, allocation.OwnerID, allocation.EscrowChainID, allocation.EscrowToken, allocation.EscrowSymbol, allocation.EscrowDecimals, units); err != nil {
+			return err
+		}
+	}
+	return tx.Model(&models.LaunchpadAllocation{}).Where("id = ?", allocation.ID).
+		Update("refunded", true).Error
+}
+
 // Participate records a participant's commitment. The project row and the
 // participant's allocation row are both re-read under a FOR UPDATE lock inside
 // one transaction, so two concurrent commitments cannot overshoot the hard cap
 // or a participant's maximum purchase, and the raised total always matches the
 // sum of the allocations.
-func (s *LaunchpadService) Participate(ctx context.Context, userAddress, projectID, amount string) (*Allocation, error) {
+func (s *LaunchpadService) Participate(ctx context.Context, ownerID, userAddress, projectID, amount string) (*Allocation, error) {
 	if s.db == nil {
 		return nil, fmt.Errorf("launchpad store is not configured")
 	}
@@ -297,17 +401,35 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 			return fmt.Errorf("amount exceeds maximum purchase")
 		}
 
+		// The commitment is escrowed from the participant's own platform balance in
+		// the same transaction that records it, so a raise can never be recorded
+		// without the funds behind it and a cancelled project can refund exactly
+		// what was committed.
+		payment, err := s.paymentLedger(project.PaymentToken)
+		if err != nil {
+			return err
+		}
+		commitUnits := scaleToBaseUnits(amountValue, payment.Decimals)
+		if commitUnits.Sign() <= 0 {
+			return fmt.Errorf("amount is below one base unit of %s", payment.Symbol)
+		}
+		if err := s.ledger.debitWithin(tx, ownerID, payment.ChainID, payment.Address, commitUnits); err != nil {
+			return err
+		}
+
 		if hasExisting {
 			newAllocated := formatDecimal(new(big.Rat).Add(running, amountValue), 8)
 			if err := tx.Model(&models.LaunchpadAllocation{}).Where("id = ?", existing.ID).
 				Updates(map[string]interface{}{
 					"allocated_amount": newAllocated,
 					"tier":             tier,
+					"owner_id":         ownerID,
 				}).Error; err != nil {
 				return err
 			}
 			existing.AllocatedAmount = newAllocated
 			existing.Tier = tier
+			existing.OwnerID = ownerID
 			stored = existing
 		} else {
 			stored = models.LaunchpadAllocation{
@@ -317,6 +439,11 @@ func (s *LaunchpadService) Participate(ctx context.Context, userAddress, project
 				ClaimedAmount:   "0",
 				Tier:            tier,
 				Status:          "pending",
+				OwnerID:         ownerID,
+				EscrowChainID:   payment.ChainID,
+				EscrowToken:     payment.Address,
+				EscrowSymbol:    payment.Symbol,
+				EscrowDecimals:  payment.Decimals,
 				CreatedAt:       now,
 			}
 			if err := tx.Create(&stored).Error; err != nil {
@@ -738,6 +865,31 @@ func (s *LaunchpadService) CreateProjectHandler(c *gin.Context) {
 	c.JSON(200, project)
 }
 
+// callerWalletAndAccount resolves both the bound wallet address and the account
+// id of the authenticated caller. Participation escrows against the account's
+// ledger balance (keyed by account) but records the allocation under the wallet
+// address, so both are needed and neither is read from the request.
+func (s *LaunchpadService) callerWalletAndAccount(c *gin.Context) (address, accountID string, ok bool) {
+	userID, authed := authenticatedUserID(c)
+	if !authed {
+		return "", "", false
+	}
+	if s.db == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "launchpad store not configured"})
+		return "", "", false
+	}
+	var user models.User
+	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "no wallet is bound to this account"})
+		return "", "", false
+	}
+	if !common.IsHexAddress(user.WalletAddress) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "account has no usable wallet address"})
+		return "", "", false
+	}
+	return strings.ToLower(user.WalletAddress), user.ID.String(), true
+}
+
 // callerWalletAddress resolves the wallet address bound to the authenticated
 // caller. Launchpad participation and claims act on the caller's own wallet, so
 // a client can never participate as, or claim to, another address.
@@ -829,13 +981,17 @@ func (s *LaunchpadService) ParticipateHandler(c *gin.Context) {
 		return
 	}
 
-	userAddress, ok := s.callerWalletAddress(c)
+	userAddress, ownerID, ok := s.callerWalletAndAccount(c)
 	if !ok {
 		return
 	}
 
-	allocation, err := s.Participate(c.Request.Context(), userAddress, c.Param("id"), req.Amount)
+	allocation, err := s.Participate(c.Request.Context(), ownerID, userAddress, c.Param("id"), req.Amount)
 	if err != nil {
+		if errors.Is(err, ErrInsufficientBalance) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Insufficient balance to fund this commitment"})
+			return
+		}
 		respondInternalError(c, err)
 		return
 	}

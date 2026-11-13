@@ -234,6 +234,7 @@ func main() {
 	marginEngine.SetLedger(ledgerService, services.PerpSettlementChainID())
 	otcService.SetLedger(ledgerService, services.PerpSettlementChainID())
 	copyTradingEngine.SetLedger(ledgerService, services.PerpSettlementChainID())
+	launchpadService.SetLedger(ledgerService, services.PerpSettlementChainID())
 
 	// Liquidity mining and token distribution. Both escrow a real ledger
 	// balance, so a farm reward or an airdrop claim can only pay out what was
