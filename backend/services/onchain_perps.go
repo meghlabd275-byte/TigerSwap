@@ -46,6 +46,11 @@ type OnChainPerpsService struct {
 
 	keeperKey *ecdsa.PrivateKey
 
+	// ownerKey signs owner-only calls (createMarket). The contract owner is not
+	// the keeper, so market creation uses this key while liquidations and oracle
+	// pushes use the keeper key.
+	ownerKey *ecdsa.PrivateKey
+
 	running bool
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -86,6 +91,94 @@ func (s *OnChainPerpsService) SetKeeperKey(key *ecdsa.PrivateKey) {
 			log.Printf("on-chain perps: could not re-key chain %d: %v", d.ChainID, err)
 		}
 	}
+}
+
+// SetOwnerKey wires the signer used for owner-only on-chain calls, currently
+// createMarket. It is optional: without it the admin create handler still
+// persists the listing but refuses to claim the market exists on chain.
+func (s *OnChainPerpsService) SetOwnerKey(key *ecdsa.PrivateKey) {
+	s.mu.Lock()
+	s.ownerKey = key
+	s.mu.Unlock()
+}
+
+// CreateMarketOnChain creates a market on the deployed contract, signed by the
+// owner key. It is idempotent: a market that already exists on chain is reported
+// as such rather than sent again, because createMarket reverts on a duplicate.
+func (s *OnChainPerpsService) CreateMarketOnChain(ctx context.Context, chainID int64, symbol, settlementToken string, maxLeverage int, maintenanceMargin, liquidationFee float64) error {
+	s.mu.Lock()
+	ownerKey := s.ownerKey
+	s.mu.Unlock()
+	if ownerKey == nil {
+		return errors.New("no owner key configured (set TIGERSWAP_PERPS_OWNER_KEY)")
+	}
+
+	client, err := s.client(chainID)
+	if err != nil {
+		return err
+	}
+	if !common.IsHexAddress(settlementToken) {
+		return fmt.Errorf("settlement token %q is not a valid address", settlementToken)
+	}
+	token := common.HexToAddress(settlementToken)
+
+	marketID := perps.MarketID(symbol)
+	if existing, err := client.Market(ctx, marketID); err == nil && existing.Token != (common.Address{}) {
+		return nil
+	}
+
+	call, err := client.BuildCreateMarket(
+		marketID,
+		token,
+		perps.LeverageWAD(maxLeverage),
+		perps.RatioWAD(liquidationFee),
+		perps.RatioWAD(maintenanceMargin),
+		perps.InitialMarginWAD(maxLeverage),
+	)
+	if err != nil {
+		return err
+	}
+	receipt, err := client.SendWithKey(ctx, call, ownerKey)
+	if err != nil {
+		return fmt.Errorf("createMarket %s on chain %d: %w", symbol, chainID, err)
+	}
+	log.Printf("on-chain perps: created market %s on chain %d (tx %s)", symbol, chainID, receipt.TxHash.Hex())
+	return nil
+}
+
+// MirrorPerpsMarket creates the on-chain market for a freshly persisted perps
+// listing. It resolves the chain (the single configured one, or the first that
+// has a settlement token registered) and the settlement token from the platform
+// token table, then calls CreateMarketOnChain. A listing with no configured
+// chain, or with no on-chain settlement token, is skipped rather than guessed.
+func (s *OnChainPerpsService) MirrorPerpsMarket(ctx context.Context, market *models.PerpsMarket) error {
+	if s.db == nil || market == nil {
+		return nil
+	}
+	settlement := "RUSD"
+	if assets := strings.Split(market.CollateralAssets, ","); len(assets) > 0 {
+		if first := strings.ToUpper(strings.TrimSpace(assets[0])); first != "" {
+			settlement = first
+		}
+	}
+	chains := s.Chains()
+	if len(chains) == 0 {
+		return nil
+	}
+
+	for _, chainID := range chains {
+		var token models.Token
+		err := s.db.Where("chain_id = ? AND symbol = ? AND is_active = ?", chainID, settlement, true).
+			First(&token).Error
+		if err != nil {
+			continue
+		}
+		if !common.IsHexAddress(token.Address) {
+			return fmt.Errorf("settlement token %s on chain %d has no on-chain address", settlement, chainID)
+		}
+		return s.CreateMarketOnChain(ctx, chainID, market.Symbol, token.Address, market.MaxLeverage, market.MaintenanceMarginRate, market.LiquidationFeeRate)
+	}
+	return nil
 }
 
 // LoadDeployments registers every configured on-chain perps deployment. It is a
@@ -869,7 +962,11 @@ func (s *OnChainPerpsService) liquidateUnhealthy(ctx context.Context, chainID in
 		if err != nil {
 			continue
 		}
-		if !belowMaintenanceMargin(position, market, price) {
+		funding, err := client.FundingInfo(ctx, position.MarketID)
+		if err != nil {
+			continue
+		}
+		if !belowMaintenanceMargin(position, market, price, funding, time.Now().Unix()) {
 			continue
 		}
 		call, err := client.BuildLiquidatePosition(common.HexToHash(row.PositionID))
@@ -893,18 +990,22 @@ func (s *OnChainPerpsService) liquidateUnhealthy(ctx context.Context, chainID in
 	return nil
 }
 
-// belowMaintenanceMargin mirrors TigerSwapPerpetuals.liquidatePosition.
-func belowMaintenanceMargin(position *perps.Position, market *perps.Market, price *big.Int) bool {
+// belowMaintenanceMargin mirrors TigerSwapPerpetuals.liquidatePosition, which
+// applies accrued funding before the health check. A keeper that ignored funding
+// would miss exactly the positions funding is meant to close, so the accrual is
+// reproduced here digit for digit against the contract's own math.
+func belowMaintenanceMargin(position *perps.Position, market *perps.Market, price *big.Int, funding *perps.Funding, now int64) bool {
 	if position.Size.Sign() == 0 || position.Collateral.Sign() == 0 {
 		return false
 	}
+	collateral := applyFundingToCollateral(position, funding, now)
 	priceDiff := new(big.Int).Sub(price, position.EntryPrice)
 	pnl := new(big.Int).Mul(priceDiff, position.Size)
 	pnl.Div(pnl, perps.PricePrecision)
 	if !position.IsLong {
 		pnl.Neg(pnl)
 	}
-	equity := new(big.Int).Add(position.Collateral, pnl)
+	equity := new(big.Int).Add(collateral, pnl)
 	if equity.Sign() <= 0 {
 		return true
 	}
@@ -916,6 +1017,50 @@ func belowMaintenanceMargin(position *perps.Position, market *perps.Market, pric
 	ratio := new(big.Int).Mul(equity, perps.RatioPrecision)
 	ratio.Div(ratio, notional)
 	return ratio.Cmp(market.MaintenanceRate) < 0
+}
+
+// fundingIntervalSeconds mirrors TigerSwapPerpetuals.FUNDING_INTERVAL (1 hours).
+const fundingIntervalSeconds = 3600
+
+// accruedFunding mirrors TigerSwapPerpetuals.calculateFunding: the funding a
+// position owes (positive) or is owed (negative), in settlement units. A nil or
+// zero rate, or no elapsed time, accrues nothing.
+func accruedFunding(position *perps.Position, funding *perps.Funding, now int64) *big.Int {
+	if position.Size.Sign() == 0 || funding == nil || funding.LastFundingRate.Sign() == 0 {
+		return big.NewInt(0)
+	}
+	elapsed := big.NewInt(now - position.LastUpdate.Int64())
+	if elapsed.Sign() <= 0 {
+		return big.NewInt(0)
+	}
+	notional := new(big.Int).Mul(position.Size, position.EntryPrice)
+	notional.Div(notional, perps.PricePrecision)
+	// notional * rate * elapsed / (FUNDING_RATE_PRECISION * FUNDING_INTERVAL)
+	raw := new(big.Int).Mul(notional, funding.LastFundingRate)
+	raw.Mul(raw, elapsed)
+	denom := new(big.Int).Mul(perps.FundingRatePrecision, big.NewInt(fundingIntervalSeconds))
+	raw.Div(raw, denom)
+	if !position.IsLong {
+		raw.Neg(raw)
+	}
+	return raw
+}
+
+// applyFundingToCollateral mirrors TigerSwapPerpetuals._applyFunding, clamped so
+// funding can never drive a position's collateral below zero.
+func applyFundingToCollateral(position *perps.Position, funding *perps.Funding, now int64) *big.Int {
+	funded := new(big.Int).Set(position.Collateral)
+	delta := accruedFunding(position, funding, now)
+	if delta.Sign() == 0 {
+		return funded
+	}
+	if delta.Sign() > 0 {
+		if delta.Cmp(funded) >= 0 {
+			return big.NewInt(0)
+		}
+		return funded.Sub(funded, delta)
+	}
+	return funded.Add(funded, new(big.Int).Neg(delta))
 }
 
 // --- helpers ---
@@ -955,20 +1100,30 @@ func (s *OnChainPerpsService) positionView(ctx context.Context, client *perps.Cl
 	if err != nil {
 		pnl = big.NewInt(0)
 	}
+	// Report accrued funding alongside PnL: it is a real PnL component, so a
+	// client that showed only the price PnL would understate what a position is
+	// worth. A missing funding source is reported as zero, not an estimate.
+	fundingDelta := big.NewInt(0)
+	if funding, err := client.FundingInfo(ctx, position.MarketID); err == nil {
+		fundingDelta = accruedFunding(position, funding, time.Now().Unix())
+	}
+	fundedCollateral := new(big.Int).Sub(position.Collateral, fundingDelta)
 	return gin.H{
-		"chain_id":       chainID,
-		"position_id":    id.Hex(),
-		"market_id":      position.MarketID.Hex(),
-		"symbol":         s.symbolFor(position.MarketID),
-		"trader":         strings.ToLower(position.Trader.Hex()),
-		"is_long":        position.IsLong,
-		"side":           sideLabel(position.IsLong),
-		"size":           position.Size.String(),
-		"collateral":     position.Collateral.String(),
-		"entry_price":    position.EntryPrice.String(),
-		"mark_price":     mark.String(),
-		"unrealized_pnl": pnl.String(),
-		"on_chain":       true,
+		"chain_id":          chainID,
+		"position_id":       id.Hex(),
+		"market_id":         position.MarketID.Hex(),
+		"symbol":            s.symbolFor(position.MarketID),
+		"trader":            strings.ToLower(position.Trader.Hex()),
+		"is_long":           position.IsLong,
+		"side":              sideLabel(position.IsLong),
+		"size":              position.Size.String(),
+		"collateral":        position.Collateral.String(),
+		"entry_price":       position.EntryPrice.String(),
+		"mark_price":        mark.String(),
+		"unrealized_pnl":    pnl.String(),
+		"accrued_funding":   fundingDelta.String(),
+		"funded_collateral": fundedCollateral.String(),
+		"on_chain":          true,
 	}
 }
 

@@ -2,6 +2,7 @@ package perps
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"fmt"
 	"math/big"
@@ -173,7 +174,22 @@ func (c *Client) Send(ctx context.Context, call Call) (*types.Receipt, error) {
 	if c.signer == nil {
 		return nil, ErrNoSigner
 	}
-	from := crypto.PubkeyToAddress(c.signer.PublicKey)
+	return c.sendWith(ctx, call, c.signer)
+}
+
+// SendWithKey submits a call signed by `signer` rather than the client's keeper
+// key. Owner-only calls (createMarket, updateMarket) need the contract owner's
+// key, which is not the keeper's, so a caller can sign a specific call without
+// giving the whole client a different identity.
+func (c *Client) SendWithKey(ctx context.Context, call Call, signer *ecdsa.PrivateKey) (*types.Receipt, error) {
+	if signer == nil {
+		return nil, ErrNoSigner
+	}
+	return c.sendWith(ctx, call, signer)
+}
+
+func (c *Client) sendWith(ctx context.Context, call Call, signer *ecdsa.PrivateKey) (*types.Receipt, error) {
+	from := crypto.PubkeyToAddress(signer.PublicKey)
 	nonce, err := c.client.PendingNonceAt(ctx, from)
 	if err != nil {
 		return nil, fmt.Errorf("pending nonce: %w", err)
@@ -192,7 +208,7 @@ func (c *Client) Send(ctx context.Context, call Call) (*types.Receipt, error) {
 		return nil, err
 	}
 	tx := types.NewTransaction(nonce, call.To, value, gasLimit, gasPrice, call.Data)
-	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(c.deployment.ChainID)), c.signer)
+	signed, err := types.SignTx(tx, types.LatestSignerForChainID(big.NewInt(c.deployment.ChainID)), signer)
 	if err != nil {
 		return nil, fmt.Errorf("sign tx: %w", err)
 	}

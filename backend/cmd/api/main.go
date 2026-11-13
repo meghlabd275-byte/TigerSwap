@@ -208,12 +208,26 @@ func main() {
 			log.Printf("warning: TIGERSWAP_PERPS_KEEPER_KEY is not a valid key: %v", err)
 		}
 	}
+	// The owner key signs owner-only on-chain calls (createMarket). It is separate
+	// from the keeper key because the contract owner is not the keeper.
+	if ownerKey, ok := perpspkg.LoadOwnerKey(); ok {
+		if key, err := crypto.HexToECDSA(ownerKey); err == nil {
+			onChainPerps.SetOwnerKey(key)
+		} else {
+			log.Printf("warning: TIGERSWAP_PERPS_OWNER_KEY is not a valid key: %v", err)
+		}
+	}
 	if err := onChainPerps.LoadDeployments(); err != nil {
 		log.Printf("warning: on-chain perps deployments not loaded: %v", err)
 	}
 	if err := onChainPerps.ReloadSymbols(); err != nil {
 		log.Printf("warning: could not map perp market symbols: %v", err)
 	}
+	// Mirror a new perps listing onto the deployed contract, so an on-chain
+	// position can be opened for a listing the operator can already see.
+	listingService.SetPerpsMarketCreatedHook(func(market *models.PerpsMarket) error {
+		return onChainPerps.MirrorPerpsMarket(context.Background(), market)
+	})
 	copyTradingEngine := services.NewCopyTradingEngine(blockchainClient, priceAggregator).SetDB(db)
 	bridgeService := services.NewBridgeService(db, blockchainClient, priceAggregator)
 	launchpadService := services.NewLaunchpadService(db, blockchainClient, priceAggregator)

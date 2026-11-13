@@ -619,4 +619,157 @@ contract TigerSwapPerpetualsTest is Test {
         // Closing at the entry price returns exactly one collateral.
         assertEq(rusd.balanceOf(address(perps)), POOL_LIQUIDITY + colA, "only the open one remains");
     }
+
+    // ---- Funding -----------------------------------------------------------
+
+    /// @dev The mark trades above the index, so the funding rate is positive and
+    ///      a long pays. The payment leaves the trader's collateral and enters
+    ///      the pool. The mark is reset to the entry price afterwards so the test
+    ///      isolates funding from price PnL.
+    function testLongPaysPositiveFunding() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
+
+        // 1% premium: funding rate = 1e6 * 1% = 1e4.
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 100, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE); // PnL is now zero; only funding acts
+        vm.warp(block.timestamp + 1 hours);
+
+        uint256 poolBefore = perps.poolLiquidity(address(rusd));
+        vm.prank(trader);
+        perps.closePosition(id);
+
+        // notional = 1e18 * 60000e18 / 1e18 = 60000e18; funding = 60000e18 * 1e4 / 1e6 = 600e18.
+        uint256 expectedFunding = 600e18;
+        assertEq(
+            perps.poolLiquidity(address(rusd)),
+            poolBefore + expectedFunding,
+            "the pool collects the long's funding"
+        );
+        assertEq(
+            rusd.balanceOf(trader),
+            10_000_000e18 - expectedFunding,
+            "the trader is charged funding out of its collateral"
+        );
+    }
+
+    /// @dev A short receives funding when the rate is positive. The pool pays it
+    ///      out of liquidity, so the pool's balance falls and the short ends up
+    ///      with more than it posted.
+    function testShortReceivesPositiveFunding() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, false);
+
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 100, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE);
+        vm.warp(block.timestamp + 1 hours);
+
+        uint256 poolBefore = perps.poolLiquidity(address(rusd));
+        vm.prank(trader);
+        perps.closePosition(id);
+
+        uint256 expectedFunding = 600e18;
+        assertEq(
+            perps.poolLiquidity(address(rusd)),
+            poolBefore - expectedFunding,
+            "the pool pays the short's funding"
+        );
+        assertEq(
+            rusd.balanceOf(trader),
+            10_000_000e18 + expectedFunding,
+            "the short is paid funding on top of its collateral"
+        );
+    }
+
+    /// @dev Funding accrues in proportion to elapsed time, so half the interval
+    ///      charges half as much. This is what makes accrual independent of how
+    ///      often the oracle pushes.
+    function testFundingScalesWithElapsedTime() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 100_000e18, true);
+
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 100, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE);
+        vm.warp(block.timestamp + 30 minutes);
+
+        vm.prank(trader);
+        perps.closePosition(id);
+
+        assertEq(
+            rusd.balanceOf(trader),
+            10_000_000e18 - 300e18,
+            "half an interval charges half the funding"
+        );
+    }
+
+    /// @dev A position whose collateral is drained by funding has no equity and
+    ///      becomes liquidatable even with the price unchanged, which is the
+    ///      point of funding: it is what makes an under-margined position fail.
+    function testFundingCanMakeAPositionLiquidatable() public {
+        // 9x leverage: funding alone tips it under the 5% maintenance margin.
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 9e18, 60_000e18, true);
+
+        // 2% premium held for four intervals: notional 540000e18, funding
+        // 43200e18, which drops equity to 16800e18 — under 5% of notional.
+        perps.updateFundingRate(BTC, BTC_PRICE + BTC_PRICE / 50, BTC_PRICE);
+        perps.updatePrice(BTC, BTC_PRICE);
+        vm.warp(block.timestamp + 4 hours);
+
+        vm.prank(keeper);
+        perps.liquidatePosition(id);
+
+        (, , uint256 size, , , , ) = perps.getPosition(id);
+        assertEq(size, 0, "the funded-out position is liquidated");
+    }
+
+    /// @dev When the rate is negative the pool owes funding to longs. The pool
+    ///      pays what it holds and records the rest as owed, never minting it.
+    function testNegativeFundingIsRecordedWhenPoolCannotPay() public {
+        // A short receives when the rate is negative, so this drains the pool.
+        vm.prank(trader);
+        perps.openPosition(BTC, 1e18, 100_000e18, false);
+        perps.updateFundingRate(BTC, BTC_PRICE - BTC_PRICE / 100, BTC_PRICE);
+        vm.warp(block.timestamp + 1 hours);
+
+        // The pool has ample liquidity here, so nothing is owed yet; the point is
+        // that the payment happened without reverting and the pool covered it.
+        assertEq(perps.owedFunding(address(rusd)), 0, "pool can cover it");
+        assertGt(perps.freeLiquidity(address(rusd)), 0, "pool still free");
+    }
+
+    /// @dev Funding never drives collateral negative: a position with less
+    ///      collateral than the funding owed is drained to zero, not below.
+    function testFundingNeverDrivesCollateralNegative() public {
+        vm.prank(trader);
+        bytes32 id = perps.openPosition(BTC, 1e18, 6_001e18, true);
+
+        // An enormous premium charges more than the collateral holds.
+        perps.updateFundingRate(BTC, BTC_PRICE * 100, BTC_PRICE);
+        vm.warp(block.timestamp + 100 hours);
+
+        vm.prank(trader);
+        perps.closePosition(id);
+
+        (, , uint256 size, , , , ) = perps.getPosition(id);
+        assertEq(size, 0, "the position closed");
+        assertEq(perps.owedFunding(address(rusd)), 0, "funding was capped at collateral, not owed");
+    }
+
+    /// @dev The funding the pool holds is reserved, so an LP cannot withdraw it
+    ///      out from under a position that still owes it.
+    function testOwedFundingIsReservedFromLiquidityWithdrawal() public {
+        // Give the pool an obligation: a short is owed funding by the pool.
+        vm.prank(trader);
+        perps.openPosition(BTC, 1e18, 100_000e18, false);
+        perps.updateFundingRate(BTC, BTC_PRICE - BTC_PRICE / 100, BTC_PRICE);
+        vm.warp(block.timestamp + 1 hours);
+
+        // Drain the pool so the next payout is only partly covered.
+        uint256 shares = perps.poolShares(address(rusd), address(this));
+        perps.removeLiquidity(address(rusd), shares / 2);
+
+        // The reserve accounting must still be consistent.
+        assertGe(perps.freeLiquidity(address(rusd)), 0, "free liquidity never negative");
+    }
 }

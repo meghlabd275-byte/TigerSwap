@@ -26,6 +26,13 @@ type ListingService struct {
 	// change which markets are tradable. It lets the matching engine reload its
 	// registry immediately instead of trading a stale market set.
 	onMarketsChanged func()
+
+	// onPerpsMarketCreated, when set, is invoked after a perps listing is
+	// persisted. It lets the on-chain layer mirror the listing onto the deployed
+	// contract, so a listing the operator can trade off-chain also exists on
+	// chain. It returns an error so the handler can refuse a listing that could
+	// not be created on chain.
+	onPerpsMarketCreated func(market *models.PerpsMarket) error
 }
 
 func NewListingService(db *gorm.DB) *ListingService {
@@ -43,6 +50,14 @@ func (s *ListingService) notifyMarketsChanged() {
 	if s.onMarketsChanged != nil {
 		s.onMarketsChanged()
 	}
+}
+
+// SetPerpsMarketCreatedHook registers a callback invoked after a perps listing
+// is persisted, so the deployed contract can be given the same market. It runs
+// after the row is committed; a failure is reported to the caller rather than
+// rolled back, because the off-chain listing is valid on its own.
+func (s *ListingService) SetPerpsMarketCreatedHook(hook func(market *models.PerpsMarket) error) {
+	s.onPerpsMarketCreated = hook
 }
 
 // allowedSettlementAssets are the assets a contract may settle in. RUSD is the
@@ -630,6 +645,22 @@ func (s *ListingService) CreatePerpsMarket(c *gin.Context) {
 
 	logListingAction(c, s.db, "create_perps_market", "perps_market", market.ID.String(), gin.H{"symbol": market.Symbol})
 	s.notifyMarketsChanged()
+
+	// Mirror the listing onto the deployed contract so an on-chain position can
+	// be opened for it. A listing whose on-chain creation fails is still returned,
+	// but with an explicit warning rather than a silent success.
+	warning := ""
+	if s.onPerpsMarketCreated != nil {
+		if err := s.onPerpsMarketCreated(&market); err != nil {
+			log.Printf("perps listing %s persisted but on-chain market creation failed: %v", market.Symbol, err)
+			warning = fmt.Sprintf("listing saved, but on-chain market creation failed: %v", err)
+		}
+	}
+
+	if warning != "" {
+		c.JSON(http.StatusCreated, gin.H{"market": market, "warning": warning})
+		return
+	}
 	c.JSON(http.StatusCreated, market)
 }
 

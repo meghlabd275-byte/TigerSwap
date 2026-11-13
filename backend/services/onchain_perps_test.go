@@ -139,21 +139,21 @@ func TestBelowMaintenanceMarginMatchesContract(t *testing.T) {
 	one := perps.OneUnit
 
 	long := &perps.Position{Size: one, Collateral: new(big.Int).Mul(big.NewInt(12000), one), EntryPrice: new(big.Int).Mul(big.NewInt(60000), one), IsLong: true}
-	if belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(60000), one)) {
+	if belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(60000), one), nil, 0) {
 		t.Fatal("a 20% equity position must be healthy")
 	}
-	if !belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(50000), one)) {
+	if !belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(50000), one), nil, 0) {
 		t.Fatal("a 3.3% equity position must be liquidatable")
 	}
-	if belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(57000), one)) {
+	if belowMaintenanceMargin(long, market, new(big.Int).Mul(big.NewInt(57000), one), nil, 0) {
 		t.Fatal("a 15% equity position must be healthy")
 	}
 
 	short := &perps.Position{Size: one, Collateral: new(big.Int).Mul(big.NewInt(12000), one), EntryPrice: new(big.Int).Mul(big.NewInt(60000), one), IsLong: false}
-	if belowMaintenanceMargin(short, market, new(big.Int).Mul(big.NewInt(50000), one)) {
+	if belowMaintenanceMargin(short, market, new(big.Int).Mul(big.NewInt(50000), one), nil, 0) {
 		t.Fatal("a short profiting from a price drop must be healthy")
 	}
-	if !belowMaintenanceMargin(short, market, new(big.Int).Mul(big.NewInt(70000), one)) {
+	if !belowMaintenanceMargin(short, market, new(big.Int).Mul(big.NewInt(70000), one), nil, 0) {
 		t.Fatal("a short losing 3.3% of notional must be liquidatable")
 	}
 }
@@ -303,5 +303,81 @@ func TestOnChainPerpsAnvilEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(body, posID.Hex()) {
 		t.Fatalf("positions response missing the open position: %s", body)
+	}
+}
+
+// TestAccruedFundingMatchesContractFormula proves the keeper's funding mirror
+// reproduces TigerSwapPerpetuals.calculateFunding: notional * rate * elapsed /
+// (FUNDING_RATE_PRECISION * FUNDING_INTERVAL), sign-flipped for a short.
+func TestAccruedFundingMatchesContractFormula(t *testing.T) {
+	one := perps.OneUnit
+	// notional 60000e18, rate 1e4 (1%), elapsed 1 hour = one interval.
+	pos := &perps.Position{
+		Size:       one,
+		Collateral: new(big.Int).Mul(big.NewInt(100000), one),
+		EntryPrice: new(big.Int).Mul(big.NewInt(60000), one),
+		LastUpdate: big.NewInt(1_000_000),
+		IsLong:     true,
+	}
+	funding := &perps.Funding{LastFundingRate: big.NewInt(10_000)}
+	now := int64(1_000_000 + 3600)
+
+	got := accruedFunding(pos, funding, now)
+	// 60000 * 0.01 = 600.
+	want := new(big.Int).Mul(big.NewInt(600), one)
+	if got.Cmp(want) != 0 {
+		t.Fatalf("long funding: want %s, got %s", want, got)
+	}
+
+	// A short receives the same amount, so the sign flips.
+	pos.IsLong = false
+	got = accruedFunding(pos, funding, now)
+	if got.Cmp(new(big.Int).Neg(want)) != 0 {
+		t.Fatalf("short funding: want %s, got %s", new(big.Int).Neg(want), got)
+	}
+
+	// Half the interval charges half the funding.
+	got = accruedFunding(pos, funding, int64(1_000_000+1800))
+	half := new(big.Int).Neg(new(big.Int).Div(want, big.NewInt(2)))
+	if got.Cmp(half) != 0 {
+		t.Fatalf("half-interval funding: want %s, got %s", half, got)
+	}
+
+	// No elapsed time accrues nothing.
+	if accruedFunding(pos, funding, 1_000_000).Sign() != 0 {
+		t.Fatal("zero elapsed time must accrue no funding")
+	}
+	// A nil funding source accrues nothing rather than panicking.
+	if accruedFunding(pos, nil, now).Sign() != 0 {
+		t.Fatal("nil funding must accrue nothing")
+	}
+}
+
+// TestFundingCanFlipAHealthyPositionToLiquidatable proves the keeper applies
+// funding before the health check, so a position that funding pushed under
+// maintenance is liquidated rather than left open.
+func TestFundingCanFlipAHealthyPositionToLiquidatable(t *testing.T) {
+	one := perps.OneUnit
+	maintenance := new(big.Int).Div(new(big.Int).Mul(big.NewInt(500), perps.OneUnit), big.NewInt(10000))
+	market := &perps.Market{MaintenanceRate: maintenance}
+
+	// 9x leverage: collateral 60000 for 540000 notional, equity ~11% at entry.
+	pos := &perps.Position{
+		Size:       new(big.Int).Mul(big.NewInt(9), one),
+		Collateral: new(big.Int).Mul(big.NewInt(60000), one),
+		EntryPrice: new(big.Int).Mul(big.NewInt(60000), one),
+		LastUpdate: big.NewInt(1_000_000),
+		IsLong:     true,
+	}
+	price := new(big.Int).Mul(big.NewInt(60000), one)
+
+	// With no funding the position is healthy at the entry price.
+	if belowMaintenanceMargin(pos, market, price, nil, 1_000_000) {
+		t.Fatal("an unfunded position at entry must be healthy")
+	}
+	// A 2% premium held for four intervals drains it under maintenance.
+	funding := &perps.Funding{LastFundingRate: big.NewInt(20_000)}
+	if !belowMaintenanceMargin(pos, market, price, funding, 1_000_000+4*3600) {
+		t.Fatal("funding must be able to push a healthy position below maintenance")
 	}
 }

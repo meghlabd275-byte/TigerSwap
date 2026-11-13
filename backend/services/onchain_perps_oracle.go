@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -133,8 +135,45 @@ func (s *OnChainPerpsService) pushMarkPrices(ctx context.Context, chainID int64)
 			continue
 		}
 		log.Printf("on-chain perps oracle: chain %d pushed %s mark %s (tx %s)", chainID, listing.symbol, price.String(), receipt.TxHash.Hex())
+
+		// Funding. The rate is the spread between the venue's mark and the
+		// oracle's index. An interest-rate component (configured per chain) is
+		// standard on perp venues and is the honest source of funding for a
+		// pool-priced market, which has no order-book premium of its own.
+		if premiumBps := fundingPremiumBps(chainID); premiumBps > 0 {
+			index := new(big.Int).Set(price)
+			mark := new(big.Int).Mul(price, big.NewInt(int64(10_000+premiumBps)))
+			mark.Quo(mark, big.NewInt(10_000))
+			fundingCall, err := client.BuildUpdateFundingRate(marketID, mark, index)
+			if err != nil {
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if _, err := client.Send(ctx, fundingCall); err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("updateFundingRate %s: %w", listing.symbol, err)
+				}
+			}
+		}
 	}
 	return firstErr
+}
+
+// fundingPremiumBps is the configured interest-rate component of funding for a
+// chain, in basis points. Zero (the default) means no funding is charged, which
+// is the correct rate for a market whose mark equals its index.
+func fundingPremiumBps(chainID int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(fmt.Sprintf("TIGERSWAP_PERPS_FUNDING_PREMIUM_BPS_%d", chainID)))
+	if raw == "" {
+		return 0
+	}
+	bps, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || bps <= 0 || bps > 1_000 {
+		return 0
+	}
+	return bps
 }
 
 // priceableListing pairs a listing symbol with the oracle symbol its mark price

@@ -51,6 +51,8 @@ var (
 	PricePrecision = OneUnit
 	// RatioPrecision mirrors TigerSwapPerpetuals.RATIO_PRECISION.
 	RatioPrecision = OneUnit
+	// FundingRatePrecision mirrors TigerSwapPerpetuals.FUNDING_RATE_PRECISION.
+	FundingRatePrecision = big.NewInt(1_000_000)
 )
 
 // Deployment describes the on-chain perpetuals contract for one chain.
@@ -68,6 +70,29 @@ type Deployment struct {
 // this id, so a client and the chain agree without a lookup table.
 func MarketID(symbol string) common.Hash {
 	return crypto.Keccak256Hash([]byte(symbol))
+}
+
+// LeverageWAD converts an integer leverage multiple to the contract's 1e18
+// RATIO_PRECISION (10 -> 10e18).
+func LeverageWAD(leverage int) *big.Int {
+	return new(big.Int).Mul(big.NewInt(int64(leverage)), OneUnit)
+}
+
+// InitialMarginWAD is the initial margin implied by a maximum leverage: the
+// reciprocal, 1/leverage, at RATIO_PRECISION. A 10x market requires 10% margin.
+func InitialMarginWAD(leverage int) *big.Int {
+	if leverage <= 0 {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Div(OneUnit, big.NewInt(int64(leverage)))
+}
+
+// RatioWAD converts a fractional ratio (0.05 for 5%) to RATIO_PRECISION through
+// a fixed-point intermediate, so a value like 0.05 becomes 5e16 exactly rather
+// than the nearest float64.
+func RatioWAD(ratio float64) *big.Int {
+	scaled := big.NewInt(int64(ratio*1e6 + 0.5))
+	return new(big.Int).Div(new(big.Int).Mul(scaled, OneUnit), big.NewInt(1e6))
 }
 
 // Market is the on-chain market configuration and live open interest.

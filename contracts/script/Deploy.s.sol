@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+import {Script, console2} from "forge-std/Script.sol";
+
+import {TigerSwapFactory} from "../TigerSwapFactory.sol";
+import {TigerSwapRouter} from "../TigerSwapRouter.sol";
+import {TigerSwapQuoter} from "../TigerSwapQuoter.sol";
+import {TigerSwapPriceOracle} from "../TigerSwapPriceOracle.sol";
+import {TigerSwapPerpetuals} from "../TigerSwapPerpetuals.sol";
+import {TigerSwapLending} from "../TigerSwapLending.sol";
+import {TigerSwapBridge} from "../TigerSwapBridge.sol";
+
+/**
+ * @title Deploy
+ * @notice Deploys the TigerSwap protocol for one chain and writes a per-chain
+ *         address registry that the API reads at startup.
+ *
+ * Usage:
+ *   forge script script/Deploy.s.sol --rpc-url $RPC --broadcast \
+ *     --private-key $DEPLOYER_KEY
+ *
+ * Environment:
+ *   TIGERSWAP_CHAIN_ID               chain id written into the registry (required)
+ *   TIGERSWAP_WETH                   wrapped-native address for the router (required)
+ *   TIGERSWAP_ORACLE_MAX_STALENESS   oracle staleness window in seconds (default 3600)
+ *   TIGERSWAP_ORACLE_MIN_REPORTS     oracle quorum (default 1)
+ *   TIGERSWAP_BRIDGE_CHAIN_ID        local bridge chain id (default = chain id)
+ *   TIGERSWAP_PERPS_ORACLE           address allowed to push marks (default deployer)
+ *
+ * The registry is written to `deployments/<chainId>.json`. The Go API reads the
+ * same JSON, so a deployed chain is dialled without hand-copying addresses into
+ * environment variables.
+ */
+contract Deploy is Script {
+    function run() external {
+        uint256 chainId = vm.envUint("TIGERSWAP_CHAIN_ID");
+        address weth = vm.envAddress("TIGERSWAP_WETH");
+        require(weth != address(0), "Deploy: TIGERSWAP_WETH is required");
+
+        uint256 maxStaleness = vm.envOr("TIGERSWAP_ORACLE_MAX_STALENESS", uint256(3600));
+        uint256 minReports = vm.envOr("TIGERSWAP_ORACLE_MIN_REPORTS", uint256(1));
+        uint256 bridgeChainId = vm.envOr("TIGERSWAP_BRIDGE_CHAIN_ID", chainId);
+        address perpsOracle = vm.envOr("TIGERSWAP_PERPS_ORACLE", msg.sender);
+
+        vm.startBroadcast();
+
+        TigerSwapFactory factory = new TigerSwapFactory();
+        TigerSwapRouter router = new TigerSwapRouter(address(factory), weth);
+        TigerSwapQuoter quoter = new TigerSwapQuoter(address(factory));
+        TigerSwapPriceOracle oracle = new TigerSwapPriceOracle(maxStaleness, minReports);
+        TigerSwapPerpetuals perps = new TigerSwapPerpetuals();
+        TigerSwapLending lending = new TigerSwapLending(address(oracle));
+        TigerSwapBridge bridge = new TigerSwapBridge(bridgeChainId);
+
+        // The perps oracle must be the address the API's keeper signs with, so it
+        // is set from the environment rather than defaulting to the deployer.
+        perps.setOracle(perpsOracle);
+
+        vm.stopBroadcast();
+
+        _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth);
+
+        console2.log("TigerSwap deployed on chain", chainId);
+        console2.log("  factory", address(factory));
+        console2.log("  router ", address(router));
+        console2.log("  quoter ", address(quoter));
+        console2.log("  oracle ", address(oracle));
+        console2.log("  perps  ", address(perps));
+        console2.log("  lending", address(lending));
+        console2.log("  bridge ", address(bridge));
+    }
+
+    function _write(
+        uint256 chainId,
+        address factory,
+        address router,
+        address quoter,
+        address oracle,
+        address perps,
+        address lending,
+        address bridge,
+        address weth
+    ) internal {
+        string memory json = string.concat(
+            "{\n",
+            '  "chain_id": ', vm.toString(chainId), ",\n",
+            '  "factory": "', vm.toString(factory), '",\n',
+            '  "router": "', vm.toString(router), '",\n',
+            '  "quoter": "', vm.toString(quoter), '",\n',
+            '  "oracle": "', vm.toString(oracle), '",\n',
+            '  "perps": "', vm.toString(perps), '",\n',
+            '  "lending": "', vm.toString(lending), '",\n',
+            '  "bridge": "', vm.toString(bridge), '",\n',
+            '  "weth": "', vm.toString(weth), '"\n',
+            "}\n"
+        );
+        string memory path = string.concat("deployments/", vm.toString(chainId), ".json");
+        vm.writeFile(path, json);
+    }
+}

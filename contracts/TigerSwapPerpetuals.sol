@@ -34,6 +34,10 @@ contract TigerSwapPerpetuals {
     uint256 public constant RATIO_PRECISION = 1e18;
     /// @dev Funding rate precision: 1e6 is 100% of the index deviation.
     uint256 public constant FUNDING_RATE_PRECISION = 1e6;
+    /// @dev Funding is accrued over this interval. A spread measured over a
+    ///      shorter or longer window is scaled by the elapsed time, so the
+    ///      accrued funding is independent of how often the oracle pushes.
+    uint256 public constant FUNDING_INTERVAL = 1 hours;
     /// @dev Maximum share of the pool a single position may win, 30%.
     uint256 public constant MAX_PAYOUT_BPS = 3000;
     uint256 public constant BPS_DENOMINATOR = 10_000;
@@ -118,6 +122,10 @@ contract TigerSwapPerpetuals {
     /// @dev Settlement token => trader profit that the pool could not pay at
     ///      settlement time. It is a claim the pool owes, never discarded.
     mapping(address => uint256) public unpaidProfits;
+    /// @dev Settlement token => funding the pool still owes to open positions
+    ///      (when the funding rate is negative and longs are paid). It is a
+    ///      liability, reserved against withdrawal, not liquidity.
+    mapping(address => uint256) public owedFunding;
 
     // ============ Events ============
     event MarketCreated(bytes32 indexed marketId, address token, uint256 maxLeverage);
@@ -410,6 +418,10 @@ contract TigerSwapPerpetuals {
         Market storage market = markets[marketId];
         uint256 currentPrice = getMarkPrice(marketId);
 
+        // Accrue funding first: it changes the position's collateral, which the
+        // PnL and settlement below read.
+        _applyFunding(position, marketId);
+
         int256 pnl = calculatePnL(position, currentPrice);
         uint256 collateral = position.collateral;
         address trader = position.trader;
@@ -438,6 +450,10 @@ contract TigerSwapPerpetuals {
         bytes32 marketId = position.marketId;
         Market storage market = markets[marketId];
         uint256 currentPrice = getMarkPrice(marketId);
+
+        // Funding is applied before the health check, so a position that funding
+        // has pushed below maintenance can be liquidated.
+        _applyFunding(position, marketId);
 
         int256 pnl = calculatePnL(position, currentPrice);
         int256 equity = int256(position.collateral) + pnl;
@@ -691,6 +707,65 @@ contract TigerSwapPerpetuals {
         return pnl / int256(PRICE_PRECISION);
     }
 
+    /// @notice Funding owed by a position since it was last settled, in
+    ///         settlement units. A positive return is paid by the position; a
+    ///         negative return is paid to it. It mirrors `calculatePnL`'s
+    ///         truncation so the off-chain projection matches the chain.
+    ///
+    ///         fundingRate is the signed 1e6-scaled rate from `updateFundingRate`
+    ///         (positive means the mark trades above the index, so longs pay).
+    ///         The rate is scaled by the elapsed time against `FUNDING_INTERVAL`,
+    ///         so accrual is continuous in time rather than stepwise per push.
+    function calculateFunding(Position memory position, int256 fundingRate) public view returns (int256) {
+        if (position.size == 0 || fundingRate == 0) return 0;
+        uint256 elapsed = block.timestamp - position.lastUpdated;
+        if (elapsed == 0) return 0;
+
+        int256 notional = int256(position.size * position.entryPrice / PRICE_PRECISION);
+        // A long pays when the rate is positive; a short receives it.
+        int256 direction = position.isLong ? int256(1) : int256(-1);
+        int256 raw = notional * fundingRate * int256(elapsed) / (int256(FUNDING_RATE_PRECISION) * int256(FUNDING_INTERVAL));
+        return raw * direction;
+    }
+
+    /// @dev Apply funding to a position about to be settled: fold the accrued
+    ///      funding into the position's equity and move the counterparty side
+    ///      between the pool and the position. The position's collateral is
+    ///      adjusted in place so the caller's existing settlement math (which
+    ///      reads `position.collateral` and `calculatePnL`) needs no change.
+    ///      Returns the funded collateral.
+    function _applyFunding(Position storage position, bytes32 marketId) private returns (uint256) {
+        int256 rate = fundingInfo[marketId].lastFundingRate;
+        if (rate == 0) return position.collateral;
+
+        int256 funding = calculateFunding(position, rate);
+        if (funding == 0) return position.collateral;
+
+        address token = markets[marketId].token;
+        if (funding > 0) {
+            // The position pays funding to the pool. It can never be charged
+            // more than its collateral, so a position with no equity left is
+            // simply drained rather than driven negative.
+            uint256 pay = uint256(funding);
+            if (pay > position.collateral) pay = position.collateral;
+            position.collateral -= pay;
+            poolLiquidity[token] += pay;
+        } else {
+            // The pool pays funding to the position. The pool can only pay what
+            // it holds; anything more is recorded as owed, never minted.
+            uint256 pay = uint256(-funding);
+            uint256 available = poolLiquidity[token];
+            if (pay > available) {
+                owedFunding[token] += pay - available;
+                pay = available;
+            }
+            poolLiquidity[token] -= pay;
+            position.collateral += pay;
+        }
+        position.lastUpdated = block.timestamp;
+        return position.collateral;
+    }
+
     // ============ Internals ============
 
     function _freeLiquidity(address token) private view returns (uint256) {
@@ -705,7 +780,7 @@ contract TigerSwapPerpetuals {
     ///      this returned only the protocol fees, so an LP could withdraw the
     ///      capital backing a winning trader.
     function _reservedForOpenInterest(address token) private view returns (uint256) {
-        return reservedLiquidity[token] + unpaidProfits[token] + protocolFees[token];
+        return reservedLiquidity[token] + unpaidProfits[token] + protocolFees[token] + owedFunding[token];
     }
 
     /// @dev Release the payout reserve held for a closing position. The reserve
