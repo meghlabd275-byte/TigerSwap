@@ -147,6 +147,8 @@ func main() {
 		&models.OnChainBookCursor{},
 		&models.OnChainBookLiquidation{},
 		&models.OnChainBookFill{},
+		&models.WalletLoginNonce{},
+		&models.RefreshToken{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}

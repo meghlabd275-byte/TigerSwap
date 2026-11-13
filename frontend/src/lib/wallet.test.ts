@@ -5,9 +5,11 @@ import {
   WalletError,
   approveErc20,
   getErc20Allowance,
+  signPersonalMessage,
   waitForTransactionReceipt,
   type Eip1193Provider,
 } from "./wallet";
+import { ValidationError } from "./validation";
 
 const TOKEN = "0x1111111111111111111111111111111111111111";
 const SPENDER = "0x2222222222222222222222222222222222222222";
@@ -128,5 +130,31 @@ test("waitForTransactionReceipt times out when no receipt ever appears", async (
         timeoutMs: 5,
       }),
     (error: unknown) => error instanceof WalletError && error.code === "tx_timeout",
+  );
+});
+
+test("signPersonalMessage hex-encodes the UTF-8 message and returns the signature", async () => {
+  const { provider, seen } = recordingProvider((method) => {
+    if (method === "personal_sign") {
+      return "0x" + "1".repeat(130);
+    }
+    throw new Error(`unexpected method ${method}`);
+  });
+
+  const signature = await signPersonalMessage("hello tiger", OWNER, provider);
+  assert.equal(signature, "0x" + "1".repeat(130));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].method, "personal_sign");
+  const params = seen[0].params as string[];
+  // The message is the hex of "hello tiger".
+  assert.equal(params[0], "0x68656c6c6f207469676572");
+  assert.equal(params[1], OWNER.toLowerCase());
+});
+
+test("signPersonalMessage rejects a malformed signature", async () => {
+  const { provider } = recordingProvider(() => "0xdeadbeef");
+  await assert.rejects(
+    () => signPersonalMessage("hello", OWNER, provider),
+    (error: unknown) => error instanceof ValidationError,
   );
 });

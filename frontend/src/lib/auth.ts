@@ -14,8 +14,9 @@
  *    web page.
  */
 
-import { ApiError, NetworkError, api, clearSessionToken, setSessionToken } from "./apiClient";
+import { ApiError, NetworkError, api, clearSessionToken, setSessionToken, setUnauthorizedHandler } from "./apiClient";
 import { object, string } from "./validation";
+import { connectWallet, signPersonalMessage } from "./wallet";
 
 export interface SessionUser {
   id: string;
@@ -42,6 +43,10 @@ const loginResponseValidator = object<{ token?: string; user?: unknown; access_t
 /** In-memory session. Cleared on reload, which is intentional. */
 let currentUser: SessionUser | null = null;
 const listeners = new Set<(user: SessionUser | null) => void>();
+
+// An expired access token is transparently renewed from the refresh cookie, so
+// a long-lived tab does not drop the user on token expiry.
+setUnauthorizedHandler(refreshSession);
 
 export function subscribe(listener: (user: SessionUser | null) => void): () => void {
   listeners.add(listener);
@@ -186,6 +191,81 @@ export async function restoreSession(): Promise<SessionUser | null> {
       return null;
     }
     throw error;
+  }
+}
+
+const nonceResponseValidator = object<{ nonce: string; message: string }>({
+  nonce: string,
+  message: string,
+});
+
+const walletLoginResponseValidator = object<{ token?: string; access_token?: string }>(
+  { token: string, access_token: string },
+  { optional: ["token", "access_token"] },
+);
+
+/**
+ * Signs in with a wallet using EIP-4361 (Sign-In with Ethereum).
+ *
+ * The server issues a single-use nonce, the wallet signs the returned message,
+ * and the server recovers the signer and issues a session. The address is never
+ * trusted from the client: it is proven by the signature. The session access
+ * token is kept in memory only.
+ */
+export async function loginWithWallet(): Promise<SessionUser> {
+  const account = await connectWallet();
+  const nonceBody = await api.post(
+    "/auth/wallet/nonce",
+    { address: account.address, chain_id: account.chainId },
+    { authenticated: false },
+  );
+  const nonce = nonceResponseValidator(nonceBody);
+
+  const signature = await signPersonalMessage(nonce.message, account.address);
+
+  const body = await api.post(
+    "/auth/wallet/verify",
+    { message: nonce.message, signature },
+    { authenticated: false },
+  );
+  const parsed = walletLoginResponseValidator(body);
+  const token = parsed.token ?? parsed.access_token;
+  if (token) {
+    setSessionToken(token);
+  }
+
+  const profile = await api.get("/user/profile");
+  const user = parseProfile(profile);
+  currentUser = user;
+  notify();
+  return user;
+}
+
+/**
+ * Attempts to mint a fresh access token from the httpOnly refresh cookie.
+ *
+ * Called when an authenticated request returns 401: if the cookie is still
+ * valid the session continues without a re-sign-in; otherwise the local session
+ * is cleared. Returns true when a new access token was obtained.
+ */
+export async function refreshSession(): Promise<boolean> {
+  try {
+    const body = await api.post("/auth/refresh", undefined, { authenticated: false });
+    const parsed = walletLoginResponseValidator(body);
+    const token = parsed.token ?? parsed.access_token;
+    if (!token) {
+      return false;
+    }
+    setSessionToken(token);
+    const profile = await api.get("/user/profile");
+    currentUser = parseProfile(profile);
+    notify();
+    return true;
+  } catch {
+    clearSessionToken();
+    currentUser = null;
+    notify();
+    return false;
   }
 }
 

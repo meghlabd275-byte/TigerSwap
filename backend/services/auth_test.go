@@ -67,7 +67,7 @@ func TestValidateTokenRejectsForeignAlgorithm(t *testing.T) {
 // database (i.e. the revocation survives a restart).
 func TestLogoutRevokesToken(t *testing.T) {
 	db := newListingTestDB(t)
-	if err := db.AutoMigrate(&models.RevokedToken{}); err != nil {
+	if err := db.AutoMigrate(&models.RevokedToken{}, &models.RefreshToken{}); err != nil {
 		t.Fatalf("migrate revoked tokens: %v", err)
 	}
 	t.Setenv("JWT_SECRET", "test-secret-for-revocation-suite")
@@ -105,7 +105,7 @@ func TestLogoutRevokesToken(t *testing.T) {
 // past the token's own expiry.
 func TestExpiredRevocationIsPruned(t *testing.T) {
 	db := newListingTestDB(t)
-	if err := db.AutoMigrate(&models.RevokedToken{}); err != nil {
+	if err := db.AutoMigrate(&models.RevokedToken{}, &models.RefreshToken{}); err != nil {
 		t.Fatalf("migrate revoked tokens: %v", err)
 	}
 	store := newRevocationStore(db)

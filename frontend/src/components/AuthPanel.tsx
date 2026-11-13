@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { X, Loader2 } from 'lucide-react';
-import { login, logout, register, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
+import { login, logout, register, loginWithWallet, validateEmail, validatePassword, validateUsername } from '@/lib/auth';
 
 type Mode = 'signin' | 'register';
 
@@ -135,6 +135,28 @@ export function AuthPanel({ onClose }: { onClose: () => void }) {
             <span>{mode === 'signin' ? 'Sign in' : 'Create account'}</span>
           </button>
         </form>
+
+        <div className="flex items-center gap-3 my-4">
+          <div className="h-px flex-1 bg-white/10" />
+          <span className="text-xs text-gray-500">or</span>
+          <div className="h-px flex-1 bg-white/10" />
+        </div>
+
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setError(null);
+            setBusy(true);
+            void loginWithWallet()
+              .then(() => onClose())
+              .catch((err) => setError(err instanceof Error ? err.message : 'Wallet sign-in failed'))
+              .finally(() => setBusy(false));
+          }}
+          className="w-full flex items-center justify-center space-x-2 px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white font-semibold hover:bg-white/10 transition-colors disabled:opacity-50"
+        >
+          <span>Sign in with wallet</span>
+        </button>
 
         <button
           onClick={() => {

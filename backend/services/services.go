@@ -900,6 +900,10 @@ func (s *AuthService) Register(c *gin.Context) {
 		respondInternalError(c, err)
 		return
 	}
+	if err := s.setRefreshCookie(c, user.ID); err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	c.JSON(201, gin.H{
 		"user":  user,
@@ -958,6 +962,10 @@ func (s *AuthService) Login(c *gin.Context) {
 		c.JSON(500, gin.H{"error": "Failed to create session"})
 		return
 	}
+	if err := s.setRefreshCookie(c, user.ID); err != nil {
+		respondInternalError(c, err)
+		return
+	}
 
 	c.JSON(200, gin.H{
 		"user":  user,
@@ -991,44 +999,10 @@ func (s *AuthService) recordFailedLogin(user *models.User) {
 	}
 }
 
-// RefreshToken issues a new access token from a still-valid bearer token.
+// RefreshToken is retained as a thin alias for the cookie-based rotation so the
+// /auth/refresh route keeps its path. The real work is in RefreshSession.
 func (s *AuthService) RefreshToken(c *gin.Context) {
-	authHeader := c.GetHeader("Authorization")
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header format"})
-		return
-	}
-
-	claims, err := s.ValidateToken(parts[1])
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
-		return
-	}
-
-	userID, err := uuid.Parse(fmt.Sprintf("%v", claims["user_id"]))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid session"})
-		return
-	}
-
-	var user models.User
-	if err := s.db.Where("id = ?", userID).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
-		return
-	}
-	if !user.IsActive {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Account is not active"})
-		return
-	}
-
-	token, err := s.generateToken(user.ID, user.Email, user.Role)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to issue token"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	s.RefreshSession(c)
 }
 
 func (s *AuthService) Logout(c *gin.Context) {
@@ -1062,6 +1036,16 @@ func (s *AuthService) Logout(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to revoke token"})
 		return
 	}
+
+	// End the cookie session too: revoking the bearer alone would leave a live
+	// refresh cookie that could mint a fresh access token.
+	if userID, err := uuid.Parse(fmt.Sprintf("%v", claims["user_id"])); err == nil {
+		if err := s.revokeUserRefreshTokens(userID); err != nil {
+			respondInternalError(c, err)
+			return
+		}
+	}
+	clearRefreshCookie(c)
 
 	c.JSON(http.StatusOK, gin.H{"success": true})
 }

@@ -87,6 +87,18 @@ export function resolveApiBase(): string {
 /** In-memory session token. Never written to persistent storage. */
 let sessionToken: string | null = null;
 
+/**
+ * Callback invoked when an authenticated request is rejected with 401. It is
+ * expected to try to mint a new access token (from the refresh cookie) and
+ * return true on success. Auth sets this once; a request is retried at most one
+ * time so a persistently failing refresh cannot loop.
+ */
+let unauthorizedHandler: (() => Promise<boolean>) | null = null;
+
+export function setUnauthorizedHandler(handler: (() => Promise<boolean>) | null): void {
+  unauthorizedHandler = handler;
+}
+
 export function setSessionToken(token: string | null): void {
   sessionToken = token && token.length > 0 ? token : null;
 }
@@ -127,6 +139,14 @@ function buildUrl(base: string, path: string, query?: RequestOptions["query"]): 
  * response becomes an `ApiError` rather than reaching the caller.
  */
 export async function apiRequest(path: string, options: RequestOptions = {}): Promise<unknown> {
+  return performRequest(path, options, true);
+}
+
+async function performRequest(
+  path: string,
+  options: RequestOptions,
+  allowRefreshRetry: boolean,
+): Promise<unknown> {
   const {
     method = "GET",
     body,
@@ -181,6 +201,16 @@ export async function apiRequest(path: string, options: RequestOptions = {}): Pr
     throw new NetworkError(error instanceof Error ? error.message : "network request failed");
   } finally {
     clearTimeout(timeout);
+  }
+
+  // On an expired access token, try once to refresh from the httpOnly cookie and
+  // replay the request. The refresh call itself is never retried, so a failing
+  // refresh cannot recurse.
+  if (response.status === 401 && authenticated && allowRefreshRetry && unauthorizedHandler) {
+    const refreshed = await unauthorizedHandler();
+    if (refreshed) {
+      return performRequest(path, options, false);
+    }
   }
 
   const declaredLength = Number(response.headers.get("content-length") ?? "0");

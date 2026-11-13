@@ -442,5 +442,37 @@ export function formatAddress(value: string, leading = 6, trailing = 4): string 
   return `${valid.slice(0, leading + 2)}…${valid.slice(-trailing)}`;
 }
 
+/**
+ * Signs a UTF-8 message with `personal_sign`, returning the 65-byte hex
+ * signature. The message is hex-encoded before it is handed to the wallet, which
+ * is the encoding every EIP-1193 wallet accepts for `personal_sign`; the server
+ * recovers the signer with the matching EIP-191 prefix.
+ */
+export async function signPersonalMessage(
+  message: string,
+  account: string,
+  provider?: Eip1193Provider,
+): Promise<string> {
+  const active = provider ?? getInjectedProvider();
+  if (!active) {
+    throw new WalletError("No wallet detected", "no_provider");
+  }
+  const address = addressValidator(account);
+  const bytes = new TextEncoder().encode(message);
+  const hexMessage = `0x${Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")}`;
+
+  const raw = await active.request({
+    method: "personal_sign",
+    params: [hexMessage, address],
+  });
+  const signature = string(raw, "signature");
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new ValidationError("wallet returned a malformed signature", "signature");
+  }
+  return signature;
+}
+
 /** Validates and normalises a chain id for display. */
 export const chainIdValidator = nonNegative;

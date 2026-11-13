@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { after, before, test } from "node:test";
 
-import { ApiError, NetworkError, api, apiRequest, getSessionToken, setSessionToken } from "./apiClient";
+import { ApiError, NetworkError, api, apiRequest, getSessionToken, setSessionToken, setUnauthorizedHandler } from "./apiClient";
 
 let server: Server;
 let baseUrl: string;
@@ -36,6 +36,14 @@ before(async () => {
         send(204, "");
       } else if (request.url?.startsWith("/api/v1/unauthorized")) {
         send(401, JSON.stringify({ error: "authentication required" }));
+      } else if (request.url?.startsWith("/api/v1/flaky")) {
+        // 401 until the caller presents a refreshed token, then 200. Used to
+        // prove the replay-after-refresh path.
+        if (request.headers.authorization === "Bearer good-token") {
+          send(200, JSON.stringify({ ok: true }));
+        } else {
+          send(401, JSON.stringify({ error: "token expired" }));
+        }
       } else {
         send(404, JSON.stringify({ error: "not found" }));
       }
@@ -129,4 +137,52 @@ test("a request that exceeds its timeout becomes a NetworkError", async () => {
     () => apiRequest("/echo", { timeoutMs: 1 }),
     NetworkError,
   );
+});
+
+test("a 401 triggers the unauthorized handler and replays the request once", async () => {
+  setSessionToken("expired-token");
+  let handlerCalls = 0;
+  let recover = false;
+  setUnauthorizedHandler(async () => {
+    handlerCalls += 1;
+    return recover;
+  });
+
+  // With the handler declining, the 401 is surfaced and the handler ran once.
+  await assert.rejects(() => api.get("/unauthorized"), (e: unknown) => e instanceof ApiError);
+  assert.equal(handlerCalls, 1);
+
+  // With the handler recovering, the request is replayed with the new token and
+  // succeeds.
+  recover = true;
+  const handler = async () => {
+    handlerCalls += 1;
+    setSessionToken("good-token");
+    return true;
+  };
+  setUnauthorizedHandler(handler);
+  const body = await api.get("/flaky");
+  assert.deepEqual(body, { ok: true });
+  // The handler ran once for the retry; total calls across both phases is 2.
+  assert.equal(handlerCalls, 2);
+
+  setUnauthorizedHandler(null);
+  setSessionToken(null);
+});
+
+test("the refresh call itself is never retried, so a failing refresh cannot recurse", async () => {
+  let handlerCalls = 0;
+  setUnauthorizedHandler(async () => {
+    handlerCalls += 1;
+    return true; // always claim success
+  });
+
+  // A 401 on an unauthenticated request must not invoke the handler at all.
+  await assert.rejects(
+    () => api.post("/unauthorized", undefined, { authenticated: false }),
+    (e: unknown) => e instanceof ApiError,
+  );
+  assert.equal(handlerCalls, 0);
+
+  setUnauthorizedHandler(null);
 });

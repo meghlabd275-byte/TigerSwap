@@ -131,6 +131,10 @@ func setupRouter(deps apiDeps) *gin.Engine {
 			auth.POST("/login", deps.authService.Login)
 			auth.POST("/refresh", deps.authService.RefreshToken)
 			auth.POST("/logout", deps.authService.Logout)
+			// Wallet sign-in (EIP-4361 / SIWE): the nonce is a single-use replay
+			// guard and the signature is recovered and matched to the account.
+			auth.POST("/wallet/nonce", deps.authService.RequestWalletNonce)
+			auth.POST("/wallet/verify", deps.authService.VerifyWalletSignature)
 		}
 
 		// Protected routes
