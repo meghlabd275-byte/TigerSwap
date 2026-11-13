@@ -1309,6 +1309,7 @@ export interface Bribe {
   epoch: number;
   token: string;
   amount: string;
+  escrowed: string;
   total_weight: string;
   funder_id: string;
   created_at: string;
@@ -1322,12 +1323,13 @@ export const bribeValidator = object<Bribe>(
     epoch: integer,
     token: symbol,
     amount: string,
+    escrowed: withDefault(string, "0"),
     total_weight: withDefault(string, "0"),
     funder_id: withDefault(string, ""),
     created_at: withDefault(timestamp, new Date(0).toISOString()),
     updated_at: withDefault(timestamp, new Date(0).toISOString()),
   },
-  { optional: ["total_weight", "funder_id", "created_at", "updated_at"] },
+  { optional: ["escrowed", "total_weight", "funder_id", "created_at", "updated_at"] },
 );
 
 export const bribeListValidator = listingArray(bribeValidator);

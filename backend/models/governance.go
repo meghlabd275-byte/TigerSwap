@@ -78,15 +78,23 @@ func (m *GaugeVote) BeforeCreate(tx *gorm.DB) error {
 // Bribe is a reward offered to voters of a gauge for a specific epoch. Each
 // user may claim at most once per (gauge, epoch, token).
 type Bribe struct {
-	ID          uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	GaugeID     uuid.UUID `gorm:"index;not null" json:"gauge_id"`
-	Epoch       int64     `gorm:"index;not null" json:"epoch"`
-	Token       string    `gorm:"size:32;not null" json:"token"`
-	Amount      string    `gorm:"size:78;not null" json:"amount"`
-	TotalWeight string    `gorm:"size:78;not null" json:"total_weight"`
-	FunderID    string    `gorm:"size:100" json:"funder_id"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID      uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	GaugeID uuid.UUID `gorm:"index;not null" json:"gauge_id"`
+	Epoch   int64     `gorm:"index;not null" json:"epoch"`
+	Token   string    `gorm:"size:32;not null" json:"token"`
+	Amount  string    `gorm:"size:78;not null" json:"amount"`
+	// Escrowed is the amount still held for unclaimed voters; it starts at Amount
+	// and falls as claims are credited, so claims can never pay out more than the
+	// funder deposited.
+	Escrowed      string    `gorm:"size:78;not null;default:'0'" json:"escrowed"`
+	TotalWeight   string    `gorm:"size:78;not null" json:"total_weight"`
+	FunderID      string    `gorm:"size:100" json:"funder_id"`
+	ChainID       int64     `gorm:"not null;default:0" json:"chain_id"`
+	TokenAddress  string    `gorm:"size:64" json:"token_address"`
+	TokenSymbol   string    `gorm:"size:32" json:"token_symbol"`
+	TokenDecimals int       `gorm:"not null;default:18" json:"token_decimals"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (m *Bribe) BeforeCreate(tx *gorm.DB) error {

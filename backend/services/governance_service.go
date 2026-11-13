@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"tigerswap/backend/models"
 )
@@ -18,13 +20,59 @@ import (
 // GovernanceService implements veTGR locking, gauge voting and the bribe
 // market. All arithmetic on token amounts uses big.Int over base-10 strings so
 // no precision is lost to floating point.
+//
+// Bribes escrow real ledger balance: funding debits the funder and claiming
+// credits the voter, both inside the transaction that records the mutation, so
+// a bribe can only pay out what a funder actually deposited.
 type GovernanceService struct {
-	db *gorm.DB
+	db      *gorm.DB
+	ledger  *LedgerService
+	settler func(token string) (perpSettlement, error)
 }
 
 func NewGovernanceService(db *gorm.DB) *GovernanceService {
 	return &GovernanceService{db: db}
 }
+
+// SetLedger wires the platform ledger that escrows bribes, and the chain whose
+// token registry names a bribe token's ledger entry. Without it the bribe
+// endpoints refuse to move funds rather than recording a bribe that pays out of
+// nothing.
+func (s *GovernanceService) SetLedger(ledger *LedgerService, settlementChainID int64) {
+	s.ledger = ledger
+	s.settler = resolveAssetFromConfig(settlementChainID)
+}
+
+// bribeLedger resolves a bribe token to its ledger entry. It requires both a
+// ledger and a resolver, so a deployment that forgets either refuses to escrow
+// a bribe rather than moving funds in a guessed asset.
+func (s *GovernanceService) bribeLedger(token string) (perpSettlement, error) {
+	if s.ledger == nil {
+		return perpSettlement{}, errors.New("governance service has no ledger configured; bribes cannot be escrowed")
+	}
+	if s.settler == nil {
+		return perpSettlement{}, fmt.Errorf("no ledger asset resolver configured for %s", token)
+	}
+	resolved, err := s.settler(token)
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if resolved.Symbol == "" || resolved.Address == "" {
+		return perpSettlement{}, fmt.Errorf("bribe token %s has no resolvable ledger entry", token)
+	}
+	if resolved.Decimals < 0 || resolved.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("bribe token %s has invalid decimals %d", resolved.Symbol, resolved.Decimals)
+	}
+	return resolved, nil
+}
+
+// Sentinel errors let the bribe claim handler map a failed settlement to a
+// status code without matching on an error string.
+var (
+	errBribeNoWeight       = errors.New("bribe has no distributable weight")
+	errBribeZeroShare      = errors.New("computed bribe share is zero")
+	errBribeAlreadyClaimed = errors.New("bribe already claimed")
+)
 
 const (
 	weekSeconds    = 7 * 24 * 60 * 60
@@ -446,6 +494,14 @@ func (s *GovernanceService) AddBribe(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported bribe token"})
 		return
 	}
+	// The bribe is escrowed from the funder's own platform balance, so a recorded
+	// bribe is always backed by the funds a voter will be paid from.
+	escrow, err := s.bribeLedger(token)
+	if err != nil {
+		log.Printf("governance: cannot escrow bribe: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "bribes are not configured for escrow"})
+		return
+	}
 
 	var gauge models.Gauge
 	if err := s.db.Where("id = ? AND active = ?", gaugeID, true).First(&gauge).Error; err != nil {
@@ -469,15 +525,32 @@ func (s *GovernanceService) AddBribe(c *gin.Context) {
 		}
 	}
 
+	// The debit and the bribe row commit together: a bribe can never be recorded
+	// without the funds behind it, nor consume funds without the row.
 	bribe := models.Bribe{
-		GaugeID:     gaugeID,
-		Epoch:       epoch,
-		Token:       token,
-		Amount:      amount.String(),
-		TotalWeight: totalWeight.String(),
-		FunderID:    userID,
+		GaugeID:       gaugeID,
+		Epoch:         epoch,
+		Token:         token,
+		Amount:        amount.String(),
+		Escrowed:      amount.String(),
+		TotalWeight:   totalWeight.String(),
+		FunderID:      userID,
+		ChainID:       escrow.ChainID,
+		TokenAddress:  escrow.Address,
+		TokenSymbol:   escrow.Symbol,
+		TokenDecimals: escrow.Decimals,
 	}
-	if err := s.db.Create(&bribe).Error; err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.ledger.debitWithin(tx, userID, escrow.ChainID, escrow.Address, amount); err != nil {
+			return err
+		}
+		return tx.Create(&bribe).Error
+	}); err != nil {
+		if errors.Is(err, ErrInsufficientBalance) {
+			c.JSON(http.StatusConflict, gin.H{"error": "insufficient balance to fund this bribe"})
+			return
+		}
+		log.Printf("governance: failed to record bribe: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record bribe"})
 		return
 	}
@@ -525,36 +598,93 @@ func (s *GovernanceService) ClaimBribe(c *gin.Context) {
 		return
 	}
 
+	if s.ledger == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "ledger is not configured"})
+		return
+	}
+
 	var vote models.GaugeVote
 	if err := s.db.Where("user_id = ? AND gauge_id = ?", userID, bribe.GaugeID).First(&vote).Error; err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no vote recorded for this gauge"})
 		return
 	}
 
-	totalWeight, _ := new(big.Int).SetString(bribe.TotalWeight, 10)
-	userWeight, _ := new(big.Int).SetString(vote.Weight, 10)
-	amount, _ := new(big.Int).SetString(bribe.Amount, 10)
-	if totalWeight == nil || totalWeight.Sign() == 0 || userWeight == nil || amount == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "bribe has no distributable weight"})
-		return
-	}
+	var share *big.Int
+	// The claim row, the escrow reduction and the ledger credit commit together:
+	// a voter is paid exactly when their claim is recorded, and a bribe's escrow
+	// is never drained without a corresponding payout. The bribe row is locked FOR
+	// UPDATE so two claims cannot both spend the same remaining escrow.
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		var locked models.Bribe
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, "id = ?", bribe.ID).Error; err != nil {
+			return err
+		}
+		// Report a repeat claim as already-claimed even after the escrow has been
+		// fully paid out, so the status is the same whether or not the first claim
+		// drained the remaining balance.
+		var existing models.BribeClaim
+		err := tx.Where("bribe_id = ? AND user_id = ?", locked.ID, userID).First(&existing).Error
+		if err == nil {
+			return errBribeAlreadyClaimed
+		}
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		totalWeight, _ := new(big.Int).SetString(locked.TotalWeight, 10)
+		userWeight, _ := new(big.Int).SetString(vote.Weight, 10)
+		amount, _ := new(big.Int).SetString(locked.Amount, 10)
+		if totalWeight == nil || totalWeight.Sign() == 0 || userWeight == nil || amount == nil {
+			return errBribeNoWeight
+		}
+		computed := new(big.Int).Mul(amount, userWeight)
+		computed.Div(computed, totalWeight)
+		if computed.Sign() == 0 {
+			return errBribeZeroShare
+		}
+		// A share may not exceed what is still escrowed, so the sum of all payouts
+		// is bounded by the funded amount even if weights changed after funding.
+		escrowed, _ := new(big.Int).SetString(locked.Escrowed, 10)
+		if escrowed == nil {
+			escrowed = big.NewInt(0)
+		}
+		if computed.Cmp(escrowed) > 0 {
+			computed = escrowed
+		}
+		if computed.Sign() <= 0 {
+			return errBribeNoWeight
+		}
 
-	share := new(big.Int).Mul(amount, userWeight)
-	share.Div(share, totalWeight)
-	if share.Sign() == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "computed share is zero"})
-		return
-	}
-
-	claim := models.BribeClaim{
-		BribeID: bribe.ID,
-		UserID:  userID,
-		Amount:  share.String(),
-	}
-	// The unique index on (bribe_id, user_id) makes a double claim impossible
-	// even under concurrent requests.
-	if err := s.db.Create(&claim).Error; err != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "bribe already claimed"})
+		claim := models.BribeClaim{
+			BribeID: locked.ID,
+			UserID:  userID,
+			Amount:  computed.String(),
+		}
+		// The unique index on (bribe_id, user_id) makes a double claim impossible
+		// even under concurrent requests.
+		if err := tx.Create(&claim).Error; err != nil {
+			return errBribeAlreadyClaimed
+		}
+		if err := tx.Model(&models.Bribe{}).Where("id = ?", locked.ID).
+			Update("escrowed", new(big.Int).Sub(escrowed, computed).String()).Error; err != nil {
+			return err
+		}
+		if err := s.ledger.creditWithin(tx, userID, locked.ChainID, locked.TokenAddress,
+			locked.TokenSymbol, locked.TokenDecimals, computed); err != nil {
+			return err
+		}
+		share = computed
+		return nil
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errBribeAlreadyClaimed):
+			c.JSON(http.StatusConflict, gin.H{"error": "bribe already claimed"})
+		case errors.Is(err, errBribeNoWeight), errors.Is(err, errBribeZeroShare):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bribe has no distributable weight"})
+		default:
+			log.Printf("governance: bribe claim failed: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to settle bribe claim"})
+		}
 		return
 	}
 
