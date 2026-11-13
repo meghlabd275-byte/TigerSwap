@@ -55,6 +55,13 @@ import {
   perpBookMarketListValidator,
   perpBookOrderListValidator,
   perpBookFillListValidator,
+  withdrawalAddressListValidator,
+  withdrawalAddressResultValidator,
+  withdrawalLimitListValidator,
+  withdrawalLimitResultValidator,
+  withdrawalRequestListValidator,
+  withdrawalResultValidator,
+  withdrawalDecisionResultValidator,
   perpBookPositionListValidator,
   topTraderListValidator,
   tradeListValidator,
@@ -846,4 +853,156 @@ test("live /onchain/perp-book/fills payload satisfies perpBookFillListValidator"
   assert.equal(fills.length, 1);
   assert.equal(fills[0].order_id, "7");
   assert.equal(fills[0].is_maker, true);
+});
+
+// Fixtures below were emitted by marshalling the real Go models/handlers, not
+// hand-written, so a change to the server's JSON shape fails this suite.
+
+const SERVER_WITHDRAWAL_ADDRESSES = {
+  addresses: [
+    {
+      id: "11111111-2222-3333-4444-555555555555",
+      user_id: "u1",
+      chain_id: 1,
+      address: "0x1111111111111111111111111111111111111111",
+      label: "cold",
+      ready_at: "2026-01-02T03:04:05Z",
+      created_at: "2026-01-02T03:04:05Z",
+      updated_at: "2026-01-02T03:04:05Z",
+    },
+  ],
+  cooldown_hours: 24,
+};
+
+test("live /wallet/withdraw/addresses payload satisfies withdrawalAddressListValidator", () => {
+  const list = parse(
+    withdrawalAddressListValidator,
+    JSON.stringify(SERVER_WITHDRAWAL_ADDRESSES),
+    "addresses",
+  );
+  assert.equal(list.addresses.length, 1);
+  assert.equal(list.addresses[0].chain_id, 1);
+  assert.equal(list.cooldown_hours, 24);
+});
+
+const SERVER_WITHDRAWAL_ADDRESS_RESULT = {
+  address: {
+    id: "11111111-2222-3333-4444-555555555555",
+    user_id: "u1",
+    chain_id: 1,
+    address: "0x1111111111111111111111111111111111111111",
+    label: "",
+    ready_at: "2026-01-02T03:04:05Z",
+    created_at: "2026-01-02T03:04:05Z",
+    updated_at: "2026-01-02T03:04:05Z",
+  },
+  message: "address is already allow-listed",
+};
+
+test("live POST /wallet/withdraw/addresses payload satisfies withdrawalAddressResultValidator", () => {
+  const result = parse(
+    withdrawalAddressResultValidator,
+    JSON.stringify(SERVER_WITHDRAWAL_ADDRESS_RESULT),
+    "address",
+  );
+  assert.equal(result.address.address, "0x1111111111111111111111111111111111111111");
+  assert.equal(result.message, "address is already allow-listed");
+});
+
+const SERVER_WITHDRAWAL_LIMITS = {
+  limits: [
+    {
+      id: "11111111-2222-3333-4444-555555555555",
+      chain_id: 1,
+      token_address: "native",
+      max_amount: "1000000000000000000",
+      created_at: "2026-01-02T03:04:05Z",
+      updated_at: "2026-01-02T03:04:05Z",
+    },
+  ],
+};
+
+test("live /admin/withdrawals/limits payload satisfies withdrawalLimitListValidator", () => {
+  const limits = parse(
+    withdrawalLimitListValidator,
+    JSON.stringify(SERVER_WITHDRAWAL_LIMITS),
+    "limits",
+  );
+  assert.equal(limits.limits.length, 1);
+  assert.equal(limits.limits[0].max_amount, "1000000000000000000");
+});
+
+test("live POST /admin/withdrawals/limits payload satisfies withdrawalLimitResultValidator", () => {
+  const result = parse(
+    withdrawalLimitResultValidator,
+    JSON.stringify({ limit: SERVER_WITHDRAWAL_LIMITS.limits[0] }),
+    "limit",
+  );
+  assert.equal(result.limit.token_address, "native");
+});
+
+const SERVER_WITHDRAWAL_REQUESTS = {
+  requests: [
+    {
+      id: "11111111-2222-3333-4444-555555555555",
+      user_id: "u1",
+      chain_id: 1,
+      token_address: "native",
+      to_address: "0x1111111111111111111111111111111111111111",
+      amount: "5000000000000000000",
+      status: "pending",
+      created_at: "2026-01-02T03:04:05Z",
+      updated_at: "2026-01-02T03:04:05Z",
+    },
+  ],
+};
+
+test("live /admin/withdrawals/requests payload satisfies withdrawalRequestListValidator", () => {
+  const list = parse(
+    withdrawalRequestListValidator,
+    JSON.stringify(SERVER_WITHDRAWAL_REQUESTS),
+    "requests",
+  );
+  assert.equal(list.requests.length, 1);
+  assert.equal(list.requests[0].status, "pending");
+  assert.equal(list.requests[0].reason, "");
+  assert.equal(list.requests[0].tx_hash, "");
+});
+
+test("live approve/refuse response satisfies withdrawalDecisionResultValidator", () => {
+  const approved = parse(
+    withdrawalDecisionResultValidator,
+    JSON.stringify({ status: "approved", tx_hash: "0xabc" }),
+    "approved",
+  );
+  assert.equal(approved.tx_hash, "0xabc");
+  const refused = parse(
+    withdrawalDecisionResultValidator,
+    JSON.stringify({ status: "refused" }),
+    "refused",
+  );
+  assert.equal(refused.status, "refused");
+});
+
+test("live /wallet/withdraw responses satisfy withdrawalResultValidator", () => {
+  const broadcast = parse(
+    withdrawalResultValidator,
+    JSON.stringify({ success: true, status: "processing", tx_hash: "0xabc" }),
+    "broadcast",
+  );
+  assert.equal(broadcast.tx_hash, "0xabc");
+  assert.equal(broadcast.request_id, "");
+
+  const queued = parse(
+    withdrawalResultValidator,
+    JSON.stringify({
+      message: "queued",
+      request_id: "11111111-2222-3333-4444-555555555555",
+      status: "pending_approval",
+      success: true,
+    }),
+    "queued",
+  );
+  assert.equal(queued.status, "pending_approval");
+  assert.equal(queued.request_id, "11111111-2222-3333-4444-555555555555");
 });

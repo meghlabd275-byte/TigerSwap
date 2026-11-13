@@ -87,6 +87,14 @@ import {
   UserProfile,
   UserTransaction,
   VolumeSeriesResponse,
+  WithdrawalAddress,
+  WithdrawalAddressList,
+  WithdrawalAddressResult,
+  WithdrawalDecisionResult,
+  WithdrawalLimit,
+  WithdrawalRequest,
+  WithdrawalRequestStatus,
+  WithdrawalResult,
   VeLock,
   accountBalanceListValidator,
   adminAuditLogListValidator,
@@ -183,6 +191,13 @@ import {
   topTraderListValidator,
   userProfileValidator,
   volumeSeriesValidator,
+  withdrawalAddressListValidator,
+  withdrawalAddressResultValidator,
+  withdrawalDecisionResultValidator,
+  withdrawalLimitListValidator,
+  withdrawalLimitResultValidator,
+  withdrawalRequestListValidator,
+  withdrawalResultValidator,
   userTransactionListValidator,
   veLockListValidator,
   veLockValidator,
@@ -1558,11 +1573,86 @@ export const endpoints = {
     return topTraderListValidator(body);
   },
 
+
   /** Admin: rebuild the volume rollup for a window. Idempotent. */
   async runAnalyticsRollup(windowSeconds = 3600): Promise<AnalyticsRollupResult> {
     const body = await api.post("/admin/analytics/rollup", undefined, {
       query: { window: windowSeconds },
     });
     return analyticsRollupValidator(body);
+  },
+
+  /**
+   * Withdrawals. A withdrawal passes the server's policy before it can reach the
+   * signer: the destination must be on the caller's allow-list and past its
+   * cooldown, and a request above the asset limit is queued for an operator
+   * instead of being broadcast. The client never signs — the platform signer
+   * does — so the response is either a broadcast hash or a queued request id.
+   */
+  async withdraw(payload: {
+    to_address: string;
+    chain_id: number;
+    token: string;
+    amount: string;
+  }): Promise<WithdrawalResult> {
+    const body = await api.post("/wallet/withdraw", payload);
+    return withdrawalResultValidator(body);
+  },
+
+  /** The caller's withdrawal allow-list and the server's cooldown window. */
+  async getWithdrawalAddresses(): Promise<WithdrawalAddressList> {
+    const body = await api.get("/wallet/withdraw/addresses");
+    return withdrawalAddressListValidator(body);
+  },
+
+  /** Adds an allow-list address; a duplicate add returns the existing entry. */
+  async addWithdrawalAddress(payload: {
+    chain_id: number;
+    address: string;
+    label?: string;
+  }): Promise<WithdrawalAddressResult> {
+    const body = await api.post("/wallet/withdraw/addresses", payload);
+    return withdrawalAddressResultValidator(body);
+  },
+
+  /** Removes an allow-list address that belongs to the caller. */
+  async deleteWithdrawalAddress(id: string): Promise<void> {
+    await api.delete(`/wallet/withdraw/addresses/${encodeURIComponent(id)}`);
+  },
+
+  /** Admin: every configured per-asset withdrawal limit. */
+  async getWithdrawalLimits(): Promise<WithdrawalLimit[]> {
+    const body = await api.get("/admin/withdrawals/limits");
+    return withdrawalLimitListValidator(body).limits;
+  },
+
+  /** Admin: create or replace the limit for one asset. */
+  async setWithdrawalLimit(payload: {
+    chain_id: number;
+    token_address: string;
+    max_amount: string;
+  }): Promise<WithdrawalLimit> {
+    const body = await api.post("/admin/withdrawals/limits", payload);
+    return withdrawalLimitResultValidator(body).limit;
+  },
+
+  /** Admin: the withdrawal approval queue, optionally filtered by status. */
+  async getWithdrawalRequests(status?: WithdrawalRequestStatus): Promise<WithdrawalRequest[]> {
+    const body = await api.get("/admin/withdrawals/requests", { query: { status } });
+    return withdrawalRequestListValidator(body).requests;
+  },
+
+  /** Admin: release a queued withdrawal. The platform signer broadcasts it. */
+  async approveWithdrawal(id: string): Promise<WithdrawalDecisionResult> {
+    const body = await api.post(`/admin/withdrawals/requests/${encodeURIComponent(id)}/approve`);
+    return withdrawalDecisionResultValidator(body);
+  },
+
+  /** Admin: refuse a queued withdrawal and return the funds to the caller. */
+  async refuseWithdrawal(id: string, reason?: string): Promise<WithdrawalDecisionResult> {
+    const body = await api.post(`/admin/withdrawals/requests/${encodeURIComponent(id)}/refuse`, {
+      reason,
+    });
+    return withdrawalDecisionResultValidator(body);
   },
 };

@@ -2727,3 +2727,151 @@ export const perpBookFillValidator = object<PerpBookFill>({
 });
 
 export const perpBookFillListValidator = listingArray(perpBookFillValidator);
+
+/** A withdrawal allow-list entry owned by the caller (`GET /wallet/withdraw/addresses`). */
+export interface WithdrawalAddress {
+  id: string;
+  user_id: string;
+  chain_id: number;
+  address: string;
+  label: string;
+  ready_at: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const withdrawalAddressValidator = object<WithdrawalAddress>(
+  {
+    id: string,
+    user_id: string,
+    chain_id: integer,
+    address,
+    label: withDefault(string, ""),
+    ready_at: withDefault(timestamp, new Date(0).toISOString()),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {},
+);
+
+/** The response to adding an allow-list address; `message` is set on a duplicate add. */
+export interface WithdrawalAddressResult {
+  address: WithdrawalAddress;
+  message?: string;
+}
+
+export const withdrawalAddressResultValidator = object<WithdrawalAddressResult>({
+  address: withdrawalAddressValidator,
+  message: withDefault(string, ""),
+});
+
+/** The caller's allow-list with the cooldown the server enforces. */
+export interface WithdrawalAddressList {
+  addresses: WithdrawalAddress[];
+  cooldown_hours: number;
+}
+
+export const withdrawalAddressListValidator = object<WithdrawalAddressList>({
+  addresses: array(withdrawalAddressValidator),
+  cooldown_hours: withDefault(integer, 24),
+});
+
+/** A per-asset withdrawal limit (admin). */
+export interface WithdrawalLimit {
+  id: string;
+  chain_id: number;
+  token_address: string;
+  max_amount: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const withdrawalLimitValidator = object<WithdrawalLimit>(
+  {
+    id: string,
+    chain_id: integer,
+    token_address: string,
+    max_amount: withDefault(decimal, "0"),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {},
+);
+
+export const withdrawalLimitResultValidator = object<{ limit: WithdrawalLimit }>({
+  limit: withdrawalLimitValidator,
+});
+
+export const withdrawalLimitListValidator = object<{ limits: WithdrawalLimit[] }>({
+  limits: array(withdrawalLimitValidator),
+});
+
+/** The statuses a queued withdrawal can carry. */
+export type WithdrawalRequestStatus = "pending" | "processing" | "approved" | "refused";
+
+/** A withdrawal held for operator approval (admin). */
+export interface WithdrawalRequest {
+  id: string;
+  user_id: string;
+  chain_id: number;
+  token_address: string;
+  to_address: string;
+  amount: string;
+  status: WithdrawalRequestStatus;
+  reason: string;
+  tx_hash: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export const withdrawalRequestValidator = object<WithdrawalRequest>(
+  {
+    id: string,
+    user_id: string,
+    chain_id: integer,
+    token_address: string,
+    to_address: address,
+    amount: decimal,
+    status: oneOf(["pending", "processing", "approved", "refused"] as const),
+    reason: withDefault(string, ""),
+    tx_hash: withDefault(string, ""),
+    created_at: withDefault(timestamp, new Date(0).toISOString()),
+    updated_at: withDefault(timestamp, new Date(0).toISOString()),
+  },
+  {},
+);
+
+export const withdrawalRequestListValidator = object<{ requests: WithdrawalRequest[] }>({
+  requests: array(withdrawalRequestValidator),
+});
+
+/** The outcome of an admin approval or refusal. */
+export interface WithdrawalDecisionResult {
+  status: WithdrawalRequestStatus;
+  tx_hash: string;
+}
+
+export const withdrawalDecisionResultValidator = object<WithdrawalDecisionResult>({
+  status: oneOf(["pending", "processing", "approved", "refused"] as const),
+  tx_hash: withDefault(string, ""),
+});
+
+/**
+ * The outcome of a withdrawal request. A small withdrawal is broadcast and
+ * carries `tx_hash`; an oversized one is queued and carries `request_id`.
+ */
+export interface WithdrawalResult {
+  success: boolean;
+  status: string;
+  tx_hash: string;
+  request_id: string;
+  message: string;
+}
+
+export const withdrawalResultValidator = object<WithdrawalResult>({
+  success: boolean,
+  status: string,
+  tx_hash: withDefault(string, ""),
+  request_id: withDefault(string, ""),
+  message: withDefault(string, ""),
+});
