@@ -464,6 +464,22 @@ pay out what an operator funded.
   `GET /farms/stakes`, `POST /airdrops/:id/claim`, `GET /airdrops/allocations`;
   admin CRUD under `/admin/farms` and `/admin/airdrops`.
 
+## Governance (veTGR locks, gauges, bribes)
+
+`services/governance_service.go` owns veTGR locking, gauge voting and the bribe
+market. Locking and voting are bookkeeping; a bribe moves real funds.
+
+- A bribe is escrowed from the funder's own platform balance. `AddBribe` debits
+  the funder inside the same transaction that inserts the row and is refused with
+  409 when the balance is short, so a recorded bribe is always backed by the
+  funds a voter is paid from. `SetLedger(ledger, chainID)` wires the ledger and
+  the chain token registry; without it the bribe endpoints refuse to move funds.
+- `ClaimBribe` runs the claim row, the escrow draw-down and the ledger credit in
+  one transaction under a `FOR UPDATE` lock on the bribe, and caps the share at
+  the remaining `Escrowed` balance, so a double claim or a raced claim cannot
+  over-pay. A share is `amount * userWeight / totalWeight`, snapshotted at
+  funding time.
+
 ## Options
 
 `contracts/TigerSwapOptionMath.sol` and `contracts/TigerSwapOptions.sol` are the

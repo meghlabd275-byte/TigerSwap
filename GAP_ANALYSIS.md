@@ -147,6 +147,20 @@ they are kept here so the history is not lost.
 - **Spot limit/stop orders execute on-chain** through the `onchain_orders.go`
   executor, with the condition re-verified on-chain.
 - **Compliance exists and is enforced on trading**, not only withdrawal.
+- **Governance bribes move funds.** `governance_service.go` debits the funder on
+  `AddBribe` and credits the voter on `ClaimBribe`, both inside the transaction
+  that records the mutation, with the claim capped at the remaining escrow. A
+  bribe used to be recorded with an amount but never touched a balance, so a
+  claim paid out of nothing.
+- **A margin repayment reads its debt under the transaction.** `Repay` used to
+  read the `MarginBorrow` row before opening its transaction, so two concurrent
+  repayments each acted on the pre-payment debt. The row is now read inside the
+  transaction under a `FOR UPDATE` lock.
+- **A margin liquidation decides under the transaction.** `Liquidate` used to
+  compute health, the repayable amount and the seized value from a snapshot read
+  before the row lock, so two racing liquidators could each seize the same
+  collateral. The accrual, the liquidatability decision and the amounts are now
+  computed inside the transaction after the account row is locked.
 
 ## How to re-verify
 
