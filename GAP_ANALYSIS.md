@@ -99,36 +99,46 @@ does not yet contain.
 4. **No horizontal-scale story.** The API keeps in-process state (the WebSocket
    hub, the perp engine registry, the bots engine). Running more than one API
    replica needs a shared bus and a leader/ownership model that is not present.
-5. **No on-chain deployment scripts or addresses.** The contracts compile and
-   test, but the repository carries no deploy scripts and no recorded addresses
-   per chain. An operator must deploy and record them before the API can dial a
-   chain.
-6. **No observability stack.** There are structured logs but no metrics,
-   tracing or alerting wired for a live deployment.
+5. **No committed on-chain address registry.** `contracts/script/Deploy.s.sol`
+   writes `contracts/deployments/<chainId>.json`, but that directory is not
+   present on a clean checkout. An operator must deploy and record addresses
+   before the API can dial a chain.
+6. **No observability stack beyond metrics.** Metrics and liveness/readiness
+   probes exist, but there is no distributed tracing and no page-on-error
+   alerting wired for a live deployment.
 
 ## Gaps (correctness or launch-blocking)
 
-1. **Copy trading does not move funds.** `services/copy_trading.go` records
-   `CopyPosition` rows and computes PnL, but it never escrows or debits a
-   follower's ledger balance. A follower's copied size is a number in a table,
-   not a funded position. This must either be wired to the ledger/perp engine or
-   the feature must be presented as read-only tracking, never as funded copy
-   trading.
-2. **Launchpad participation does not escrow the payment.** `Participate`
-   records an `allocated_amount` on `LaunchpadAllocation` but does not debit the
-   participant's ledger balance, and `ClaimTokens` does not move the purchased
-   tokens. A participant is recorded as having committed funds that were never
-   taken. This must be wired to the ledger (escrow on participate, release on
-   claim) before the launchpad can be used for a real raise.
-3. **Bridge, swap executor and fee collector have no ledger coupling.**
-   `bridge_new.go`, `swap_executor.go` and `fee_collector.go` do not reference
-   the ledger service. Where these paths are expected to move platform balances
-   (as opposed to broadcasting a client-signed transaction), that coupling is
-   missing and must be added or the paths must be documented as
-   broadcast-only.
-4. **The README's launch gate is not implemented.** `README.md` states that the
-   root build is intended to become the primary launch gate. There is no such
-   root build; the gate is the per-language CI workflow.
+1. **Perp/margin prices are `float64`.** The core PnL and settlement arithmetic
+   is exact (`perp_money.go` uses `big.Rat`), but `PerpetualPosition` prices and
+   `MarginEngine.assetPriceUSD` are still `float64`. A liquidation threshold
+   compared against a floating mark price can round at the boundary; convert the
+   remaining prices to exact integers.
+2. **Bridge relayer holds the entire validator key set.** `bridge_new.go` reads
+   `TIGERBRIDGE_VALIDATOR_KEYS` in-process and signs the supermajority itself, so
+   the supermajority is produced by one process. A production bridge needs
+   independent validators.
+3. **Non-EVM chains cannot be watched.** `deposit_watcher.go` and
+   `BlockchainClient` are EVM-only; an admin can mark a non-EVM chain active but
+   no deposit on it will ever be credited. Multichain is EVM-multichain only.
+
+## Previously recorded gaps now fixed on `main`
+
+These were listed as gaps in an earlier revision and have since been closed;
+they are kept here so the history is not lost.
+
+- **Copy trading moves funds.** `copy_trading.go` now escrows on open
+  (`debitWithin`) and credits on close (`creditWithin`) inside the position
+  transaction.
+- **Launchpad escrows.** `launchpad.go` debits the participant on `Participate`
+  and releases on `ClaimTokens`, both within the allocation transaction.
+- **Withdrawals reach a terminal state.** `withdrawal_reconciler.go` watches the
+  receipt and confirms or reverses the debit.
+- **`TradingEnabled` and maintenance mode are enforced.** `platform_gate.go`
+  gates trading, withdrawals, deposits and registration.
+- **Spot limit/stop orders execute on-chain** through the `onchain_orders.go`
+  executor, with the condition re-verified on-chain.
+- **Compliance exists and is enforced on trading**, not only withdrawal.
 
 ## How to re-verify
 

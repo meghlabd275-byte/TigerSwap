@@ -1,64 +1,65 @@
 # TigerSwap - Multichain DEX Ecosystem
 
-TigerSwap is a multichain decentralized-exchange codebase that includes frontend apps, browser/mobile wallet surfaces, EVM smart contracts, blockchain SDKs, DEX/CEX connector modules, bot/market-maker modules, security modules, and backend/API components.
+TigerSwap is an EVM-multichain exchange: a Next.js trading frontend, a Go API and
+trading stack, EVM smart contracts, and SDKs. The repository is deliberately
+small; it contains only the trees listed below.
 
-> **Launch status:** TigerSwap is **not production-ready yet**. See [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md) for the current launch-readiness tracker, blockers, and release gates.
+> **Launch status:** not yet production-ready. `GAP_ANALYSIS.md` records the
+> maintainers' known gaps and `LAUNCH_AUDIT.md` is the detailed
+> working/broken/missing review. Both are kept current against `main`.
 
 ## Current engineering priorities
 
-1. Make the monorepo buildable and testable across TypeScript, Go, Rust, and Solidity packages.
-2. Remove unsafe mock/demo behavior from production execution paths.
-3. Add production-grade transaction lifecycle handling, provider-backed simulation, and clear failure states.
-4. Expand smart-contract tests to include unit, integration, fork, fuzz, invariant, access-control, governance, bridge, and emergency scenarios.
-5. Add deployment manifests, address registries, monitoring, incident runbooks, and security evidence before any uncapped mainnet launch.
+1. Keep every language layer green (Solidity, Go, Rust, C++, Java, Python, frontend).
+2. Keep every value-moving path on the real ledger and free of mock/demo data.
+3. Close the launch blockers tracked in `LAUNCH_AUDIT.md`.
+4. Add contract fork/fuzz/invariant tests and an end-to-end trade test.
+5. Add production operations: versioned migrations, KMS/HSM secrets, and a
+   documented single-replica or shared-state scaling story.
 
 ## Technology stack
 
 | Layer | Technology |
 | --- | --- |
-| Frontend | Next.js, React, TypeScript |
-| Admin / dashboards | React, TypeScript |
-| Backend APIs | Go, TypeScript |
-| Smart contracts | Solidity, Hardhat |
-| Routing / trading engines | Rust, TypeScript, C++/Go modules where present |
-| Analytics / AI | Python, TypeScript |
-| Mobile/browser wallet surfaces | React Native, browser extension JavaScript/TypeScript |
+| Frontend | Next.js, React, TypeScript, Tailwind |
+| Backend APIs | Go (Gin + GORM) |
+| Smart contracts | Solidity (Foundry) |
+| Routing / matching engines | Go (router, order book), C++ (HFT engine), Rust (bot strategies) |
+| SDKs | Go, Java, Python |
 
 ## Repository structure
 
 ```text
 TigerSwap/
-├── admin_platform/             # Admin and chain-management modules
-├── ai_platform/                # Price/risk intelligence modules
-├── analytics_platform/         # Dashboards and analytics surfaces
-├── api_gateway/                # API gateway and REST modules
-├── blockchain_layer/           # Chain SDKs and chain-specific integrations
-├── browser_extension/          # Browser wallet/extension UI
-├── cex_connectors/             # CEX connector modules
-├── core/                       # Core trading/routing engines
-├── cross_chain_protocol/       # Bridge/messaging modules
-├── dapp_browser/               # DApp browser, permissions, wallet injector, signer
-├── dex_aggregator/             # Aggregation/routing modules
-├── dex_connectors/             # DEX connector modules
-├── frontend/                   # Web, admin, and frontend SDK packages
-├── governance/                 # Governance contracts/services
-├── libs/                       # Shared SDKs/libraries
-├── market_maker_platform/      # Market-maker modules
-├── mm_bot_platform/            # Bot platform modules
-├── mobile/                     # Mobile wallet app
-├── security_platform/          # Security scanners, fraud/rate-limit/circuit-breaker modules
-├── smart_contracts/            # EVM contracts and Hardhat project
-└── user_features/              # User-facing feature modules
+├── backend/                    # Go API server and services
+│   ├── cmd/api/                # API entry point and route table
+│   ├── services/               # business logic and HTTP handlers
+│   ├── models/                 # GORM models
+│   ├── middleware/             # JWT auth, rate limiting, security headers
+│   ├── config/                 # chain/token config and deployment registry
+│   ├── go/                     # extra Go modules (amm, router, orders, perps,
+│   │                           #   keeper, indexer, oracle_service, sdk,
+│   │                           #   order_matching, api_gateway, distributed, ...)
+│   ├── rust/                   # security, fast, insurance, bots crates
+│   ├── cpp/                    # HFT matching engine
+│   ├── java/sdk/               # dependency-free Java SDK
+│   └── python/                 # ml (stdlib) and sdk (web3)
+├── contracts/                  # Solidity contracts, script/ (deploy), test/
+├── frontend/                   # Next.js app (App Router) and its validators
+├── docker-compose.yml          # Postgres + API + web for a single host
+├── AGENTS.md                   # repository knowledge for agents
+├── GAP_ANALYSIS.md             # known gaps
+└── LAUNCH_AUDIT.md             # detailed readiness review
 ```
 
 ## Quick start
 
 ```bash
-npm install
-npm run build
+cp .env.example .env     # fill in DB_*, JWT_SECRET and any signing keys
+docker compose up --build
 ```
 
-The root build is intended to become the primary launch gate. Until every package is fully integrated, always review [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md) before relying on any module for production.
+See `INSTALLATION.md` for per-language build and test commands.
 
 ## Deployment
 

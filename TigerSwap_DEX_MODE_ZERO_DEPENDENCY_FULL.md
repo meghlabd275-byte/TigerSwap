@@ -1,5 +1,14 @@
 # TigerSwap — DEX Mode — Zero External Dependency
 
+> **This is a scope and roadmap document, not a description of the current
+> repository.** It lists the intended feature set and the design principle
+> (build everything in-house; depend on no external CEX or DEX). Many items here
+> are not implemented yet — for example the self-built MPC wallet, the paymaster
+> and gas abstraction, and the MEV-protected private mempool. For the actual
+> state of `main` — what works, what is broken, and what is missing — read
+> [`LAUNCH_AUDIT.md`](./LAUNCH_AUDIT.md) and [`GAP_ANALYSIS.md`](./GAP_ANALYSIS.md).
+> Do not read this file as a statement of what ships today.
+
 TigerSwap is TigerEx's DEX mode. It is a standalone DEX — its own AMM, its own
 order book, its own perps and margin engine — not a wrapper around Uniswap,
 dYdX, GMX or Aave.
