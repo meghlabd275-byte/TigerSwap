@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"sort"
@@ -215,7 +216,7 @@ func (p *PriceAggregator) PriceOnChain(ctx context.Context, chainID int64, symbo
 	if err != nil {
 		return nil, err
 	}
-	if usd <= 0 {
+	if usd <= 0 || math.IsNaN(usd) || math.IsInf(usd, 0) {
 		return nil, fmt.Errorf("oracle returned a non-positive price for %s", sym)
 	}
 

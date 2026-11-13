@@ -368,6 +368,23 @@ func (e *PerpetualEngine) positionFromModel(m *models.PerpetualPosition) (*Perpe
 		leverage = 1
 	}
 
+	// The liquidation price is derived state: it is recomputed from the position's
+	// own size, collateral and the listing's maintenance margin so a restored
+	// position shows the same level a freshly opened one would. A listing that is
+	// currently unlisted yields zero, which is re-derived on the next mark.
+	liquidationPrice := 0.0
+	if cfg := e.market(m.Pair); cfg != nil {
+		sizeRat, serr := perpAmountValue(m.Size)
+		collateralRat, cerr := parseDecimal(m.Collateral)
+		if serr == nil && cerr == nil {
+			if rat, rerr := liquidationPriceRat(cfg, entryPrice, sizeRat, collateralRat, m.Side == "long"); rerr == nil {
+				if converted, ferr := rationalToFloat(rat); ferr == nil {
+					liquidationPrice = converted
+				}
+			}
+		}
+	}
+
 	return &PerpetualPosition{
 		ID:               m.ID.String(),
 		UserAddress:      m.UserID,
@@ -378,7 +395,7 @@ func (e *PerpetualEngine) positionFromModel(m *models.PerpetualPosition) (*Perpe
 		EntryPrice:       entryPrice,
 		MarkPrice:        markPrice,
 		IndexPrice:       markPrice,
-		LiquidationPrice: e.calculateLiquidationPrice(entryPrice, leverage, m.Side == "long"),
+		LiquidationPrice: liquidationPrice,
 		Leverage:         leverage,
 		UnrealizedPNL:    "0",
 		FundingPaid:      m.FundingPaid,
@@ -555,7 +572,6 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 	}
 
 	// Calculate liquidation price
-	liquidationPrice := e.calculateLiquidationPrice(markPrice, leverage, side == "long")
 
 	// Validate numeric inputs and enforce leverage limits.
 	sizeRat, err := perpAmountValue(size)
@@ -571,6 +587,18 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 	}
 	if leverage < 1 || leverage > cfg.MaxLeverage {
 		return nil, fmt.Errorf("leverage must be between 1 and %d for %s", cfg.MaxLeverage, cfg.Symbol)
+	}
+
+	// The liquidation price is derived from the position's own size, collateral and
+	// the listing's maintenance margin, so the level shown to the trader is the
+	// level the risk check acts on.
+	liquidationRat, err := liquidationPriceRat(cfg, markPrice, sizeRat, collateralRat, side == "long")
+	if err != nil {
+		return nil, err
+	}
+	liquidationPrice, err := rationalToFloat(liquidationRat)
+	if err != nil {
+		return nil, err
 	}
 
 	// Margin is size/leverage, computed exactly so a position sized to the limit
@@ -833,7 +861,8 @@ func (e *PerpetualEngine) UpdatePositions(ctx context.Context) error {
 		// settlement; one that has recovered is returned to open, so a temporary
 		// wick does not leave a healthy position permanently untradable.
 		previousStatus := position.Status
-		if e.isLiquidatable(position) {
+		cfg := e.markets[strings.ToUpper(strings.TrimSpace(position.Pair))]
+		if e.isLiquidatable(cfg, position) {
 			position.Status = "liquidatable"
 		} else if position.Status == "liquidatable" {
 			position.Status = "open"
@@ -923,7 +952,7 @@ func (e *PerpetualEngine) LiquidatePosition(ctx context.Context, positionID stri
 	}
 
 	position.MarkPrice = markPrice
-	if !e.isLiquidatable(position) {
+	if !e.isLiquidatable(cfg, position) {
 		position.Status = "open"
 		position.UnrealizedPNL = e.calculatePNL(position, markPrice)
 		return nil, fmt.Errorf("position %s is no longer liquidatable at mark %g", positionID, markPrice)
@@ -1289,22 +1318,102 @@ func (e *PerpetualEngine) getIndexPrice(ctx context.Context, pair string) (float
 	return priceData.USD, nil
 }
 
-func (e *PerpetualEngine) calculateLiquidationPrice(entryPrice float64, leverage int, isLong bool) float64 {
-	// Liquidation price = entryPrice * (1 - 1/leverage * 0.5)
-	// 50% buffer of the position value
-	liquidationThreshold := 1.0 / float64(leverage) * 0.5
-
-	if isLong {
-		return entryPrice * (1 - liquidationThreshold)
+// liquidationPriceRat derives a position's liquidation price from its own size,
+// collateral and the listing's maintenance-margin rate, in exact rational
+// arithmetic. It solves the same relation the health check uses
+// (equity/notional = maintenance) for the price, so the level shown to a trader
+// is exactly the level that triggers settlement. The old code used a hardcoded
+// 0.5 buffer and ignored both the configured rate and the posted collateral,
+// which put the displayed price and the real liquidation level at different
+// values for any listing whose maintenance margin was not 50%.
+func liquidationPriceRat(cfg *perpMarketConfig, entryPrice float64, size, collateral *big.Rat, isLong bool) (*big.Rat, error) {
+	if cfg == nil {
+		return nil, errors.New("liquidation price requires a market listing")
 	}
-	return entryPrice * (1 + liquidationThreshold)
+	entry, err := rationalFromFloat(entryPrice)
+	if err != nil {
+		return nil, fmt.Errorf("entry price is not finite: %w", err)
+	}
+	if entry.Sign() <= 0 {
+		return nil, errors.New("entry price must be positive")
+	}
+	if size == nil || size.Sign() <= 0 {
+		return nil, errors.New("liquidation price requires a positive position size")
+	}
+	if collateral == nil || collateral.Sign() < 0 {
+		return nil, errors.New("liquidation price requires a non-negative collateral")
+	}
+	maintenance, err := rationalFromFloat(cfg.MaintenanceMarginRate)
+	if err != nil {
+		return nil, fmt.Errorf("listing %s has an unreadable maintenance margin %g: %w", cfg.Symbol, cfg.MaintenanceMarginRate, err)
+	}
+	if maintenance.Sign() < 0 || maintenance.Cmp(big.NewRat(1, 1)) >= 0 {
+		return nil, fmt.Errorf("listing %s has an out-of-range maintenance margin %g", cfg.Symbol, cfg.MaintenanceMarginRate)
+	}
+	if maintenance.Sign() == 0 {
+		maintenance = new(big.Rat).SetFloat64(defaultMaintenanceMarginRate)
+	}
+
+	// At the maintenance level: collateral + pnl(price) = maintenance * size.
+	// For a long, pnl = size*(price-entry)/entry, so
+	//   price = entry * (1 + maintenance - collateral/size).
+	// A short mirrors the move the other way.
+	ratio := new(big.Rat).Quo(collateral, size)
+	offset := new(big.Rat).Sub(maintenance, ratio)
+	if !isLong {
+		offset.Neg(offset)
+	}
+	price := new(big.Rat).Mul(entry, new(big.Rat).Add(big.NewRat(1, 1), offset))
+	if price.Sign() < 0 {
+		price = new(big.Rat)
+	}
+	return price, nil
 }
 
-func (e *PerpetualEngine) isLiquidatable(position *PerpetualPosition) bool {
-	if position.Side == "long" {
-		return position.MarkPrice <= position.LiquidationPrice
+// liquidationRequired reports whether a position is below its maintenance margin
+// at the given mark price. It mirrors TigerSwapPerpetuals.liquidatePosition and
+// the keeper's belowMaintenanceMargin: equity is collateral plus PnL, and the
+// position is liquidatable when equity is non-positive or equity/notional is
+// strictly below the listing's maintenance rate. Every step is exact rational
+// arithmetic so a position sitting exactly on its maintenance level is not
+// liquidated by a binary-rounding artefact.
+func liquidationRequired(cfg *perpMarketConfig, position *PerpetualPosition, markPrice float64) bool {
+	if cfg == nil || position == nil {
+		return false
 	}
-	return position.MarkPrice >= position.LiquidationPrice
+	collateral, err := parseDecimal(position.Collateral)
+	if err != nil {
+		return false
+	}
+	notional, err := perpAmountValue(position.Size)
+	if err != nil || notional.Sign() <= 0 {
+		return false
+	}
+	pnl, err := notionalPNL(position.EntryPrice, markPrice, position.Size, position.Side)
+	if err != nil {
+		return false
+	}
+	equity := new(big.Rat).Add(collateral, pnl)
+	if equity.Sign() <= 0 {
+		return true
+	}
+	maintenance, err := rationalFromFloat(cfg.MaintenanceMarginRate)
+	if err != nil || maintenance.Sign() < 0 {
+		return false
+	}
+	if maintenance.Sign() == 0 {
+		maintenance = new(big.Rat).SetFloat64(defaultMaintenanceMarginRate)
+	}
+	// equity/notional < maintenance  <=>  equity < maintenance*notional
+	threshold := new(big.Rat).Mul(maintenance, notional)
+	return equity.Cmp(threshold) < 0
+}
+
+// isLiquidatable reports whether a position is below maintenance at its current
+// mark price. The caller supplies the listing because every caller holds the
+// engine lock, and resolving it here would take the read lock and deadlock.
+func (e *PerpetualEngine) isLiquidatable(cfg *perpMarketConfig, position *PerpetualPosition) bool {
+	return liquidationRequired(cfg, position, position.MarkPrice)
 }
 
 // calculatePNL returns the position's profit and loss in settlement terms.
@@ -1626,6 +1735,12 @@ const (
 	defaultFundingRate     = 0.0001        // 0.01% per interval
 	defaultFundingInterval = 8 * time.Hour // eight-hour settlement
 	defaultFundingRateCap  = 0.01          // 1% absolute cap
+
+	// defaultMaintenanceMarginRate is the maintenance margin applied to a listing
+	// that leaves the field at zero. It matches the deploy script's protocol
+	// default, so an off-chain listing and an on-chain market agree on the level
+	// at which a position is liquidated. A listing's own value always wins.
+	defaultMaintenanceMarginRate = 0.05
 )
 
 // fundingInterval converts a listing's funding interval in hours to a duration.

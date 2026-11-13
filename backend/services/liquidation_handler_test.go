@@ -22,7 +22,9 @@ const p1ID = "11111111-1111-4111-8111-111111111111"
 // entry point has real work to do.
 func newLiquidatablePerpEngine(t *testing.T) *PerpetualEngine {
 	t.Helper()
-	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 90})
+	// With a 5% maintenance margin, 2,000 of margin on a 10,000 long from 100
+	// liquidates at 85; a mark of 84 is strictly below it.
+	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 84})
 	fundTrader(t, ledger, "0xabc", 5000)
 	engine.markets["BTC/RUSD"].LiquidationFeeRate = 0.005
 	engine.positions[p1ID] = &PerpetualPosition{
@@ -33,7 +35,7 @@ func newLiquidatablePerpEngine(t *testing.T) *PerpetualEngine {
 		Size:             "10000",
 		Collateral:       "2000",
 		EntryPrice:       100,
-		LiquidationPrice: 95,
+		LiquidationPrice: 85,
 		Status:           "liquidatable",
 	}
 	return engine

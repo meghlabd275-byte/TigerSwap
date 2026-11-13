@@ -69,8 +69,9 @@ func TestUpdatePositionsFlagsLiquidatable(t *testing.T) {
 		Pair:             "BTC/RUSD",
 		Side:             "long",
 		Size:             "10000",
+		Collateral:       "1000",
 		EntryPrice:       100,
-		LiquidationPrice: 50,
+		LiquidationPrice: 95,
 		Status:           "open",
 	}
 

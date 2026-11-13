@@ -182,9 +182,9 @@ func TestLiquidatePositionPaysTraderAndFeeAccount(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	id := enginePositionID(engine)
-	// The mark falls to 90, crossing the position's liquidation price, and the
+	// The mark falls to 84, below the position's liquidation price of 85, and the
 	// risk engine flags it for settlement.
-	engine.priceAgg.(*stubPriceAggregator).prices["BTC"] = 90
+	engine.priceAgg.(*stubPriceAggregator).prices["BTC"] = 84
 	engine.positions[id].Status = "liquidatable"
 
 	fee, err := engine.LiquidatePosition(context.Background(), id)
@@ -192,10 +192,10 @@ func TestLiquidatePositionPaysTraderAndFeeAccount(t *testing.T) {
 		t.Fatalf("liquidate: %v", err)
 	}
 
-	// At mark 90 a 10,000 long loses 1,000: remaining = 2,000 - 1,000 = 1,000.
-	// Fee = 1,000 * 0.5% = 5; the trader receives 995, the fee account 5. The
-	// trader's balance is the 3,000 left after escrow plus the 995 payout.
-	remaining := new(big.Rat).Sub(new(big.Rat).SetInt64(1000), fee)
+	// At mark 84 a 10,000 long loses 1,600: remaining = 2,000 - 1,600 = 400.
+	// Fee = 400 * 0.5% = 2; the trader receives 398, the fee account 2. The
+	// trader's balance is the 3,000 left after escrow plus the 398 payout.
+	remaining := new(big.Rat).Sub(new(big.Rat).SetInt64(400), fee)
 	traderPayout := scaleToBaseUnits(remaining, 8)
 	traderWant := new(big.Int).Add(new(big.Int).Mul(big.NewInt(3000), pow10(8)), traderPayout)
 	feeWant := scaleToBaseUnits(fee, 8)
