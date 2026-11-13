@@ -100,3 +100,36 @@ func TestChainDTOExposesStoredRPCURL(t *testing.T) {
 		t.Fatalf("expected no endpoints, got %#v", empty.RPCURLs)
 	}
 }
+
+// TestLoadChainRPCsSkipsNonEVMChains pins that a chain an operator marked with a
+// non-EVM type is never registered, even when it is active and has an endpoint.
+// The client dials an EVM JSON-RPC endpoint, so registering a Solana or Cosmos
+// node would only fail later at dial or decode time; refusing it here keeps the
+// readiness probe honest.
+func TestLoadChainRPCsSkipsNonEVMChains(t *testing.T) {
+	db := newStatsTestDB(t)
+	if err := db.Create(&models.Blockchain{
+		ChainID: 101, Name: "Solana", Symbol: "SOL", Type: "solana",
+		RPCURL: "https://rpc.example.invalid/101", IsActive: true,
+	}).Error; err != nil {
+		t.Fatalf("seed non-evm chain: %v", err)
+	}
+	if err := db.Create(&models.Blockchain{
+		ChainID: 6666, Name: "TigerSmartChain", Symbol: "TGR", Type: "evm",
+		RPCURL: "https://rpc.tigerswap.io/6666", IsActive: true,
+	}).Error; err != nil {
+		t.Fatalf("seed evm chain: %v", err)
+	}
+
+	client := NewBlockchainClient()
+	if err := client.LoadChainRPCs(db); err != nil {
+		t.Fatalf("LoadChainRPCs: %v", err)
+	}
+
+	if _, err := client.RPCURLForChain(101); err == nil {
+		t.Fatalf("non-EVM chain must not be registered")
+	}
+	if _, err := client.RPCURLForChain(6666); err != nil {
+		t.Fatalf("EVM chain should be registered: %v", err)
+	}
+}

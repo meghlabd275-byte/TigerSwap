@@ -172,7 +172,10 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   registers every active chain's endpoint and unregisters a chain that was
   deactivated or had its endpoint cleared. It runs at startup and again from the
   chain admin handlers (`SetBlockchainClient` wires it), so a change made in the
-  admin panel is dialled without a restart.
+  admin panel is dialled without a restart. Only a chain whose `blockchains.type`
+  is EVM (`"evm"` or empty) is registered — the client dials an EVM JSON-RPC
+  endpoint, so a row an operator marked `solana`/`cosmos`/`ton` is skipped rather
+  than dialled with an `ethclient`.
 - `GetClient` resolves the endpoint before taking the write lock — calling
   `RPCURLForChain` while holding it would deadlock, because that method takes the
   same lock for reading. It re-checks the cache after acquiring the lock so two

@@ -121,6 +121,20 @@ func rpcFromEnv(chainID int64) string {
 	return os.Getenv(fmt.Sprintf("TIGERSWAP_RPC_URL_%d", chainID))
 }
 
+// isEVMChainType reports whether a `blockchains.type` value names a chain the
+// EVM client can serve. The seeded and operator-created EVM rows use "evm"; an
+// empty type is accepted for compatibility with a row written before the type
+// column was populated. Any other value (solana, cosmos, ton, ...) is refused so
+// the watcher never dials a non-EVM node with an ethclient.
+func isEVMChainType(chainType string) bool {
+	switch strings.ToLower(strings.TrimSpace(chainType)) {
+	case "", "evm":
+		return true
+	default:
+		return false
+	}
+}
+
 // NewBlockchainClient returns a client with no RPC endpoints preconfigured.
 //
 // TigerSwap runs its own nodes, so endpoints are supplied by the operator via
@@ -196,6 +210,14 @@ func (b *BlockchainClient) LoadChainRPCs(db *gorm.DB) error {
 	for _, row := range rows {
 		url := strings.TrimSpace(row.RPCURL)
 		if url == "" || !row.IsActive {
+			continue
+		}
+		// The client dials an EVM JSON-RPC endpoint. A chain an operator marked
+		// with a non-EVM type (solana, cosmos, ton, ...) cannot be served by an
+		// ethclient, so registering its endpoint would only produce a dial or a
+		// decode failure later. An empty type is treated as EVM, matching the
+		// seeded rows.
+		if !isEVMChainType(row.Type) {
 			continue
 		}
 		// An endpoint present in the environment overrides the stored value, but the
