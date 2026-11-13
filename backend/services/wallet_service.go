@@ -32,16 +32,19 @@ import (
 
 // WalletService handles wallet operations
 type WalletService struct {
-	db            *gorm.DB
-	blockchain    *BlockchainClient
-	swapExecutor  *SwapExecutor
-	perpetuals    *PerpetualEngine
-	copyEngine    *CopyTradingEngine
-	ledger        *LedgerService
-	masterKeys    map[string]*ecdsa.PrivateKey
-	encryptionKey []byte
-	hdSeed        []byte
-	mu            sync.RWMutex
+	db           *gorm.DB
+	blockchain   *BlockchainClient
+	swapExecutor *SwapExecutor
+	perpetuals   *PerpetualEngine
+	copyEngine   *CopyTradingEngine
+	ledger       *LedgerService
+	// withdrawalPolicy enforces the allow-list, cooldown and per-asset limit on
+	// the outbound path. It is nil only in a test that does not exercise it.
+	withdrawalPolicy *WithdrawalService
+	masterKeys       map[string]*ecdsa.PrivateKey
+	encryptionKey    []byte
+	hdSeed           []byte
+	mu               sync.RWMutex
 }
 
 // NewWalletService builds a wallet service. The encryption key is read from
@@ -77,6 +80,18 @@ func (s *WalletService) SetDependencies(blockchain *BlockchainClient, executor *
 // SetLedger wires the internal accounting service used to authorize withdrawals.
 func (s *WalletService) SetLedger(ledger *LedgerService) {
 	s.ledger = ledger
+}
+
+// SetWithdrawalPolicy attaches the outbound policy. Without it a withdrawal is
+// rejected rather than sent unchecked.
+func (s *WalletService) SetWithdrawalPolicy(policy *WithdrawalService) {
+	s.withdrawalPolicy = policy
+}
+
+// SignWithdrawalKey exposes the platform signer to the withdrawal service so the
+// approval queue can release a held withdrawal without duplicating key handling.
+func (s *WalletService) SignWithdrawalKey() (*ecdsa.PrivateKey, error) {
+	return s.platformKey()
 }
 
 // GetBalances returns the authenticated caller's platform ledger balances.
@@ -748,6 +763,45 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	amount, ok := new(big.Int).SetString(req.Amount, 10)
 	if !ok || amount.Sign() <= 0 {
 		c.JSON(400, gin.H{"error": "Invalid amount"})
+		return
+	}
+
+	// Withdrawal policy: an allow-listed, cooled-down destination, and a per-asset
+	// limit that routes an oversized request into the operator approval queue. The
+	// policy fails closed: a server without it refuses to send rather than sending
+	// unchecked.
+	if s.withdrawalPolicy == nil {
+		log.Printf("wallet: withdrawal rejected, no policy is configured")
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "withdrawal policy is not configured"})
+		return
+	}
+	decision, err := s.withdrawalPolicy.Evaluate(userID, req.ChainID, req.Token, req.ToAddress, amount)
+	if err != nil {
+		log.Printf("wallet: withdrawal policy evaluation failed: %v", err)
+		c.JSON(500, gin.H{"error": "withdrawal policy unavailable"})
+		return
+	}
+	if !decision.Allowed {
+		c.JSON(403, gin.H{"error": decision.Reason})
+		return
+	}
+	if decision.RequiresApproval {
+		requestID, err := s.withdrawalPolicy.CreatePendingRequest(userID, req.ChainID, req.Token, req.ToAddress, amount)
+		if err != nil {
+			if errors.Is(err, ErrInsufficientBalance) {
+				c.JSON(409, gin.H{"error": "Insufficient balance"})
+				return
+			}
+			log.Printf("wallet: failed to queue withdrawal for approval: %v", err)
+			c.JSON(500, gin.H{"error": "failed to queue withdrawal"})
+			return
+		}
+		c.JSON(202, gin.H{
+			"success":    true,
+			"status":     "pending_approval",
+			"request_id": requestID.String(),
+			"message":    "this withdrawal exceeds the automatic limit and is awaiting operator approval",
+		})
 		return
 	}
 

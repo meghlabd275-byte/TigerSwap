@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -67,6 +69,19 @@ func corsAllowedOrigins() []string {
 		return []string{"http://localhost:3000"}
 	}
 	return origins
+}
+
+// walletSigner returns a signer for approved withdrawal releases. It resolves the
+// platform key through the wallet service so the queue and the direct path use
+// one key source; when custody is disabled the signer reports unavailable and an
+// approval is refused rather than sent unsigned.
+func walletSigner(wallet *services.WalletService) func() (*ecdsa.PrivateKey, error) {
+	return func() (*ecdsa.PrivateKey, error) {
+		if wallet == nil {
+			return nil, fmt.Errorf("wallet custody is not configured")
+		}
+		return wallet.SignWithdrawalKey()
+	}
 }
 
 func main() {
@@ -150,6 +165,9 @@ func main() {
 		&models.WalletLoginNonce{},
 		&models.RefreshToken{},
 		&models.AccountToken{},
+		&models.WithdrawalAddress{},
+		&models.WithdrawalLimit{},
+		&models.WithdrawalRequest{},
 	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
@@ -360,6 +378,15 @@ func main() {
 		log.Println("WALLET_ENCRYPTION_KEY not set: wallet custody endpoints are disabled")
 	}
 
+	// The withdrawal policy is attached to the wallet service before the router
+	// is built, so a withdrawal cannot reach the signer without passing the
+	// allow-list and limit checks. It signs approved queue releases with the same
+	// platform key the direct path uses.
+	withdrawalService := services.NewWithdrawalService(db, ledgerService, blockchainClient, walletSigner(walletService))
+	if walletService != nil {
+		walletService.SetWithdrawalPolicy(withdrawalService)
+	}
+
 	// Credit user balances from confirmed on-chain deposits. The watcher owns
 	// the only path that creates platform credit.
 	depositWatcher := services.NewDepositWatcher(db, blockchainClient, ledgerService)
@@ -429,6 +456,7 @@ func main() {
 		launchpadService:   launchpadService,
 		feeCollector:       feeCollector,
 		walletService:      walletService,
+		withdrawalService:  withdrawalService,
 		otcService:         otcService,
 		botsService:        botsService,
 		dynamicIntegration: dynamicIntegration,

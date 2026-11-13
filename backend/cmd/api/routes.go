@@ -38,6 +38,7 @@ type apiDeps struct {
 	launchpadService   *services.LaunchpadService
 	feeCollector       *services.FeeCollectorService
 	walletService      *services.WalletService
+	withdrawalService  *services.WithdrawalService
 	otcService         *services.OtcService
 	botsService        *services.BotsService
 	dynamicIntegration *services.DynamicIntegrationService
@@ -281,6 +282,11 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				protected.POST("/wallet/autosign", tradingGate(deps.walletService.AutoSignTransaction))
 				protected.POST("/wallet/deposit", deps.platformGate.RequireDeposits(), deps.walletService.Deposit)
 				protected.POST("/wallet/withdraw", deps.platformGate.RequireWithdrawals(), deps.authService.TOTPRequired(), deps.walletService.Withdraw)
+				// Withdrawal policy: allow-listed destinations and the
+				// operator approval queue for oversized requests.
+				protected.POST("/wallet/withdraw/addresses", deps.withdrawalService.AddAddress)
+				protected.GET("/wallet/withdraw/addresses", deps.withdrawalService.ListAddresses)
+				protected.DELETE("/wallet/withdraw/addresses/:id", deps.withdrawalService.DeleteAddress)
 				protected.POST("/wallet/swap", tradingGate(deps.walletService.ExecuteSwap))
 				protected.POST("/wallet/swap/quote", deps.walletService.GetSwapQuote)
 				protected.POST("/wallet/perpetual/open", tradingGate(deps.walletService.CreatePerpetualPosition))
@@ -427,6 +433,13 @@ func setupRouter(deps apiDeps) *gin.Engine {
 
 			// OTC block trades: expire open orders whose window has passed.
 			admin.POST("/otc/expire", deps.otcService.ExpireStaleOrdersHandler)
+
+			// Withdrawal limits and the approval queue (admin only).
+			admin.POST("/withdrawals/limits", deps.withdrawalService.SetLimit)
+			admin.GET("/withdrawals/limits", deps.withdrawalService.ListLimits)
+			admin.GET("/withdrawals/requests", deps.withdrawalService.ListRequests)
+			admin.POST("/withdrawals/requests/:id/approve", deps.withdrawalService.ApproveRequest)
+			admin.POST("/withdrawals/requests/:id/refuse", deps.withdrawalService.RefuseRequest)
 
 			// Fee management (admin only)
 			admin.GET("/fees/config", deps.feeCollector.GetConfigHandler)

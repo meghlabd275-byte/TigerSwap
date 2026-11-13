@@ -16,11 +16,20 @@ import (
 func newWithdrawTestService(t *testing.T) (*WalletService, *LedgerService) {
 	t.Helper()
 	db := newWalletTestDB(t)
-	if err := db.AutoMigrate(&models.AccountBalance{}, &models.Transaction{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.AccountBalance{},
+		&models.Transaction{},
+		&models.WithdrawalAddress{},
+		&models.WithdrawalLimit{},
+		&models.WithdrawalRequest{},
+	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	ledger := NewLedgerService(db)
 	svc := &WalletService{db: db, blockchain: NewBlockchainClient(), ledger: ledger}
+	// The policy here has no allow-list and no limits, so these tests exercise the
+	// balance gate rather than the destination policy, which has its own tests.
+	svc.SetWithdrawalPolicy(&WithdrawalService{db: db, ledger: ledger, requireAllowlist: false})
 	return svc, ledger
 }
 
