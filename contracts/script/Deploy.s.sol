@@ -59,6 +59,8 @@ contract Deploy is Script {
 
         vm.stopBroadcast();
 
+        _seedMarkets(perps);
+
         _write(chainId, address(factory), address(router), address(quoter), address(oracle), address(perps), address(lending), address(bridge), weth);
 
         console2.log("TigerSwap deployed on chain", chainId);
@@ -69,6 +71,48 @@ contract Deploy is Script {
         console2.log("  perps  ", address(perps));
         console2.log("  lending", address(lending));
         console2.log("  bridge ", address(bridge));
+    }
+
+    /// @notice Optionally create perpetual markets on the freshly deployed
+    ///         contract. Each entry is `SYMBOL:SETTLEMENT_TOKEN:MAX_LEVERAGE`,
+    ///         comma-separated, e.g. `BTC/RUSD:0xToken:20,ETH/RUSD:0xToken:20`.
+    ///         Risk parameters use protocol defaults (maintenance 5%, liquidation
+    ///         fee 1%, initial margin = 1/leverage), so a seeded market is
+    ///         immediately tradable and can be tuned later by updateMarket.
+    ///         Idempotent: a market that already exists is skipped, because
+    ///         createMarket reverts on a duplicate.
+    function _seedMarkets(TigerSwapPerpetuals perps) internal {
+        string memory raw = vm.envOr("TIGERSWAP_PERPS_MARKETS", string(""));
+        if (bytes(raw).length == 0) {
+            return;
+        }
+
+        vm.startBroadcast();
+        string[] memory entries = vm.split(raw, ",");
+        for (uint256 i = 0; i < entries.length; i++) {
+            string[] memory parts = vm.split(entries[i], ":");
+            require(parts.length == 3, "Deploy: market entry must be SYMBOL:TOKEN:LEVERAGE");
+            bytes32 marketId = keccak256(bytes(parts[0]));
+            if (perps.getMarket(marketId).token != address(0)) {
+                continue;
+            }
+            address token = vm.parseAddress(parts[1]);
+            uint256 leverage = vm.parseUint(parts[2]);
+            require(token != address(0), "Deploy: market token is required");
+            require(leverage >= 1 && leverage <= 1001, "Deploy: leverage out of range");
+
+            uint256 initialMargin = perps.RATIO_PRECISION() / leverage;
+            perps.createMarket(
+                marketId,
+                token,
+                leverage * perps.RATIO_PRECISION(),
+                perps.RATIO_PRECISION() / 100, // 1% liquidation fee
+                perps.RATIO_PRECISION() / 20, // 5% maintenance margin
+                initialMargin
+            );
+            console2.log("seeded perps market", parts[0]);
+        }
+        vm.stopBroadcast();
     }
 
     function _write(

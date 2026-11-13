@@ -186,6 +186,45 @@ there are no defaults, by design. `WALLET_ENCRYPTION_KEY` enables custody
 endpoints. `PLATFORM_SIGNER_KEY` signs withdrawals. `WALLET_HD_SEED` derives
 deposit addresses.
 
+## On-chain perpetuals (funding, markets, deployment registry)
+
+`TigerSwapPerpetuals` is the on-chain settlement layer. Its funding, the keeper
+that liquidates, and the registry the API reads are one system.
+
+- Funding accrues per position at settlement time from the signed mark/index
+  spread published by `updateFundingRate`, scaled by elapsed time over
+  `FUNDING_INTERVAL` (1 hour) at `FUNDING_RATE_PRECISION` (1e6). A long pays when
+  the rate is positive and the pool is the counterparty; the sign flips for a
+  short. `calculateFunding` is a view so the API can show accrued funding.
+  `_applyFunding` runs in `closePosition`, `liquidatePosition`, `addMargin` and
+  `removeMargin` — margin changes settle accrued funding first, otherwise a
+  deposit would reset `lastUpdated` and forgive funding the position already owed.
+- Funding never drives collateral negative (it is capped at the position's
+  collateral). When the pool cannot pay a negative rate, the shortfall is
+  recorded in `owedFunding[token]` and reserved against LP withdrawal; it is
+  never minted.
+- The keeper's health check (`belowMaintenanceMargin`) mirrors the accrual, so a
+  position funding has pushed under maintenance is liquidated.
+- `config/deployments` reads the per-chain JSON registry that
+  `contracts/script/Deploy.s.sol` writes (`contracts/deployments/<chainId>.json`).
+  `deployments.LoadAll` prefers an explicit `TIGERSWAP_DEPLOYMENTS_DIR`, then
+  falls back to the repository layout, so a server started from `backend/` finds
+  it. The perps loader prefers the registry over env vars; `TIGERSWAP_PERPS_<id>`
+  overrides a registry address and `TIGERSWAP_PERPS_CHAINS` remains for a chain
+  with no registry file.
+- Keys: `TIGERSWAP_PERPS_KEEPER_KEY` (or `TIGERSWAP_SIGNER_KEY`) signs
+  liquidations and oracle pushes. `TIGERSWAP_PERPS_OWNER_KEY` signs owner-only
+  calls (`createMarket`) and is a different key from the keeper's.
+- An admin perps listing is mirrored on-chain by `CreateMarketOnChain`, signed
+  with the owner key. It is idempotent (a market that already exists is skipped)
+  and derives the market id as `keccak256(symbol)` — the same id the deploy
+  script seeds. If the owner key is unset the listing is still persisted and the
+  response carries a warning; it is never sent with the keeper key.
+- The deploy script seeds markets when `TIGERSWAP_PERPS_MARKETS` is set, e.g.
+  `TIGERSWAP_PERPS_MARKETS="BTC/RUSD:0xToken:20,ETH/RUSD:0xToken:20"`. Each entry
+  is `SYMBOL:SETTLEMENT_TOKEN:MAX_LEVERAGE`; defaults are maintenance 5%,
+  liquidation fee 1%, initial margin `1/leverage`.
+
 ## Admin listing management
 
 Future, perps and margin listings are admin-managed and persisted in
