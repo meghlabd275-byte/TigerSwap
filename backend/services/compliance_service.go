@@ -605,6 +605,49 @@ func (s *ComplianceService) RequireVerifiedWithdrawal() gin.HandlerFunc {
 	})
 }
 
+// RequireAllowedJurisdiction refuses a mutating request from an account whose
+// declared jurisdiction is restricted. It complements RequireVerifiedTrading:
+// that gate answers "is this account verified?", this one answers "is this
+// account's country permitted?". The withdrawal path screens the destination
+// country the same way; without this the trading paths would only check KYC and
+// a verified account in a restricted jurisdiction could still trade.
+//
+// An account with no declared country is left to the KYC gate: if the operator
+// requires verification it is refused there, and if it does not, there is no
+// jurisdiction to enforce. It fails closed on a store error.
+func (s *ComplianceService) RequireAllowedJurisdiction() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !s.enforceKYC {
+			c.Next()
+			return
+		}
+		userID := c.GetString("user_id")
+		if userID == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Authenticated session required"})
+			return
+		}
+		profile, err := s.profileFor(userID)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "compliance check unavailable"})
+			return
+		}
+		if profile == nil || profile.Country == "" {
+			c.Next()
+			return
+		}
+		allowed, err := s.CountryAllowed(profile.Country)
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "compliance check unavailable"})
+			return
+		}
+		if !allowed {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "trading is not permitted in your jurisdiction"})
+			return
+		}
+		c.Next()
+	}
+}
+
 func (s *ComplianceService) requireVerified(when func(*models.ComplianceSettings) bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !s.enforceKYC {

@@ -187,8 +187,13 @@ func setupRouter(deps apiDeps) *gin.Engine {
 				return h
 			}
 			verify := deps.complianceService.RequireVerifiedTrading()
+			jurisdiction := deps.complianceService.RequireAllowedJurisdiction()
 			return func(c *gin.Context) {
 				verify(c)
+				if c.IsAborted() {
+					return
+				}
+				jurisdiction(c)
 				if c.IsAborted() {
 					return
 				}

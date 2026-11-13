@@ -336,3 +336,49 @@ func TestAddSanctionsEntryRejectsBadAddress(t *testing.T) {
 		t.Fatalf("expected 400 for a bad address, got %d", rec.Code)
 	}
 }
+
+func TestRequireAllowedJurisdictionBlocksRestrictedCountry(t *testing.T) {
+svc, db := newComplianceTestEnv(t)
+updateComplianceSettingsForTest(t, svc, map[string]interface{}{
+"restricted_countries": "KP,IR",
+})
+// SubmitKYC itself refuses a restricted country, so a profile in one can only
+// arise when the operator adds the country after approval. Insert it directly
+// to model that state.
+if err := db.Create(&models.KycProfile{
+UserID:  "user-1",
+Country: "KP",
+Status:  models.KycStatusApproved,
+}).Error; err != nil {
+t.Fatalf("seed profile: %v", err)
+}
+
+gate := svc.RequireAllowedJurisdiction()
+if rec := runMiddleware(t, gate, "user-1"); rec.Code != http.StatusForbidden {
+t.Fatalf("restricted jurisdiction must be refused, got %d", rec.Code)
+}
+}
+
+func TestRequireAllowedJurisdictionAllowsPermittedCountry(t *testing.T) {
+svc, _ := newComplianceTestEnv(t)
+updateComplianceSettingsForTest(t, svc, map[string]interface{}{
+"restricted_countries": "KP,IR",
+})
+submitKYCForTest(t, svc, "user-1", "GB")
+
+if rec := runMiddleware(t, svc.RequireAllowedJurisdiction(), "user-1"); rec.Code != http.StatusOK {
+t.Fatalf("permitted jurisdiction must pass, got %d", rec.Code)
+}
+}
+
+func TestRequireAllowedJurisdictionWithoutProfilePasses(t *testing.T) {
+svc, _ := newComplianceTestEnv(t)
+updateComplianceSettingsForTest(t, svc, map[string]interface{}{
+"restricted_countries": "KP,IR",
+})
+// No profile: there is no declared country to enforce, so the KYC gate (not
+// this one) is what refuses an unverified account.
+if rec := runMiddleware(t, svc.RequireAllowedJurisdiction(), "stranger"); rec.Code != http.StatusOK {
+t.Fatalf("no-country account must pass the jurisdiction gate, got %d", rec.Code)
+}
+}
