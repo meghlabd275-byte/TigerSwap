@@ -23,6 +23,14 @@ import (
 // nativeTokenKey is the ledger key for a chain's native asset.
 const nativeTokenKey = "native"
 
+// nativeDepositLogIndex is the processed_deposits log_index stored for a native
+// transfer. A native transfer emits no log, so the ERC-20 log index (0..n-1)
+// would collide with a Transfer event at index 0 in the same transaction: the
+// native leg would be recorded first and the ERC-20 leg's insert would then hit
+// the unique key and be dropped. A negative sentinel cannot be a real log index,
+// so the two legs of one transaction can never share a key.
+const nativeDepositLogIndex = -1
+
 // DepositWatcher credits user ledger balances from confirmed on-chain deposits.
 //
 // The watcher is the only path that creates platform credit, so it is
@@ -198,7 +206,7 @@ func (w *DepositWatcher) scanBlock(ctx context.Context, client *ethclient.Client
 		// Native transfer.
 		if tx.To() != nil {
 			if ownerID, ok := addressOwners[strings.ToLower(tx.To().Hex())]; ok && tx.Value().Sign() > 0 {
-				if err := w.creditDeposit(chainID, tx, 0, ownerID, nativeTokenKey, "native", 18, tx.Value(), blockNumber); err != nil {
+				if err := w.creditDeposit(chainID, tx, nativeDepositLogIndex, ownerID, nativeTokenKey, "native", 18, tx.Value(), blockNumber); err != nil {
 					return err
 				}
 			}
@@ -274,7 +282,8 @@ var erc20TransferTopic = common.HexToHash("0xddf252ad1be2c89b69c2b068fc378daa952
 
 // creditDeposit records a deposit and credits the owner's ledger balance in one
 // transaction. The unique key on processed_deposits makes a replayed block a
-// no-op instead of a double credit.
+// no-op instead of a double credit. A native transfer is recorded under
+// nativeDepositLogIndex, which no ERC-20 log index can equal.
 func (w *DepositWatcher) creditDeposit(
 	chainID int64,
 	tx *types.Transaction,

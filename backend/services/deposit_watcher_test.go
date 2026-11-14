@@ -151,3 +151,32 @@ func TestDepositWatcherDoesNotCreditUnregisteredAddress(t *testing.T) {
 		t.Fatalf("expected zero balance, got %s", available)
 	}
 }
+
+// TestDepositWatcherCreditsNativeAndLogZeroTogether is the regression test for the
+// key collision between a native transfer (which has no log) and an ERC-20
+// Transfer emitted at log index 0 in the same transaction. Before the fix both
+// were recorded under log_index 0, so the second credit hit the unique key and
+// was silently dropped; now the native leg uses a negative sentinel and both are
+// credited.
+func TestDepositWatcherCreditsNativeAndLogZeroTogether(t *testing.T) {
+	_, ledger, watcher := newWatcherTestDB(t)
+
+	tx := types.NewTx(&types.LegacyTx{Nonce: 7, Value: big.NewInt(1_000)})
+	erc20Amount := big.NewInt(2_000)
+
+	if err := watcher.creditDeposit(1, tx, nativeDepositLogIndex, "user-1", nativeTokenKey, "ETH", 18, big.NewInt(1_000), 50); err != nil {
+		t.Fatalf("native leg: %v", err)
+	}
+	if err := watcher.creditDeposit(1, tx, 0, "user-1", "0xToken", "TGR", 18, erc20Amount, 50); err != nil {
+		t.Fatalf("erc20 log 0 leg: %v", err)
+	}
+
+	nativeBalance, _ := ledger.Available("user-1", 1, nativeTokenKey)
+	if nativeBalance.Cmp(big.NewInt(1_000)) != 0 {
+		t.Fatalf("expected native 1000, got %s", nativeBalance)
+	}
+	tokenBalance, _ := ledger.Available("user-1", 1, "0xToken")
+	if tokenBalance.Cmp(erc20Amount) != 0 {
+		t.Fatalf("expected erc20 2000, got %s", tokenBalance)
+	}
+}
