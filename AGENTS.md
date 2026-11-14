@@ -554,8 +554,14 @@ and a dispatcher POSTs a signed payload when an event fires.
   only `http`/`https`, and the host must resolve to a public address. Loopback,
   private, link-local (including `169.254.169.254`) and carrier-grade-NAT ranges
   are refused, so a subscriber cannot point a webhook at an internal service or
-  the cloud metadata endpoint. `WEBHOOK_ALLOW_PRIVATE=true` re-enables a
-  loopback target for local development only.
+  the cloud metadata endpoint. The check runs at connect time as well as at
+  validation time: the client's transport dials through `safeDialContext`,
+  which resolves the host itself and connects only to an `isPublicIP` address.
+  Resolving once for validation and again for the socket is not enough — a
+  hostname that answers a public address the first time and a private one the
+  second (DNS rebinding) would slip past a validate-then-dial pair.
+  `WEBHOOK_ALLOW_PRIVATE=true` re-enables a loopback target for local
+  development only.
 - Only events the platform actually emits are subscribable
   (`deposit.confirmed`, `withdrawal.sent`, `withdrawal.failed`); a
   subscribable-but-never-fired event is not offered. `deposit.confirmed` fires
