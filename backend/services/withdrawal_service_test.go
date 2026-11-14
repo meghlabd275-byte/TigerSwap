@@ -25,6 +25,7 @@ func newWithdrawalTestEnv(t *testing.T, requireAllowlist bool) (*WithdrawalServi
 	db := newWalletTestDB(t)
 	if err := db.AutoMigrate(
 		&models.AccountBalance{},
+		&models.Transaction{},
 		&models.WithdrawalAddress{},
 		&models.WithdrawalLimit{},
 		&models.WithdrawalRequest{},

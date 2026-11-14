@@ -180,6 +180,19 @@ func main() {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 
+	// transactions.hash must be unique only once it is known. A withdrawal row is
+	// inserted before it is broadcast, so several rows can carry an empty hash at
+	// the same time; a full unique index (what the old `uniqueIndex` tag built)
+	// rejects the second such insert. The model no longer declares the index, and
+	// it is a partial index here instead. The legacy full index, if a previous
+	// deployment created it, is dropped first.
+	if err := db.Exec("DROP INDEX IF EXISTS idx_transactions_hash").Error; err != nil {
+		log.Fatalf("Failed to drop the legacy transactions hash index: %v", err)
+	}
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_hash_partial ON transactions (hash) WHERE hash <> ''").Error; err != nil {
+		log.Fatalf("Failed to create the transactions hash index: %v", err)
+	}
+
 	// Initialize Redis
 	redis := config.InitRedis()
 

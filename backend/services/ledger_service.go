@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"math/big"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
@@ -194,6 +196,61 @@ func mutateWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress, symbo
 	return tx.Model(&models.AccountBalance{}).
 		Where("id = ?", row.ID).
 		Update("available", row.Available).Error
+}
+
+// ReserveWithdrawal debits the amount plus the fee from the payer, credits the
+// fee to the platform fee account, and records the withdrawal as a pending
+// transaction row, all in one transaction. Recording the row in the same
+// transaction as the debit is what makes the payout recoverable: the reconciler
+// only sweeps rows that exist, so a debit that committed without its row would
+// strand the funds with nothing to reconcile. The row is inserted with an empty
+// hash (the partial unique index ignores it) and the hash is written once the
+// release is broadcast.
+func (s *LedgerService) ReserveWithdrawal(userID string, chainID int64, tokenAddress string, amount, fee *big.Int, toAddress string) (*models.Transaction, error) {
+	if amount == nil || amount.Sign() <= 0 {
+		return nil, fmt.Errorf("withdrawal amount must be positive")
+	}
+
+	var row models.Transaction
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.chargeWithFeeWithin(tx, userID, chainID, tokenAddress, amount, fee); err != nil {
+			return err
+		}
+		row = models.Transaction{
+			ID:         uuid.New(),
+			UserID:     parseUserUUID(userID),
+			Hash:       "",
+			ChainID:    chainID,
+			Type:       "withdraw",
+			FromToken:  tokenAddress,
+			FromAmount: amount.String(),
+			ToAddress:  toAddress,
+			Status:     "pending",
+			Timestamp:  time.Now(),
+		}
+		return tx.Create(&row).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &row, nil
+}
+
+// RefundWithdrawal returns a reserved withdrawal's amount and fee to the payer,
+// takes the fee back out of the platform fee account, and deletes the pending
+// row, all in one transaction. It is the abandonment path: when the release
+// cannot be broadcast the reserved funds are returned and the row is removed so
+// the reconciler has nothing to sweep. The delete and the refund commit
+// together, so a crash cannot leave funds returned with the row still pending
+// (which the reconciler would then refund a second time).
+func (s *LedgerService) RefundWithdrawal(transactionID interface{}, userID string, chainID int64, tokenAddress string, amount, fee *big.Int) error {
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.refundWithFeeWithin(tx, userID, chainID, tokenAddress, amount, fee); err != nil {
+			return err
+		}
+		return tx.Where("id = ? AND type = ? AND status = ?", transactionID, "withdraw", "pending").
+			Delete(&models.Transaction{}).Error
+	})
 }
 
 // Available returns a user's available balance for a token, or zero if the

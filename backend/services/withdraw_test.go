@@ -195,3 +195,92 @@ func TestGetBalancesReturnsOnlyCallersRows(t *testing.T) {
 		t.Fatalf("response leaked another account: %s", body)
 	}
 }
+
+// TestWithdrawRecordsRowAtomicallyWithDebit proves the withdrawal row is written
+// in the same transaction as the debit. Before the fix the debit committed first
+// and the row was written only after a successful broadcast, so a crash in
+// between (or a second concurrent withdrawal, whose empty-hash row collided with
+// the unique index) could strand funds with nothing for the reconciler to find.
+// Here the send fails, so the whole reserve must roll back: no debit and no row.
+func TestWithdrawRecordsRowAtomicallyWithDebit(t *testing.T) {
+	svc, ledger := newWithdrawTestService(t)
+	if err := ledger.Credit("trader", 1, "native", "ETH", 18, big.NewInt(1000)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+
+	rec := runAuthenticatedHandler(t, svc.Withdraw, "trader", map[string]interface{}{
+		"to_address": "0x1111111111111111111111111111111111111111",
+		"chain_id":   1,
+		"token":      "native",
+		"amount":     "500",
+	}, nil)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected a failed send, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// The signer was unavailable, so the send never happened; the reserve must have
+	// been rolled back completely.
+	available, _ := ledger.Available("trader", 1, "native")
+	if available.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("a failed withdrawal must not leave the payer debited, balance is %s", available)
+	}
+	var rows int64
+	svc.db.Model(&models.Transaction{}).Where("type = ?", "withdraw").Count(&rows)
+	if rows != 0 {
+		t.Fatalf("a failed withdrawal must not leave a pending row, found %d", rows)
+	}
+}
+
+// TestReserveWithdrawalRollsBackOnShortfall proves the reserve is all-or-nothing:
+// a caller who cannot cover the amount plus the fee is not debited and gets no row.
+func TestReserveWithdrawalRollsBackOnShortfall(t *testing.T) {
+	_, ledger := newWithdrawTestService(t)
+	if err := ledger.Credit("trader", 1, "native", "ETH", 18, big.NewInt(100)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+
+	_, err := ledger.ReserveWithdrawal("trader", 1, "native", big.NewInt(100), big.NewInt(5), "0x1111111111111111111111111111111111111111")
+	if err == nil {
+		t.Fatal("expected the reserve to fail when the fee is unaffordable")
+	}
+	available, _ := ledger.Available("trader", 1, "native")
+	if available.Cmp(big.NewInt(100)) != 0 {
+		t.Fatalf("a rolled-back reserve must not debit the payer, balance is %s", available)
+	}
+	var rows int64
+	ledger.db.Model(&models.Transaction{}).Where("type = ?", "withdraw").Count(&rows)
+	if rows != 0 {
+		t.Fatalf("a rolled-back reserve must not leave a row, found %d", rows)
+	}
+}
+
+// TestRefundWithdrawalRemovesRowAndReturnsFunds proves the abandonment path is
+// atomic: the refund and the row delete commit together, so the reconciler can
+// never find a row whose funds were already returned (which would refund twice).
+func TestRefundWithdrawalRemovesRowAndReturnsFunds(t *testing.T) {
+	_, ledger := newWithdrawTestService(t)
+	if err := ledger.Credit("trader", 1, "native", "ETH", 18, big.NewInt(1000)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+	row, err := ledger.ReserveWithdrawal("trader", 1, "native", big.NewInt(500), big.NewInt(0), "0x1111111111111111111111111111111111111111")
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	reserved, _ := ledger.Available("trader", 1, "native")
+	if reserved.Cmp(big.NewInt(500)) != 0 {
+		t.Fatalf("reserve must debit the amount, balance is %s", reserved)
+	}
+
+	if err := ledger.RefundWithdrawal(row.ID, "trader", 1, "native", big.NewInt(500), big.NewInt(0)); err != nil {
+		t.Fatalf("refund: %v", err)
+	}
+	available, _ := ledger.Available("trader", 1, "native")
+	if available.Cmp(big.NewInt(1000)) != 0 {
+		t.Fatalf("refund must restore the balance, got %s", available)
+	}
+	var rows int64
+	ledger.db.Model(&models.Transaction{}).Where("id = ?", row.ID).Count(&rows)
+	if rows != 0 {
+		t.Fatalf("the abandoned withdrawal row must be removed, found %d", rows)
+	}
+}

@@ -856,10 +856,13 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	}
 	total := new(big.Int).Add(amount, fee)
 
-	// Debit first: this is the authorization gate. It fails closed if the user
-	// does not hold enough on the platform. The fee is moved to the platform fee
-	// account in the same transaction as the amount debit.
-	if err := s.ledger.ChargeWithFee(userID, req.ChainID, req.Token, amount, fee); err != nil {
+	// Reserve the funds and record the withdrawal row in one transaction: the
+	// debit, the fee move and the pending row land together or not at all. This is
+	// the authorization gate (it fails closed if the user is short) and it is also
+	// what makes the payout recoverable — the reconciler sweeps the row, so a debit
+	// without a row would strand the funds.
+	withdrawal, err := s.ledger.ReserveWithdrawal(userID, req.ChainID, req.Token, amount, fee, common.HexToAddress(req.ToAddress).Hex())
+	if err != nil {
 		if errors.Is(err, ErrInsufficientBalance) {
 			c.JSON(409, gin.H{"error": "Insufficient balance"})
 			return
@@ -872,15 +875,19 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		return
 	}
 
+	// release abandons the withdrawal and returns the reserved funds. It is used
+	// when the release cannot be broadcast, so the user is never charged for a
+	// payout that did not go out. The row is removed in the same transaction as the
+	// refund, so an abandoned withdrawal leaves no row for the reconciler to sweep.
+	release := func() {
+		if refundErr := s.ledger.RefundWithdrawal(withdrawal.ID, userID, req.ChainID, req.Token, amount, fee); refundErr != nil {
+			log.Printf("CRITICAL: failed to reverse withdrawal %s for user %s: %v", withdrawal.ID, userID, refundErr)
+		}
+	}
+
 	key, err := s.platformKey()
 	if err != nil {
-		// Reverse the debit so the user is not charged for a failed withdrawal.
-		// A failed reversal would strand the funds, so it is logged loudly; the
-		// debit already happened, so the caller is told the withdrawal failed
-		// regardless.
-		if refundErr := s.ledger.RefundWithFee(userID, req.ChainID, req.Token, amount, fee); refundErr != nil {
-			log.Printf("CRITICAL: failed to reverse withdrawal debit for user %s: %v", userID, refundErr)
-		}
+		release()
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
 		// logged for the operator and not returned to the caller.
@@ -892,11 +899,18 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 	txHash, err := s.blockchain.SendTransaction(
 		c.Request.Context(), req.ChainID, hex.EncodeToString(crypto.FromECDSA(key)),
 		req.ToAddress, amount, req.Token, nil,
+		func(hash string) {
+			// Persist the hash while the release is in flight, so a crash before the
+			// update below cannot strand the row without a hash to reconcile.
+			if err := s.db.Model(&models.Transaction{}).
+				Where("id = ? AND status = ?", withdrawal.ID, "pending").
+				Update("hash", hash).Error; err != nil {
+				log.Printf("CRITICAL: failed to persist withdrawal hash %s for row %s: %v", hash, withdrawal.ID, err)
+			}
+		},
 	)
 	if err != nil {
-		if refundErr := s.ledger.RefundWithFee(userID, req.ChainID, req.Token, amount, fee); refundErr != nil {
-			log.Printf("failed to reverse withdrawal debit for user %s: %v", userID, refundErr)
-		}
+		release()
 		// `err` here is an internal failure (a signer, a database write or an
 		// upstream RPC) whose text can carry a path or a connection string; it is
 		// logged for the operator and not returned to the caller.
@@ -905,17 +919,13 @@ func (s *WalletService) Withdraw(c *gin.Context) {
 		return
 	}
 
-	s.db.Create(&models.Transaction{
-		UserID:     parseUserUUID(userID),
-		Hash:       txHash,
-		ChainID:    req.ChainID,
-		Type:       "withdraw",
-		FromToken:  req.Token,
-		FromAmount: req.Amount,
-		ToAddress:  common.HexToAddress(req.ToAddress).Hex(),
-		Status:     "pending",
-		Timestamp:  time.Now(),
-	})
+	if err := s.db.Model(&models.Transaction{}).Where("id = ?", withdrawal.ID).
+		Update("hash", txHash).Error; err != nil {
+		// The row already exists and its hash was written by the broadcast hook; a
+		// failure here is only the redundant post-send write, so the withdrawal
+		// stands and the reconciler still has the row to settle.
+		log.Printf("wallet: failed to confirm withdrawal hash for row %s: %v", withdrawal.ID, err)
+	}
 
 	// Record the fee for the revenue report. A persistence failure must not fail a
 	// withdrawal that already went out, so it is logged and the transfer stands.

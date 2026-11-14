@@ -568,14 +568,24 @@ func (b *BlockchainClient) GetTransactionReceipt(ctx context.Context, chainID in
 		return nil, err
 	}
 
+	// A receipt can exist while the transaction body is momentarily unavailable
+	// (the node is still indexing it). Checking the error is mandatory: the
+	// caller dereferences the returned transaction below, and a nil transaction
+	// from a failed lookup would panic the goroutine — for the withdrawal
+	// reconciler that is a background goroutine, so a panic there takes down the
+	// whole process rather than failing one request.
 	tx, _, err := client.TransactionByHash(ctx, hash)
+	if err != nil {
+		return nil, fmt.Errorf("load transaction %s: %w", txHash, err)
+	}
+	if tx == nil {
+		return nil, fmt.Errorf("transaction %s is not available", txHash)
+	}
+
 	signer := types.LatestSignerForChainID(tx.ChainId())
 	sender, err := types.Sender(signer, tx)
 	if err != nil {
 		return nil, fmt.Errorf("recover sender: %w", err)
-	}
-	if err != nil {
-		return nil, err
 	}
 
 	block, err := client.BlockByNumber(ctx, receipt.BlockNumber)
@@ -588,10 +598,17 @@ func (b *BlockchainClient) GetTransactionReceipt(ctx context.Context, chainID in
 		status = "failed"
 	}
 
+	// tx.To() is nil for a contract-creation transaction; the zero address is the
+	// honest representation there rather than a nil dereference.
+	to := common.Address{}
+	if tx.To() != nil {
+		to = *tx.To()
+	}
+
 	return &TransactionData{
 		Hash:        txHash,
 		From:        sender.Hex(),
-		To:          tx.To().Hex(),
+		To:          to.Hex(),
 		Value:       weiToDecimal(tx.Value(), 18),
 		ValueWei:    tx.Value(),
 		GasUsed:     receipt.GasUsed,

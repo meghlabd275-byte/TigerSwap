@@ -19,6 +19,12 @@ import (
 // checked against their on-chain receipt.
 const DefaultWithdrawalReconcileInterval = 30 * time.Second
 
+// unbroadcastedWithdrawalGrace is how long a reserved withdrawal may sit without
+// a hash before the reconciler warns. The hash is written synchronously once the
+// node accepts the transaction, so a longer gap means the release was abandoned
+// (or the process died) and an operator must decide whether it was broadcast.
+const unbroadcastedWithdrawalGrace = 15 * time.Minute
+
 // StartWithdrawalReconciler runs the receipt reconciler until ctx is cancelled.
 // It is the single writer that moves a withdrawal out of "pending": on a
 // confirmed receipt the row is marked confirmed, and on a reverted receipt the
@@ -96,6 +102,20 @@ func (r *withdrawalReconciler) sweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		// A pending withdrawal with no hash was reserved but its release was never
+		// recorded. The common cause is a crash between the reserve commit and the
+		// broadcast returning; the hash write happens synchronously under the nonce
+		// lock, so the window is a single database update. Such a row is deliberately
+		// not auto-refunded: if the node accepted the transaction before the crash the
+		// funds are already on their way, and refunding would pay the user twice.
+		// Instead it is surfaced for an operator once it is older than the grace
+		// window, so it cannot sit silently.
+		if pending[i].Hash == "" {
+			if time.Since(pending[i].CreatedAt) > unbroadcastedWithdrawalGrace {
+				log.Printf("withdrawal reconciler: withdrawal %s has no hash after %s; an operator must confirm whether it was broadcast before refunding", pending[i].ID, time.Since(pending[i].CreatedAt).Round(time.Minute))
+			}
+			continue
 		}
 		if err := r.reconcile(ctx, &pending[i]); err != nil {
 			log.Printf("withdrawal reconciler: tx %s: %v", pending[i].Hash, err)
