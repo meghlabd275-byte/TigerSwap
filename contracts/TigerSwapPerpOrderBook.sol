@@ -931,8 +931,11 @@ contract TigerSwapPerpOrderBook {
         levels[position].queue.push(orderId);
     }
 
-    /// @dev Retire an order id from its level queue (swap-and-pop) and drop the
-    ///      level when it becomes empty.
+    /// @dev Retire an order id from its level queue and drop the level when it
+    ///      becomes empty. The queue is shifted rather than swap-popped: within a
+    ///      price level, orders must keep arrival (price-time) priority, and
+    ///      moving the last order into the freed slot would let a later order
+    ///      jump ahead of an earlier one still resting.
     function _dropOrder(bytes32 marketId, uint256 orderId) private {
         Order storage order = orders[orderId];
         Level[] storage levels = order.isLong ? _bids[marketId] : _asks[marketId];
@@ -941,7 +944,9 @@ contract TigerSwapPerpOrderBook {
             uint256[] storage queue = levels[i].queue;
             for (uint256 j = 0; j < queue.length; j++) {
                 if (queue[j] == orderId) {
-                    queue[j] = queue[queue.length - 1];
+                    for (uint256 k = j; k < queue.length - 1; k++) {
+                        queue[k] = queue[k + 1];
+                    }
                     queue.pop();
                     break;
                 }

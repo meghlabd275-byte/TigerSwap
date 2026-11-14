@@ -41,6 +41,7 @@ contract TigerSwapPerpOrderBookTest is Test {
     address public alice = address(0xA11CE);
     address public bob = address(0xB0B);
     address public carol = address(0xCA401);
+    address public dave = address(0xDA7E);
     address public liquidator = address(0x11D);
 
     bytes32 constant BTC = keccak256("BTC/RUSD");
@@ -79,8 +80,8 @@ contract TigerSwapPerpOrderBookTest is Test {
         book.setMarketActive(BTC, true);
         book.updatePrice(BTC, PRICE, PRICE);
 
-        address[3] memory traders = [alice, bob, carol];
-        for (uint256 i = 0; i < 3; i++) {
+        address[4] memory traders = [alice, bob, carol, dave];
+        for (uint256 i = 0; i < 4; i++) {
             usdc.mint(traders[i], 100_000_000e18);
             vm.prank(traders[i]);
             usdc.approve(address(book), type(uint256).max);
@@ -418,6 +419,36 @@ contract TigerSwapPerpOrderBookTest is Test {
         _place(alice, 2e18, PRICE, false, 1, false);
         (int256 bobSize, , , , ) = book.getPosition(BTC, bob);
         assertEq(bobSize, 0, "maker reduce-only closed exactly the reducible size");
+    }
+
+    // ---- Book priority ----
+
+    /// Price-time priority: at one price level, the order that arrived first must
+    /// fill first. `_dropOrder` retired a cancelled order with swap-and-pop, which
+    /// moved the last order in the queue into the removed slot, so a later order
+    /// could jump ahead of an earlier one that was still resting.
+    function testCancellingPreservesTimePriority() public {
+        _deposit(alice, 10_000e18);
+        _deposit(bob, 10_000e18);
+        _deposit(carol, 10_000e18);
+        _deposit(dave, 10_000e18);
+
+        // Three bids rest at the same price, in arrival order alice, bob, carol.
+        (uint256 idA, ) = _place(alice, 1e18, PRICE, true, 0, false);
+        _place(bob, 1e18, PRICE, true, 0, false);
+        _place(carol, 1e18, PRICE, true, 0, false);
+
+        // alice cancels; the last queued order (carol) must not displace bob.
+        vm.prank(alice);
+        book.cancelOrder(idA);
+
+        // dave sells 1 into the level; the earliest remaining bid (bob) fills.
+        _place(dave, 1e18, PRICE, false, 1, false);
+
+        (int256 bobSize, , , , ) = book.getPosition(BTC, bob);
+        (int256 carolSize, , , , ) = book.getPosition(BTC, carol);
+        assertEq(bobSize, 1e18, "earliest remaining order filled first");
+        assertEq(carolSize, 0, "later order did not jump the queue");
     }
 
     // ---- PnL ----
