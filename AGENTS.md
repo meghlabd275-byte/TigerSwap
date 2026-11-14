@@ -165,6 +165,15 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   reorgs cannot double-credit.
 - `WalletService.Withdraw` debits under the row lock before signing. A caller
   with no balance is rejected with 409 and never reaches the signer.
+- A withdrawal above its per-asset limit is queued: `CreatePendingRequest`
+  debits the caller and records the request in one transaction, so the debit is
+  the reservation. `WithdrawalService.ApproveRequest` claims the request
+  (`pending` -> `processing`), releases on-chain, and leaves it `processing`
+  until `withdrawal_reconciler` sees the receipt: a confirmed release becomes
+  `approved`, a reverted one refunds the amount and fee and becomes `failed`.
+  The signed hash is persisted through `SendTransaction`'s `onBroadcast` hook
+  while the nonce lock is held, so a crash between broadcast and the DB update
+  cannot strand a request in `processing` with no hash to reconcile.
 - Chain selection for the watcher comes from `DEPOSIT_WATCH_CHAINS`.
 
 ## On-chain RPC endpoints
