@@ -405,6 +405,21 @@ contract TigerSwapPerpOrderBookTest is Test {
         assertEq(id, 0, "ioc cancelled");
     }
 
+    /// A resting reduce-only order must be capped at the maker's reducible size
+    /// when it is filled, exactly as a taker's is. Otherwise a maker can rest a
+    /// reduce-only order larger than the position it means to close and end up
+    /// with the opposite exposure once someone crosses it.
+    function testRestingReduceOnlyIsCappedForMaker() public {
+        _openPosition(alice, 1e18, true); // alice long 1, bob (the counter) short 1
+        _deposit(bob, 10_000e18);
+        // bob is short 1 and rests a reduce-only buy of 2, twice its position.
+        _place(bob, 2e18, PRICE, true, 0, true);
+        // alice sells 2 into bob's resting bid.
+        _place(alice, 2e18, PRICE, false, 1, false);
+        (int256 bobSize, , , , ) = book.getPosition(BTC, bob);
+        assertEq(bobSize, 0, "maker reduce-only closed exactly the reducible size");
+    }
+
     // ---- PnL ----
 
     function testProfitPaidFromPool() public {

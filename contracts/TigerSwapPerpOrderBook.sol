@@ -488,6 +488,22 @@ contract TigerSwapPerpOrderBook {
                 if (fillQty == 0) break;
             }
 
+            // A maker's reduce-only order is capped at its own reducible size for
+            // the same reason a taker's is: reduce-only must never open exposure.
+            // The maker's side is the opposite of the taker's.
+            if (maker.reduceOnly) {
+                uint256 makerReducible = _reducible(marketId, maker.trader, !isLong);
+                if (fillQty > makerReducible) fillQty = (makerReducible / lot) * lot;
+                if (fillQty == 0) {
+                    // A reduce-only order that can no longer reduce is dead
+                    // liquidity; cancel it so it does not block the book.
+                    maker.active = false;
+                    emit OrderCancelled(bestOrderId, marketId, maker.trader);
+                    _dropOrder(marketId, bestOrderId);
+                    continue;
+                }
+            }
+
             if (!_canFill(marketId, maker.trader, !isLong, bestPrice, fillQty)) {
                 maker.active = false;
                 emit OrderCancelled(bestOrderId, marketId, maker.trader);
