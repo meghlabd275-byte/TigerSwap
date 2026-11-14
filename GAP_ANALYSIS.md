@@ -208,6 +208,16 @@ they are kept here so the history is not lost.
   later order could fill ahead of an earlier one still resting at the same
   price. The queue is now shifted to keep arrival order. Pinned by
   `testCancellingPreservesTimePriority`.
+- **The perp-book keeper liquidates on funding-inclusive equity.** The on-chain
+  book settles funding before it checks maintenance, but the keeper read
+  `getPosition`, whose equity is frozen at the position's last settlement, so a
+  position funding had pushed underwater was left open until someone touched it.
+  A new view `positionEquity` folds the pending funding (clamped to the
+  position's margin, exactly as `_settleFunding` clamps it) and the keeper
+  decides from it. The embedded Go ABI is regenerated from the compiled
+  artifact, with a selector pin. Pinned by
+  `testPositionEquityFoldsPendingFunding` and
+  `TestBookBelowMaintenanceMirrorsContract`.
 
 ## How to re-verify
 
