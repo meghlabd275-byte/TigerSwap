@@ -509,6 +509,19 @@ contract TigerSwapPerpOrderBookTest is Test {
         assertGt(book.balances(BTC, alice), aliceBefore + 1e18, "short received funding");
     }
 
+    /// A price update carries the same mark/index spread as an accrual, so it
+    /// must fold the elapsed window into the funding index rather than advance
+    /// the clock and forgive it. Otherwise a keeper that calls updatePrice
+    /// between accruals silently drops that window of funding.
+    function testUpdatePriceAccruesElapsedFunding() public {
+        _openPosition(alice, 1e18, true); // long
+        vm.warp(block.timestamp + 1 hours);
+        int256 before = book.getFundingInfo(BTC).cumulativeIndex;
+        book.updatePrice(BTC, 61_000e18, 60_000e18);
+        int256 afterIndex = book.getFundingInfo(BTC).cumulativeIndex;
+        assertGt(afterIndex, before, "updatePrice folded the window into funding");
+    }
+
     // ---- Liquidation ----
 
     function testLiquidationOfUnderwaterPosition() public {

@@ -310,10 +310,7 @@ contract TigerSwapPerpOrderBook {
     function updatePrice(bytes32 marketId, uint256 markPrice, uint256 indexPrice) external onlyOracle {
         require(markets[marketId].token != address(0), "TigerSwap: UNKNOWN_MARKET");
         require(markPrice > 0 && indexPrice > 0, "TigerSwap: INVALID_PRICE");
-        FundingInfo storage info = fundingInfo[marketId];
-        info.markPrice = markPrice;
-        info.indexPrice = indexPrice;
-        info.lastUpdateTime = block.timestamp;
+        _accrueFunding(marketId, markPrice, indexPrice);
     }
 
     /// @notice Accrue the cumulative funding index from the mark/index spread.
@@ -321,7 +318,14 @@ contract TigerSwapPerpOrderBook {
     function accrueFunding(bytes32 marketId, uint256 markPrice, uint256 indexPrice) external onlyOracle {
         require(markets[marketId].token != address(0), "TigerSwap: UNKNOWN_MARKET");
         require(markPrice > 0 && indexPrice > 0, "TigerSwap: INVALID_PRICE");
+        _accrueFunding(marketId, markPrice, indexPrice);
+    }
 
+    /// @dev Fold the elapsed window at the published mark/index spread into the
+    ///      cumulative funding index and record the new price. Every oracle write
+    ///      that carries a price must run this, because advancing `lastUpdateTime`
+    ///      without accruing would forgive the funding the window owed.
+    function _accrueFunding(bytes32 marketId, uint256 markPrice, uint256 indexPrice) private {
         FundingInfo storage info = fundingInfo[marketId];
         uint256 elapsed = block.timestamp - info.lastUpdateTime;
         int256 rate = (int256(markPrice) - int256(indexPrice)) * int256(FUNDING_RATE_PRECISION) / int256(indexPrice);
