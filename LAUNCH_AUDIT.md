@@ -175,23 +175,35 @@ The strongest part of the repository.
 
 ## 3. What is broken (reachable code that does not do its job)
 
-### 3.1 Precision: floats in the derivatives money paths (margin fixed, perp open)
+### 3.1 Precision: derivatives money paths (resolved)
 
-`perpetual_engine.go` carries `EntryPrice`, `MarkPrice`, `IndexPrice`,
-`LiquidationPrice` as `float64`, and `notionalPNL` / `isLiquidatable` compare a
-float mark price against a float liquidation price. The core PnL/settlement
-arithmetic was moved to `big.Rat` (`perp_money.go`: `liquidationPayout`,
-`settlementPayout`), but the stored and displayed perp prices are still floats.
-On a venue where a liquidation threshold is compared against a mark price, a
-1-ULP rounding at the boundary is a real risk.
+`perpetual_engine.go` carries `EntryPrice`, `MarkPrice`, `IndexPrice` and
+`LiquidationPrice` as `float64`, but no money decision is made on them. The
+health check is exact: `isLiquidatable` calls `liquidationRequired`, which parses
+the stored size and collateral into `big.Rat`, converts the entry and mark prices
+with `rationalFromFloat` (shortest-decimal, so `0.7` does not become
+`0.6999...`), computes PnL with `notionalPNL` in `big.Rat`, and compares
+`equity` against `maintenance * notional` exactly. `liquidationPriceRat` derives
+the displayed liquidation level from the same relation, so the price shown to a
+trader is the level that actually settles. The liquidation fee and the trader's
+remaining margin are computed with `big.Rat` (`liquidationPayout`,
+`settlementPayout`) and only then scaled to base units.
 
-`MarginEngine` has been converted to exact rational arithmetic: risk ratios
-(LTV, liquidation threshold, bonus, close factor) are parsed once into
-`*big.Rat`, `computeHealth` values collateral and debt in `big.Rat`, and the
-liquidation decision compares the health factor against exactly 1. An account
-whose health factor is exactly the threshold is neither listed as liquidatable
-nor liquidated (`TestMarginHealthIsExact` pins this). The perp engine still
-needs the same conversion.
+`TestLiquidationRequiredIsExactAtTheBoundary` pins this: a long whose equity is
+exactly at its maintenance level is not liquidated, and one tick below is. A
+short mirrors it. A position whose size or collateral cannot be parsed is never
+liquidated.
+
+`MarginEngine` is likewise exact: risk ratios (LTV, liquidation threshold,
+bonus, close factor) are parsed once into `*big.Rat`, `computeHealth` values
+collateral and debt in `big.Rat`, and the liquidation decision compares the
+health factor against exactly 1 (`TestMarginHealthIsExact`).
+
+The floats that remain are the stored and displayed price fields. They are
+serialised with `strconv.FormatFloat(..., 'f', -1, 64)`, the shortest decimal
+that round-trips, so persisting and re-reading a price is lossless. Converting
+those columns to integer strings is a schema migration with no change to any
+liquidation decision, so it is not a launch blocker.
 
 ### 3.2 Non-EVM chains can be enabled but cannot be watched (open, fails closed)
 
@@ -295,7 +307,9 @@ deposit watcher, and no cross-VM message layer.
 ## 6. Prioritised remediation
 
 **P0 — correctness of funds and orders:**
-1. Convert perp/margin stored prices from `float64` to exact integers (§3.1).
+1. (Resolved) The derivatives money paths run on exact `big.Rat` arithmetic;
+   only the stored/displayed price fields are floats, and they round-trip
+   losslessly. Pinned by `TestLiquidationRequiredIsExactAtTheBoundary` (§3.1).
 2. Decide and document the settlement model: custodial off-chain book vs the
    on-chain `TigerSwapPerpetuals`/`TigerSwapLending` contracts (§4.2).
 3. Commit a per-chain address registry, or document the deploy step as a
