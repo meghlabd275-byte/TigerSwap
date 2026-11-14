@@ -1,6 +1,6 @@
 # TigerSwap launch audit — global / commercial readiness
 
-Scope: the repository as it stands at `main` (`dd4d1b7`). This is a
+Scope: the repository as it stands at `main`. This is a
 "what is working / what is broken / what is missing" review measured against the
 bar set by venues a global launch would be compared to (Hyperliquid, dYdX,
 Uniswap, PancakeSwap, Anyswap/Multiswap): settlement model, real order
@@ -11,9 +11,11 @@ client, and it fails closed rather than falling back to mock data.
 "Broken" = the code path exists and is reachable but does not do the job it
 advertises. "Missing" = a launch needs it and it is not here.
 
-An earlier revision of this file reviewed `1047ece`. Most of its P0 items have
-since been fixed on `main`; this revision records the state at `dd4d1b7` and
-notes each earlier finding as resolved or still open.
+An earlier revision of this file reviewed `1047ece`, then `dd4d1b7`. Every
+finding below was re-checked against the current `main` by reading the code and
+re-running all eight language suites; the state described here is the current
+one, not a snapshot pinned to an old commit. Each earlier finding is marked
+resolved or still open.
 
 ---
 
