@@ -237,11 +237,17 @@ environment-variable secret.
   `contracts/deployments/<chainId>.json`, but `contracts/deployments/` is not
   present on a clean checkout, so an operator must deploy and record addresses
   before the API can dial a chain.
-- **Derivatives settlement is off-chain only.** `perpetual_engine.go` and
-  `margin_engine.go` do not reference the on-chain `TigerSwapPerpetuals` /
-  `TigerSwapLending` contracts; only `backend/go/keeper` reads the perps
-  contract. The on-chain contracts and the trading UI are two different
-  products. Decide which one is the product.
+- **Two derivative products ship side by side.** The off-chain engine
+  (`perpetual_engine.go`, `margin_engine.go`) settles against the platform
+  ledger; the on-chain product (`services/onchain_perp_book.go` over
+  `TigerSwapPerpOrderBook`, plus `services/onchain_perps.go` over
+  `TigerSwapPerpetuals`) settles on chain, with its own indexer, keeper and
+  oracle writer, exposed under `/api/v1/onchain/perp-book/*` and
+  `/api/v1/onchain/perps/*`. Both are real and both are tested. The gap is not
+  that on-chain settlement is absent — it is that an operator has to choose
+  which one is the venue, because a chain with no committed deployment runs the
+  off-chain book only, and the off-chain book does not accrue funding. Document
+  the choice, or make the on-chain book the only perps venue.
 
 ### 4.3 Production operations
 
