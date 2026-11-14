@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -270,6 +271,28 @@ func TestWebhookRejectsPrivateURL(t *testing.T) {
 	}
 	if err := svc.validateURL("https://example.com/hook"); err != nil {
 		t.Fatalf("public url rejected: %v", err)
+	}
+}
+
+// TestWebhookDialRefusesPrivateAddress pins the connect-time SSRF guard. A
+// hostname that resolves to a public address when the URL is validated and to a
+// private one when the socket is opened (DNS rebinding) must still be refused,
+// because the address actually dialled is the one validated.
+func TestWebhookDialRefusesPrivateAddress(t *testing.T) {
+	db := newWebhookTestDB(t)
+	t.Setenv("WEBHOOK_ALLOW_PRIVATE", "false")
+	svc := NewWebhookService(db)
+
+	// A literal private address is refused at dial time, with no DNS in the way.
+	if _, err := svc.safeDialContext(context.Background(), "tcp", "127.0.0.1:80"); err == nil {
+		t.Fatal("dial to 127.0.0.1 should be refused")
+	}
+	if _, err := svc.safeDialContext(context.Background(), "tcp", "169.254.169.254:80"); err == nil {
+		t.Fatal("dial to the metadata address should be refused")
+	}
+	// A non-host:port address is an error, not a silent bypass.
+	if _, err := svc.safeDialContext(context.Background(), "tcp", "not-an-address"); err == nil {
+		t.Fatal("a malformed dial address should be refused")
 	}
 }
 

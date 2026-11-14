@@ -79,6 +79,14 @@ func NewWebhookService(db *gorm.DB) *WebhookService {
 	}
 	svc.client = &http.Client{
 		Timeout: webhookDeliveryTimeout,
+		Transport: &http.Transport{
+			// The address that is dialled is validated here, at connect time,
+			// not only when the URL was first checked. A hostname that resolved
+			// to a public address at validation and to a private one at connect
+			// (DNS rebinding) is therefore still refused, because the IP actually
+			// connected to is the one checked.
+			DialContext: svc.safeDialContext,
+		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 3 {
 				return errors.New("too many redirects")
@@ -87,6 +95,41 @@ func NewWebhookService(db *gorm.DB) *WebhookService {
 		},
 	}
 	return svc
+}
+
+// safeDialContext resolves the target and connects only to a public address,
+// unless private destinations are explicitly allowed. It is the transport's
+// dial hook, so it runs for the initial request and for every redirect, and the
+// address it validates is the one the socket connects to.
+func (s *WebhookService) safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: webhookDeliveryTimeout}
+	if s.allowPrivate {
+		return dialer.DialContext(ctx, network, addr)
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("webhook dial address %q is not host:port: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if !isPublicIP(ip) {
+			return nil, errors.New("webhook dial address is not public")
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("webhook host cannot be resolved: %w", err)
+	}
+	for _, a := range addrs {
+		if !isPublicIP(a.IP) {
+			continue
+		}
+		conn, derr := dialer.DialContext(ctx, network, net.JoinHostPort(a.IP.String(), port))
+		if derr == nil {
+			return conn, nil
+		}
+	}
+	return nil, errors.New("webhook host has no reachable public address")
 }
 
 // WebhookEvent is the envelope delivered to a subscriber.
