@@ -324,6 +324,138 @@ func TestWithdrawalReconcilerRefundsFeeOnRevert(t *testing.T) {
 	}
 }
 
+// TestWithdrawalReconcilerReversesProcessingRequest proves a queued withdrawal
+// request whose release transaction reverted is refunded the amount and fee and
+// marked failed. Before the reconciler covered requests, an approved-then-reverted
+// release left the request stuck in "processing" and the user debited forever.
+func TestWithdrawalReconcilerReversesProcessingRequest(t *testing.T) {
+	url, raw := startWithdrawalAnvil(t)
+	ctx := context.Background()
+
+	client := NewBlockchainClient()
+	client.SetRPCURL(31337, url)
+
+	deploy := common.FromHex("0x6006600c60003960066000f360006000fd")
+	reverter := deployContract(t, raw, ctx, deploy)
+	txHash := sendSigned(t, raw, ctx, reverter, big.NewInt(0), 100000, []byte{0x01})
+	mine(t, raw, ctx)
+
+	db := newReconcilerDB(t)
+	if err := db.AutoMigrate(&models.WithdrawalRequest{}); err != nil {
+		t.Fatalf("migrate request: %v", err)
+	}
+	userID := uuid.NewString()
+	ledger := NewLedgerService(db)
+
+	principal := big.NewInt(5_000_000)
+	fee := big.NewInt(25_000)
+	if err := ledger.Credit(userID, 31337, "native", "ETH", 18, big.NewInt(10_000_000)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+	if err := ledger.ChargeWithFee(userID, 31337, "native", principal, fee); err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	request := models.WithdrawalRequest{
+		UserID:       userID,
+		ChainID:      31337,
+		TokenAddress: "native",
+		ToAddress:    reverter.Hex(),
+		Amount:       principal.String(),
+		Fee:          fee.String(),
+		Status:       models.WithdrawalStatusProcessing,
+		TxHash:       txHash,
+	}
+	if err := db.Create(&request).Error; err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	reconciler := &withdrawalReconciler{db: db, blockchain: client, ledger: ledger}
+	reconciler.sweep(ctx)
+
+	var got models.WithdrawalRequest
+	if err := db.Where("id = ?", request.ID).First(&got).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != models.WithdrawalStatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	bal, err := ledger.Available(userID, 31337, "native")
+	if err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	want := big.NewInt(10_000_000)
+	if bal.Cmp(want) != 0 {
+		t.Fatalf("balance after refund = %s, want %s", bal, want)
+	}
+	feeAccount, _ := ledger.Available(FeeAccountID, 31337, "native")
+	if feeAccount.Sign() != 0 {
+		t.Fatalf("fee account = %s, want 0 after refund", feeAccount)
+	}
+
+	// A second sweep must not refund again.
+	reconciler.sweep(ctx)
+	bal2, _ := ledger.Available(userID, 31337, "native")
+	if bal2.Cmp(want) != 0 {
+		t.Fatalf("second sweep changed balance: %s", bal2)
+	}
+}
+
+// TestWithdrawalReconcilerApprovesConfirmedRequest proves a confirmed release is
+// moved from "processing" to "approved" without touching the ledger.
+func TestWithdrawalReconcilerApprovesConfirmedRequest(t *testing.T) {
+	url, raw := startWithdrawalAnvil(t)
+	ctx := context.Background()
+
+	client := NewBlockchainClient()
+	client.SetRPCURL(31337, url)
+
+	to := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
+	txHash := sendSigned(t, raw, ctx, to, big.NewInt(1_000_000_000_000_000), 21000, nil)
+	mine(t, raw, ctx)
+
+	db := newReconcilerDB(t)
+	if err := db.AutoMigrate(&models.WithdrawalRequest{}); err != nil {
+		t.Fatalf("migrate request: %v", err)
+	}
+	userID := uuid.NewString()
+	ledger := NewLedgerService(db)
+
+	principal := big.NewInt(1_000_000_000_000_000)
+	if err := ledger.Credit(userID, 31337, "native", "ETH", 18, big.NewInt(2_000_000_000_000_000)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+	if err := ledger.Debit(userID, 31337, "native", principal); err != nil {
+		t.Fatalf("debit: %v", err)
+	}
+	request := models.WithdrawalRequest{
+		UserID:       userID,
+		ChainID:      31337,
+		TokenAddress: "native",
+		ToAddress:    to.Hex(),
+		Amount:       principal.String(),
+		Status:       models.WithdrawalStatusProcessing,
+		TxHash:       txHash,
+	}
+	if err := db.Create(&request).Error; err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+
+	reconciler := &withdrawalReconciler{db: db, blockchain: client, ledger: ledger}
+	reconciler.sweep(ctx)
+
+	var got models.WithdrawalRequest
+	if err := db.Where("id = ?", request.ID).First(&got).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Status != models.WithdrawalStatusApproved {
+		t.Fatalf("status = %q, want approved", got.Status)
+	}
+	bal, _ := ledger.Available(userID, 31337, "native")
+	if bal.Cmp(big.NewInt(1_000_000_000_000_000)) != 0 {
+		t.Fatalf("balance = %s, want the debit to stand", bal)
+	}
+}
+
 // deployContract deploys raw creation bytecode and returns the deployed address.
 func deployContract(t *testing.T, raw *ethclient.Client, ctx context.Context, code []byte) common.Address {
 	t.Helper()

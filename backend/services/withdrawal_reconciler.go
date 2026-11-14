@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"math/big"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum"
@@ -100,6 +101,112 @@ func (r *withdrawalReconciler) sweep(ctx context.Context) {
 			log.Printf("withdrawal reconciler: tx %s: %v", pending[i].Hash, err)
 		}
 	}
+
+	r.sweepRequests(ctx)
+}
+
+// sweepRequests reconciles queued withdrawal requests whose release transaction
+// was broadcast but never checked. ApproveRequest moves a request to "processing"
+// and records the tx hash, but a reverted release would otherwise leave the user
+// debited with a request stuck in "processing" forever. A confirmed release is
+// marked approved; a reverted one refunds the amount and fee and is marked
+// failed, exactly like a direct withdrawal.
+func (r *withdrawalReconciler) sweepRequests(ctx context.Context) {
+	var processing []models.WithdrawalRequest
+	if err := r.db.WithContext(ctx).
+		Where("status = ? AND tx_hash <> ?", "processing", "").
+		Order("created_at asc").
+		Limit(200).
+		Find(&processing).Error; err != nil {
+		log.Printf("withdrawal reconciler: list processing requests: %v", err)
+		return
+	}
+
+	for i := range processing {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if err := r.reconcileRequest(ctx, &processing[i]); err != nil {
+			log.Printf("withdrawal reconciler: request %s: %v", processing[i].ID, err)
+		}
+	}
+}
+
+// reconcileRequest checks one processing request's release receipt and applies the
+// terminal state.
+func (r *withdrawalReconciler) reconcileRequest(ctx context.Context, request *models.WithdrawalRequest) error {
+	data, err := r.blockchain.GetTransactionReceipt(ctx, request.ChainID, request.TxHash)
+	if err != nil {
+		if errors.Is(err, ethereum.NotFound) {
+			return nil
+		}
+		return err
+	}
+
+	switch data.Status {
+	case "confirmed":
+		return r.db.WithContext(ctx).Model(&models.WithdrawalRequest{}).
+			Where("id = ? AND status = ?", request.ID, "processing").
+			Update("status", models.WithdrawalStatusApproved).Error
+	case "failed":
+		return r.reverseRequest(ctx, request)
+	default:
+		return nil
+	}
+}
+
+// reverseRequest refunds a request whose release reverted and marks it failed. The
+// row lock and the status re-check make the refund exactly-once across replicas.
+func (r *withdrawalReconciler) reverseRequest(ctx context.Context, request *models.WithdrawalRequest) error {
+	amount, ok := new(big.Int).SetString(request.Amount, 10)
+	if !ok || amount.Sign() <= 0 {
+		return errors.New("withdrawal request has an unparseable amount; refusing to reverse")
+	}
+	fee := big.NewInt(0)
+	if strings.TrimSpace(request.Fee) != "" {
+		parsed, ok := new(big.Int).SetString(request.Fee, 10)
+		if !ok || parsed.Sign() < 0 {
+			return errors.New("withdrawal request has an unparseable fee; refusing to reverse")
+		}
+		fee = parsed
+	}
+	total := new(big.Int).Add(amount, fee)
+
+	return r.db.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		var row models.WithdrawalRequest
+		if err := db.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&row, "id = ?", request.ID).Error; err != nil {
+			return err
+		}
+		if row.Status != "processing" {
+			return nil
+		}
+		if err := r.ledger.refundWithFeeWithin(db, row.UserID, row.ChainID, row.TokenAddress, amount, fee); err != nil {
+			return err
+		}
+		if err := db.Model(&models.WithdrawalRequest{}).Where("id = ?", row.ID).
+			Updates(map[string]interface{}{
+				"status": "failed",
+				"reason": "release transaction reverted on-chain",
+			}).Error; err != nil {
+			return err
+		}
+		if r.webhooks != nil {
+			return r.webhooks.publishWithin(db, row.UserID, WebhookEventWithdrawalFailed, map[string]interface{}{
+				"chain_id":     row.ChainID,
+				"tx_hash":      row.TxHash,
+				"token":        row.TokenAddress,
+				"amount":       row.Amount,
+				"fee_refunded": fee.String(),
+				"total_refund": total.String(),
+				"to_address":   row.ToAddress,
+				"reason":       "release transaction reverted on-chain",
+			})
+		}
+		return nil
+	})
 }
 
 // reconcile checks one withdrawal's receipt and applies the terminal state.

@@ -433,8 +433,15 @@ func (b *BlockchainClient) GetAllTokenBalances(ctx context.Context, chainID int6
 	return balances, nil
 }
 
-// SendTransaction sends a transaction on the given chain
-func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, privateKey string, toAddress string, amount *big.Int, tokenAddress string, gasPrice *big.Int) (string, error) {
+// SendTransaction sends a transaction on the given chain. An optional onBroadcast
+// callback is invoked with the signed hash once the node has accepted it, before
+// this call returns; a caller uses it to persist the hash so a crash between the
+// broadcast and the return does not strand a row with no hash to reconcile.
+func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, privateKey string, toAddress string, amount *big.Int, tokenAddress string, gasPrice *big.Int, onBroadcast ...func(txHash string)) (string, error) {
+	var hook func(string)
+	if len(onBroadcast) > 0 {
+		hook = onBroadcast[0]
+	}
 	// Validate the inputs before touching the network. common.HexToAddress
 	// silently truncates or zero-pads malformed hex, so an unchecked value could
 	// sign a transfer to the zero address (burning the funds) or to an address
@@ -526,6 +533,11 @@ func (b *BlockchainClient) SendTransaction(ctx context.Context, chainID int64, p
 				continue
 			}
 			return "", fmt.Errorf("failed to send transaction: %v", err)
+		}
+		// Persist the hash now, while the nonce lock is held, so a crash before the
+		// caller records it cannot strand the row without a hash to reconcile.
+		if hook != nil {
+			hook(signedTx.Hash().Hex())
 		}
 		return signedTx.Hash().Hex(), nil
 	}

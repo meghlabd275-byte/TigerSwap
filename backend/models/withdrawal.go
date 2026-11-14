@@ -63,6 +63,12 @@ const (
 	WithdrawalStatusPending  = "pending"
 	WithdrawalStatusApproved = "approved"
 	WithdrawalStatusRefused  = "refused"
+	// WithdrawalStatusProcessing is set while a release transaction is in flight,
+	// between the operator's claim and its confirmation on-chain.
+	WithdrawalStatusProcessing = "processing"
+	// WithdrawalStatusFailed marks a release that reverted on-chain. The amount
+	// and fee were refunded to the caller, so it is a terminal state like refused.
+	WithdrawalStatusFailed = "failed"
 )
 
 // WithdrawalRequest is a withdrawal that exceeded its asset limit and is

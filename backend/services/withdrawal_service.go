@@ -321,7 +321,9 @@ func (s *WithdrawalService) ListRequests(c *gin.Context) {
 	query := s.db.Model(&models.WithdrawalRequest{})
 	if status := strings.TrimSpace(c.Query("status")); status != "" {
 		switch status {
-		case models.WithdrawalStatusPending, models.WithdrawalStatusApproved, models.WithdrawalStatusRefused:
+		case models.WithdrawalStatusPending, models.WithdrawalStatusProcessing,
+			models.WithdrawalStatusApproved, models.WithdrawalStatusRefused,
+			models.WithdrawalStatusFailed:
 			query = query.Where("status = ?", status)
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unknown status"})
@@ -386,6 +388,17 @@ func (s *WithdrawalService) ApproveRequest(c *gin.Context) {
 
 	txHash, err := s.blockchain.SendTransaction(
 		c.Request.Context(), request.ChainID, hex.EncodeToString(crypto.FromECDSA(key)), request.ToAddress, amount, request.TokenAddress, nil,
+		func(hash string) {
+			// Persist the hash while the release is in flight, so a crash before the
+			// update below cannot strand the request in "processing" with no hash for
+			// the reconciler to check. The request stays "processing" until the
+			// reconciler confirms the release on-chain.
+			if err := s.db.Model(&models.WithdrawalRequest{}).
+				Where("id = ? AND status = ?", request.ID, models.WithdrawalStatusProcessing).
+				Update("tx_hash", hash).Error; err != nil {
+				log.Printf("CRITICAL: failed to persist withdrawal hash %s for request %s: %v", hash, request.ID, err)
+			}
+		},
 	)
 	if err != nil {
 		s.releaseClaim(request.ID)
@@ -394,12 +407,14 @@ func (s *WithdrawalService) ApproveRequest(c *gin.Context) {
 		return
 	}
 
+	// The release is broadcast; it stays "processing" until the reconciler sees the
+	// receipt, so a reverted release is caught and refunded rather than assumed done.
 	if err := s.db.Model(&models.WithdrawalRequest{}).Where("id = ?", request.ID).
-		Updates(map[string]interface{}{"status": models.WithdrawalStatusApproved, "tx_hash": txHash}).Error; err != nil {
+		Updates(map[string]interface{}{"status": models.WithdrawalStatusProcessing, "tx_hash": txHash}).Error; err != nil {
 		respondInternalError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"status": models.WithdrawalStatusApproved, "tx_hash": txHash, "fee": fee})
+	c.JSON(http.StatusOK, gin.H{"status": models.WithdrawalStatusProcessing, "tx_hash": txHash, "fee": fee})
 }
 
 // RefuseRequest returns a queued withdrawal's funds to the caller and closes it.

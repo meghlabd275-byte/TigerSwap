@@ -2810,7 +2810,12 @@ export const withdrawalLimitListValidator = object<{ limits: WithdrawalLimit[] }
 });
 
 /** The statuses a queued withdrawal can carry. */
-export type WithdrawalRequestStatus = "pending" | "processing" | "approved" | "refused";
+export type WithdrawalRequestStatus =
+  | "pending"
+  | "processing"
+  | "approved"
+  | "refused"
+  | "failed";
 
 /** A withdrawal held for operator approval (admin). */
 export interface WithdrawalRequest {
@@ -2835,7 +2840,7 @@ export const withdrawalRequestValidator = object<WithdrawalRequest>(
     token_address: string,
     to_address: address,
     amount: decimal,
-    status: oneOf(["pending", "processing", "approved", "refused"] as const),
+    status: oneOf(["pending", "processing", "approved", "refused", "failed"] as const),
     reason: withDefault(string, ""),
     tx_hash: withDefault(string, ""),
     created_at: withDefault(timestamp, new Date(0).toISOString()),
@@ -2855,7 +2860,7 @@ export interface WithdrawalDecisionResult {
 }
 
 export const withdrawalDecisionResultValidator = object<WithdrawalDecisionResult>({
-  status: oneOf(["pending", "processing", "approved", "refused"] as const),
+  status: oneOf(["pending", "processing", "approved", "refused", "failed"] as const),
   tx_hash: withDefault(string, ""),
 });
 
