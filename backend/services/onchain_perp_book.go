@@ -1092,7 +1092,15 @@ func (s *OnChainPerpBookService) liquidateUnhealthy(ctx context.Context, chainID
 		if err != nil || funding == nil || funding.MarkPrice.Sign() == 0 {
 			continue
 		}
-		if !bookBelowMaintenance(pos, market, funding.MarkPrice) {
+		// `pos.Equity` is equity at the position's last settlement; the contract
+		// settles funding before it checks maintenance, so the decision must use
+		// the funding-inclusive view or a position funding has pushed underwater
+		// is never liquidated.
+		equity, err := client.PositionEquity(ctx, marketID, trader)
+		if err != nil || equity == nil {
+			continue
+		}
+		if !bookBelowMaintenance(equity, pos.Size, market, funding.MarkPrice) {
 			continue
 		}
 		call, err := client.BuildLiquidate(marketID, trader)
@@ -1153,19 +1161,20 @@ func markFromBook(bid, ask, index *big.Int) *big.Int {
 	return mid
 }
 
-// bookBelowMaintenance reports whether equity is below the maintenance margin,
-// mirroring the contract's check. Equity and the requirement are exact integers;
-// the requirement is `abs(size) * mark / WAD * maintenanceMargin / WAD`.
-func bookBelowMaintenance(pos *orderbook.Position, market *orderbook.Market, mark *big.Int) bool {
-	if pos.Size.Sign() == 0 || mark.Sign() == 0 {
+// bookBelowMaintenance reports whether an equity figure is below the
+// maintenance margin, mirroring the contract's check. Equity and the requirement
+// are exact integers; the requirement is
+// `abs(size) * mark / WAD * maintenanceMargin / WAD`.
+func bookBelowMaintenance(equity, size *big.Int, market *orderbook.Market, mark *big.Int) bool {
+	if equity == nil || size == nil || size.Sign() == 0 || mark == nil || mark.Sign() == 0 {
 		return false
 	}
-	absSize := new(big.Int).Abs(pos.Size)
+	absSize := new(big.Int).Abs(size)
 	notional := new(big.Int).Mul(absSize, mark)
 	notional.Div(notional, orderbook.OneUnit)
 	maintenance := new(big.Int).Mul(notional, market.MaintenanceMargin)
 	maintenance.Div(maintenance, orderbook.OneUnit)
-	return pos.Equity.Cmp(maintenance) < 0
+	return equity.Cmp(maintenance) < 0
 }
 
 func (s *OnChainPerpBookService) runOracleWriter(ctx context.Context, chainID int64) {

@@ -568,6 +568,22 @@ contract TigerSwapPerpOrderBookTest is Test {
         assertGt(afterIndex, before, "updatePrice folded the window into funding");
     }
 
+    /// Funding accrues between settlements, but `getPosition` reports equity at
+    /// the last settlement. A keeper that checks maintenance against it would
+    /// leave a position funding has pushed underwater open, so `positionEquity`
+    /// folds the pending funding the way `_settleFunding` will.
+    function testPositionEquityFoldsPendingFunding() public {
+        _openLeveraged(alice, 1e18, true, 10_000e18); // long; mark == entry
+        (, , , , int256 storedEquity) = book.getPosition(BTC, alice);
+        vm.warp(block.timestamp + 24 hours);
+        // Mark stays at the entry price, so only funding moves equity.
+        book.accrueFunding(BTC, 60_000e18, 59_000e18);
+        (, , , , int256 storedAfter) = book.getPosition(BTC, alice);
+        int256 live = book.positionEquity(BTC, alice);
+        assertEq(storedAfter, storedEquity, "getPosition ignores pending funding");
+        assertLt(live, storedAfter, "positionEquity folds pending funding");
+    }
+
     // ---- Liquidation ----
 
     function testLiquidationOfUnderwaterPosition() public {

@@ -28,6 +28,7 @@ func TestSelectorsMatchDeployedContract(t *testing.T) {
 		"accrueFunding(bytes32,uint256,uint256)": "9e2181e7",
 		"getMarket(bytes32)":                     "c3c95c7b",
 		"getPosition(bytes32,address)":           "5c388821",
+		"positionEquity(bytes32,address)":        "a6ebab13",
 		"getOrder(uint256)":                      "d09ef241",
 		"getTraderOrders(address)":               "ce3ca00b",
 		"getFundingInfo(bytes32)":                "84acda6a",

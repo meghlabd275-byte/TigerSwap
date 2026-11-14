@@ -981,6 +981,33 @@ contract TigerSwapPerpOrderBook {
         equity = int256(margin) + unrealizedPnL;
     }
 
+    /// @notice The account's equity including the funding that has accrued since
+    ///         its position was last settled. `getPosition` reports equity at the
+    ///         last settlement, so a keeper that checks maintenance against it
+    ///         would miss a position funding has pushed under maintenance. This
+    ///         view mirrors `_settleFunding` so the keeper liquidates exactly the
+    ///         positions the contract would accept a liquidation for.
+    function positionEquity(bytes32 marketId, address trader) external view returns (int256) {
+        Position storage pos = positions[marketId][trader];
+        int256 margin = int256(balances[marketId][trader]);
+        if (pos.size != 0) {
+            int256 delta = fundingInfo[marketId].cumulativeIndex - pos.fundingIndex;
+            if (delta != 0) {
+                uint256 absSize = pos.size > 0 ? uint256(pos.size) : uint256(-pos.size);
+                int256 direction = pos.size > 0 ? int256(1) : int256(-1);
+                int256 payment = int256(absSize) * delta * direction / int256(WAD);
+                // A position can only pay funding out of its own margin, exactly
+                // as `_settleFunding` clamps the loss; a credit is added in full.
+                if (payment > 0) {
+                    margin -= payment > margin ? margin : payment;
+                } else {
+                    margin -= payment;
+                }
+            }
+        }
+        return margin + _unrealizedPnL(marketId, trader);
+    }
+
     function getOrder(uint256 orderId) external view returns (Order memory) {
         return orders[orderId];
     }

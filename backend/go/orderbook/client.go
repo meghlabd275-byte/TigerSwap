@@ -246,6 +246,22 @@ func (c *Client) Position(ctx context.Context, id common.Hash, trader common.Add
 	return &Position{Size: p.Size, EntryPrice: p.EntryPrice, Margin: p.Margin, UnrealizedPnL: p.UnrealizedPnL, Equity: p.Equity}, nil
 }
 
+// PositionEquity reads a trader's equity including funding accrued since the
+// position was last settled. The contract's `liquidate` settles funding before
+// it checks maintenance, so a keeper must use this view, not `Position.Equity`,
+// to decide whether a position is liquidatable.
+func (c *Client) PositionEquity(ctx context.Context, id common.Hash, trader common.Address) (*big.Int, error) {
+	out, err := c.call(ctx, "positionEquity", id, trader)
+	if err != nil {
+		return nil, err
+	}
+	var equity *big.Int
+	if err := orderBookABI.UnpackIntoInterface(&equity, "positionEquity", out); err != nil {
+		return nil, fmt.Errorf("decode positionEquity: %w", err)
+	}
+	return equity, nil
+}
+
 // Order reads a single order by id.
 func (c *Client) Order(ctx context.Context, orderID *big.Int) (*Order, error) {
 	out, err := c.call(ctx, "getOrder", orderID)

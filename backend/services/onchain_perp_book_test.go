@@ -3,6 +3,8 @@ package services
 import (
 	"math/big"
 	"testing"
+
+	"tigerswap/backend/go/orderbook"
 )
 
 func wad(s string) *big.Int {
@@ -73,5 +75,42 @@ func TestMarkFromBookZeroIndexIsZero(t *testing.T) {
 	}
 	if got := markFromBook(wad("1"), wad("1"), nil); got.Sign() != 0 {
 		t.Fatalf("mark = %s, want 0", got)
+	}
+}
+
+// TestBookBelowMaintenanceMirrorsContract pins the keeper's health check to the
+// contract's: equity below `abs(size) * mark / WAD * maintenanceMargin / WAD`.
+// A size of 1 at mark 100 with a 5% maintenance requires 5 of equity.
+func TestBookBelowMaintenanceMirrorsContract(t *testing.T) {
+	market := &orderbook.Market{MaintenanceMargin: wad("50000000000000000")} // 5%
+	size := wad("1000000000000000000")                                       // 1
+	mark := wad("100000000000000000000")                                     // 100
+
+	if !bookBelowMaintenance(wad("4999999999999999999"), size, market, mark) {
+		t.Fatal("equity just under maintenance must be liquidatable")
+	}
+	if bookBelowMaintenance(wad("5000000000000000000"), size, market, mark) {
+		t.Fatal("equity exactly at maintenance must not be liquidatable")
+	}
+	if bookBelowMaintenance(wad("6000000000000000000"), size, market, mark) {
+		t.Fatal("equity above maintenance must not be liquidatable")
+	}
+}
+
+// TestBookBelowMaintenanceGuardsEmptyInputs ensures a missing size, equity or
+// mark never reports a liquidation the contract would reject.
+func TestBookBelowMaintenanceGuardsEmptyInputs(t *testing.T) {
+	market := &orderbook.Market{MaintenanceMargin: wad("50000000000000000")}
+	size := wad("1000000000000000000")
+	mark := wad("100000000000000000000")
+
+	if bookBelowMaintenance(nil, size, market, mark) {
+		t.Fatal("nil equity must not be liquidatable")
+	}
+	if bookBelowMaintenance(wad("1"), big.NewInt(0), market, mark) {
+		t.Fatal("zero size must not be liquidatable")
+	}
+	if bookBelowMaintenance(wad("1"), size, market, big.NewInt(0)) {
+		t.Fatal("zero mark must not be liquidatable")
 	}
 }
