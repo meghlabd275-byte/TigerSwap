@@ -119,8 +119,8 @@ func (s *PortfolioService) tokenValueUSD(ctx context.Context, symbol string, dec
 	// final conversion so a large balance does not lose precision.
 	scale := new(big.Rat).SetInt(pow10(decimals))
 	human := new(big.Rat).Quo(amount, scale)
-	priceRat := new(big.Rat).SetFloat64(data.USD)
-	if priceRat == nil {
+	priceRat, err := rationalFromFloat(data.USD)
+	if err != nil {
 		return nil
 	}
 	value, err := rationalToFloat(new(big.Rat).Mul(human, priceRat))

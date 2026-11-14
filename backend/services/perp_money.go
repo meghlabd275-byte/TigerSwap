@@ -19,6 +19,12 @@ import (
 // would silently satisfy every risk comparison.
 const maxPerpAmountMagnitude = 1e24
 
+// maxPerpAmountRat is the exact rational form of the cap. Converting the float
+// with SetFloat64 would introduce a binary artefact that leaves the bound a
+// hair above or below 10^24; the exact value keeps the limit the round number
+// an operator reads.
+var maxPerpAmountRat = new(big.Rat).SetInt(new(big.Int).Exp(big.NewInt(10), big.NewInt(24), nil))
+
 // perpAmountValue parses a caller-supplied size or collateral amount into an
 // exact rational.
 //
@@ -41,7 +47,7 @@ func perpAmountValue(amount string) (*big.Rat, error) {
 	if dot := strings.IndexByte(trimmed, '.'); dot >= 0 && len(trimmed)-dot-1 > 8 {
 		return nil, publicErr(fmt.Errorf("amount %q has more than 8 decimal places", amount))
 	}
-	limit := new(big.Rat).SetFloat64(maxPerpAmountMagnitude)
+	limit := maxPerpAmountRat
 	if value.Cmp(limit) > 0 {
 		return nil, publicErr(fmt.Errorf("amount %q exceeds the maximum of %g", amount, maxPerpAmountMagnitude))
 	}

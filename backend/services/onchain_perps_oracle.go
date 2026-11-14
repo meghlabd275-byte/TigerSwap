@@ -235,9 +235,14 @@ func usdFloatToWAD(usd float64) (*big.Int, error) {
 	if usd <= 0 {
 		return nil, fmt.Errorf("non-positive price %v", usd)
 	}
-	rat := new(big.Rat).SetFloat64(usd)
-	if rat == nil {
-		return nil, fmt.Errorf("price %v is not representable", usd)
+	// The oracle reports a float, but its decimal form is exact. Parsing that
+	// decimal (0.7 stays 7/10) rather than SetFloat64 keeps a pushed mark price
+	// the round number the oracle published, instead of the nearest binary
+	// double. The mark feeds funding and every position's margin, so a scaled
+	// artefact here would move settlement by up to a WAD unit.
+	rat, err := rationalFromFloat(usd)
+	if err != nil {
+		return nil, fmt.Errorf("price %v is not representable: %w", usd, err)
 	}
 	scaled := new(big.Rat).Mul(rat, new(big.Rat).SetInt(pow10(18)))
 	out := new(big.Int).Quo(scaled.Num(), scaled.Denom())

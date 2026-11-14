@@ -1351,7 +1351,7 @@ func liquidationPriceRat(cfg *perpMarketConfig, entryPrice float64, size, collat
 		return nil, fmt.Errorf("listing %s has an out-of-range maintenance margin %g", cfg.Symbol, cfg.MaintenanceMarginRate)
 	}
 	if maintenance.Sign() == 0 {
-		maintenance = new(big.Rat).SetFloat64(defaultMaintenanceMarginRate)
+		maintenance = new(big.Rat).Set(defaultMaintenanceMarginRat)
 	}
 
 	// At the maintenance level: collateral + pnl(price) = maintenance * size.
@@ -1402,7 +1402,7 @@ func liquidationRequired(cfg *perpMarketConfig, position *PerpetualPosition, mar
 		return false
 	}
 	if maintenance.Sign() == 0 {
-		maintenance = new(big.Rat).SetFloat64(defaultMaintenanceMarginRate)
+		maintenance = new(big.Rat).Set(defaultMaintenanceMarginRat)
 	}
 	// equity/notional < maintenance  <=>  equity < maintenance*notional
 	threshold := new(big.Rat).Mul(maintenance, notional)
@@ -1742,6 +1742,12 @@ const (
 	// at which a position is liquidated. A listing's own value always wins.
 	defaultMaintenanceMarginRate = 0.05
 )
+
+// defaultMaintenanceMarginRat is the exact rational form of the default
+// maintenance margin. The liquidation comparisons multiply this into a notional
+// and compare against equity, so a SetFloat64 artefact here would nudge the
+// level at which a position is liquidated away from the documented 5%.
+var defaultMaintenanceMarginRat = new(big.Rat).SetFrac64(5, 100)
 
 // fundingInterval converts a listing's funding interval in hours to a duration.
 // A zero or negative value falls back to the default cadence so a listing can

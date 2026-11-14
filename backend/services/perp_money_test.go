@@ -62,6 +62,54 @@ func TestPerpAmountValueRejectsAbsurdMagnitude(t *testing.T) {
 	}
 }
 
+// TestPerpAmountValueCapIsExact pins the magnitude cap to the round number
+// 10^24. The cap was previously built with big.Rat.SetFloat64(1e24), whose
+// binary double is a hair below the integer, so a value of exactly 10^24 was
+// wrongly refused. The exact rational accepts the boundary and rejects one unit
+// above it.
+func TestPerpAmountValueCapIsExact(t *testing.T) {
+	atCap := "1000000000000000000000000" // 1e24
+	if _, err := perpAmountValue(atCap); err != nil {
+		t.Fatalf("exactly 10^24 must be accepted at the cap, got %v", err)
+	}
+	overCap := "1000000000000000000000001" // 1e24 + 1
+	if _, err := perpAmountValue(overCap); err == nil {
+		t.Fatal("10^24 + 1 must be rejected")
+	}
+}
+
+// TestUsdFloatToWADIsExact verifies a price the oracle publishes as a short
+// decimal scales to the exact WAD integer. SetFloat64(0.7) would produce
+// 699999999999999999 (the binary double is just under 0.7); parsing the
+// decimal keeps it at 700000000000000000. The value feeds funding and every
+// position's margin, so the artefact would move settlement.
+func TestUsdFloatToWADIsExact(t *testing.T) {
+	cases := map[float64]string{
+		0.7:   "700000000000000000",
+		1:     "1000000000000000000",
+		0.1:   "100000000000000000",
+		12345: "12345000000000000000000",
+	}
+	for price, want := range cases {
+		got, err := usdFloatToWAD(price)
+		if err != nil {
+			t.Errorf("usdFloatToWAD(%v): %v", price, err)
+			continue
+		}
+		if got.String() != want {
+			t.Errorf("usdFloatToWAD(%v) = %s, want %s", price, got.String(), want)
+		}
+	}
+
+	// SetFloat64's artefact is the specific defect this guards against.
+	if new(big.Rat).SetFloat64(0.7).RatString() == "7/10" {
+		t.Skip("this Go version formats SetFloat64(0.7) as 7/10; the guard is vacuous here")
+	}
+	if _, err := usdFloatToWAD(0); err == nil {
+		t.Fatal("a non-positive price must be rejected")
+	}
+}
+
 // TestRationalToFloatRejectsNonFinite verifies a value that cannot be a finite
 // float64 is reported rather than silently becoming +Inf.
 func TestRationalToFloatRejectsNonFinite(t *testing.T) {
