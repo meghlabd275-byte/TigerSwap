@@ -165,7 +165,10 @@ The strongest part of the repository.
   (`services/metrics.go`) wired at `/healthz`, `/readyz`, `/metrics`, with
   database, Redis and blockchain-client probes registered.
 - Outbound webhooks (`services/webhook_service.go`): durable at-least-once
-  delivery, HMAC-signed, SSRF-checked, enqueued in the same transaction as the
+  delivery, HMAC-signed, SSRF-checked **at connect time** — the client dials
+  through `safeDialContext`, so the address validated is the address connected
+  to and a DNS-rebinding host cannot reach a private or metadata endpoint —
+  enqueued in the same transaction as the
   business write.
 - An oracle writer (`onchain_perps_oracle.go`) pushes mark prices on-chain from
   the keeper key, so a deployed perp market is tradable rather than
