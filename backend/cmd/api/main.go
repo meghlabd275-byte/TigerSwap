@@ -430,7 +430,7 @@ func main() {
 	services.StartBridgeRelayer(realtimeCtx, bridgeService, services.DefaultBridgeSweepInterval)
 	// Reconcile pending withdrawals against their on-chain receipt so a reverted
 	// transaction reverses the debit instead of leaving the user charged forever.
-	services.StartWithdrawalReconciler(realtimeCtx, db, blockchainClient, ledgerService, webhookService, services.DefaultWithdrawalReconcileInterval)
+	services.StartWithdrawalReconciler(realtimeCtx, db, blockchainClient, ledgerService, webhookService, feeCollector, services.DefaultWithdrawalReconcileInterval)
 	// Index on-chain perp events and liquidate unhealthy positions. Started only
 	// when a deployment is configured; otherwise it is a no-op.
 	onChainPerps.Start(realtimeCtx)

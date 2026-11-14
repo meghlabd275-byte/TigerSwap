@@ -165,3 +165,39 @@ func TestLedgerBalancesListsAllRows(t *testing.T) {
 		}
 	}
 }
+
+// TestLedgerConcurrentFirstCredit runs N concurrent first credits for the same
+// (user, chain, token), which has no ledger row yet. Every credit must land and
+// the balance must be their exact sum. The row is created with an idempotent
+// upsert, so a concurrent creator is a no-op rather than a unique-key failure.
+func TestLedgerConcurrentFirstCredit(t *testing.T) {
+	ledger, _ := newLedger(t)
+
+	const workers = 8
+	amount := big.NewInt(100)
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- ledger.Credit("user-race", 1, "native", "ETH", 18, amount)
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent credit failed: %v", err)
+		}
+	}
+
+	available, err := ledger.Available("user-race", 1, "native")
+	if err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	want := big.NewInt(int64(workers) * 100)
+	if available.Cmp(want) != 0 {
+		t.Fatalf("expected %s after %d credits, got %s", want, workers, available)
+	}
+}

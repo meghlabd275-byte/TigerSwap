@@ -238,6 +238,92 @@ func TestWithdrawalReconcilerReversesRevertedTransfer(t *testing.T) {
 	}
 }
 
+// TestWithdrawalReconcilerRefundsFeeOnRevert proves a reverted withdrawal refunds
+// the amount and the fee that was charged for it, and marks the fee record
+// refunded. Before the fix only the amount was refunded, so the platform kept the
+// fee for a transfer that never settled.
+func TestWithdrawalReconcilerRefundsFeeOnRevert(t *testing.T) {
+	url, raw := startWithdrawalAnvil(t)
+	ctx := context.Background()
+
+	client := NewBlockchainClient()
+	client.SetRPCURL(31337, url)
+
+	deploy := common.FromHex("0x6006600c60003960066000f360006000fd")
+	reverter := deployContract(t, raw, ctx, deploy)
+	txHash := sendSigned(t, raw, ctx, reverter, big.NewInt(0), 100000, []byte{0x01})
+	mine(t, raw, ctx)
+
+	db := newReconcilerDB(t)
+	if err := db.AutoMigrate(&models.FeeRecordModel{}); err != nil {
+		t.Fatalf("migrate fee record: %v", err)
+	}
+	userID := uuid.NewString()
+	ledger := NewLedgerService(db)
+	fees := NewFeeCollectorService()
+	fees.SetDB(db)
+
+	principal := big.NewInt(5_000_000)
+	fee := big.NewInt(25_000)
+	if err := ledger.Credit(userID, 31337, "native", "ETH", 18, big.NewInt(10_000_000)); err != nil {
+		t.Fatalf("credit: %v", err)
+	}
+	if err := ledger.ChargeWithFee(userID, 31337, "native", principal, fee); err != nil {
+		t.Fatalf("charge: %v", err)
+	}
+	if _, err := fees.RecordWithdrawFee("native", fee.String(), txHash, 31337, reverter.Hex()); err != nil {
+		t.Fatalf("record fee: %v", err)
+	}
+	if err := db.Create(&models.Transaction{
+		UserID:     uuid.MustParse(userID),
+		Hash:       txHash,
+		ChainID:    31337,
+		Type:       "withdraw",
+		FromToken:  "native",
+		FromAmount: principal.String(),
+		ToAddress:  reverter.Hex(),
+		Status:     "pending",
+		Timestamp:  time.Now(),
+	}).Error; err != nil {
+		t.Fatalf("seed tx: %v", err)
+	}
+
+	reconciler := &withdrawalReconciler{db: db, blockchain: client, ledger: ledger, fees: fees}
+	reconciler.sweep(ctx)
+
+	bal, err := ledger.Available(userID, 31337, "native")
+	if err != nil {
+		t.Fatalf("available: %v", err)
+	}
+	want := big.NewInt(10_000_000)
+	if bal.Cmp(want) != 0 {
+		t.Fatalf("balance after refund = %s, want %s", bal, want)
+	}
+
+	feeAccount, err := ledger.Available(FeeAccountID, 31337, "native")
+	if err != nil {
+		t.Fatalf("fee account: %v", err)
+	}
+	if feeAccount.Sign() != 0 {
+		t.Fatalf("fee account = %s, want 0 after refund", feeAccount)
+	}
+
+	var rec models.FeeRecordModel
+	if err := db.Where("type = ? AND tx_hash = ?", "withdraw", txHash).First(&rec).Error; err != nil {
+		t.Fatalf("reload fee record: %v", err)
+	}
+	if rec.Status != "refunded" {
+		t.Fatalf("fee record status = %q, want refunded", rec.Status)
+	}
+
+	// A second sweep must not refund again.
+	reconciler.sweep(ctx)
+	bal2, _ := ledger.Available(userID, 31337, "native")
+	if bal2.Cmp(want) != 0 {
+		t.Fatalf("second sweep changed balance: %s", bal2)
+	}
+}
+
 // deployContract deploys raw creation bytecode and returns the deployed address.
 func deployContract(t *testing.T, raw *ethclient.Client, ctx context.Context, code []byte) common.Address {
 	t.Helper()

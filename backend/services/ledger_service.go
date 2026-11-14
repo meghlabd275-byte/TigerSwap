@@ -146,7 +146,10 @@ func mutateWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress, symbo
 	case errors.Is(err, gorm.ErrRecordNotFound):
 		// Creating the row here means a debit with no prior credit is
 		// rejected by the zero-balance check in fn rather than silently
-		// conjuring funds.
+		// conjuring funds. Two concurrent first mutations of the same
+		// (user, chain, token) would both miss the row above; the upsert
+		// makes the loser a no-op instead of a unique-key failure, and the
+		// re-read under lock then observes whichever row won.
 		row = models.AccountBalance{
 			UserID:       userID,
 			ChainID:      chainID,
@@ -156,12 +159,14 @@ func mutateWithin(tx *gorm.DB, userID string, chainID int64, tokenAddress, symbo
 			Available:    "0",
 			Locked:       "0",
 		}
-		if err := tx.Create(&row).Error; err != nil {
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row).Error; err != nil {
 			return err
 		}
-		// Re-read under lock so the update path is identical for new rows.
+		// Re-read under lock so the update path is identical for new rows,
+		// whether this call created the row or a concurrent one did.
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ?", row.ID).First(&row).Error; err != nil {
+			Where("user_id = ? AND chain_id = ? AND token_address = ?", userID, chainID, tokenKey).
+			First(&row).Error; err != nil {
 			return err
 		}
 	case err != nil:
