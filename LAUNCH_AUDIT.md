@@ -25,7 +25,7 @@ resolved or still open.
 
 | Layer | Result |
 | --- | --- |
-| Solidity (`forge test`) | green (34 suites, 810 tests) |
+| Solidity (`forge test`) | green (34 suites, 812 tests) |
 | Go (`backend/`) | build + vet + test green (several packages have no tests) |
 | Go (`backend/go/api_gateway`, separate module) | build + test green |
 | Rust (`backend/rust`) | build + test green |
@@ -39,14 +39,18 @@ prove each component does what its own test says, not that the system trades. Th
 largest remaining issues are operational and commercial, not "the feature is
 wired to nothing":
 
-0. **The derivatives ledger is now free of the read-before-lock races.** Two
-   margin settlement defects and a governance bribe escrow defect found in this
-   review are fixed on `main`: `Repay` reads its debt row inside the transaction
-   under a `FOR UPDATE` lock, `Liquidate` computes health, the repayable amount
-   and the seized value inside the transaction after locking the account, and
-   `AddBribe`/`ClaimBribe` move real ledger funds instead of recording an amount
-   that was never debited or credited. Each has a regression test that fails on
-   the pre-fix code.
+0. **The derivatives ledger is now free of the read-before-lock races and the
+   open-interest caps bind.** Defects found across this and earlier reviews are
+   fixed on `main`, each with a regression test that fails on the pre-fix code:
+   `Repay` reads its debt row inside the transaction under a `FOR UPDATE` lock;
+   `Liquidate` computes health, the repayable amount and the seized value inside
+   the transaction after locking the account; `AddBribe`/`ClaimBribe` move real
+   ledger funds; the oracle prices the derivatives money paths parse are parsed
+   exactly rather than through `float64`; the off-chain perp engine evaluates its
+   open-interest cap under the same write lock that inserts the position, so two
+   concurrent opens can no longer both slip past it; and the on-chain
+   `TigerSwapPerpOrderBook` now tracks and enforces `maxOpenInterest`, which was
+   previously stored but never checked (§3.2).
 1. **Settlement of the derivatives book is custodial and off-chain.** Perp and
    margin positions live in Postgres and settle against an internal ledger. That
    is the exchange model, not the DEX model, and it is the opposite of
@@ -205,7 +209,26 @@ that round-trips, so persisting and re-reading a price is lossless. Converting
 those columns to integer strings is a schema migration with no change to any
 liquidation decision, so it is not a launch blocker.
 
-### 3.2 Non-EVM chains can be enabled but cannot be watched (open, fails closed)
+### 3.2 The perp order book's open-interest cap was inert (resolved)
+
+`TigerSwapPerpOrderBook` stored `maxOpenInterest` and let the owner set it
+through `createMarket`/`setMarketParams`, but `market.openInterest` was only ever
+decremented — in `liquidate` — and never incremented. The field was therefore
+always zero and the cap was never checked, so a listing's open-interest limit was
+silently inert: any size could be opened against it. `TigerSwapPerpetuals`
+already enforces its cap, so the two perps venues disagreed.
+
+`_applyFill` now tracks open interest as the sum of absolute position sizes: it
+adds the net increase when a fill grows a position (including the surviving side
+of a flip), releases the difference when a fill shrinks one, and requires the
+resulting book to stay within `maxOpenInterest` when one is set. `_applyFill` is
+the single choke point for every position change, so the cap cannot be bypassed
+by a particular taker/maker split.
+`testOpenInterestTracksPositionsAndCapBinds` and
+`testOpenInterestUncappedMarketIsNotBlocked` pin it; both fail on the pre-fix
+contract, where open interest stayed at zero.
+
+### 3.3 Non-EVM chains can be enabled but cannot be watched (open, fails closed)
 
 `deposit_watcher.go` / `BlockchainClient` are EVM-only (`ethclient`). A chain
 row an operator marks with a non-EVM type is now refused by
@@ -213,7 +236,7 @@ row an operator marks with a non-EVM type is now refused by
 inert rather than misconfigured. "Multichain" today means "the same EVM contracts
 on several EVM chains"; there is still no non-EVM deposit path.
 
-### 3.3 Bridge relayer holds the whole validator set (open)
+### 3.4 Bridge relayer holds the whole validator set (open)
 
 `TIGERBRIDGE_VALIDATOR_KEYS` is read in-process and the relayer signs the
 supermajority itself. A supermajority one process can produce is not a
