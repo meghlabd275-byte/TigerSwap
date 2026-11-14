@@ -574,6 +574,25 @@ contract TigerSwapPerpOrderBook {
             pos.entryNotional = 0;
         }
 
+        // Open interest tracks the sum of absolute position sizes. A fill that
+        // shrinks a position (a partial close, or a flip) releases the difference;
+        // one that grows it adds the difference and is checked against the cap. The
+        // cap is enforced here, on the resulting book, so it cannot be exceeded
+        // however the fill is split between taker and maker.
+        {
+            uint256 absOld = oldSize > 0 ? uint256(oldSize) : uint256(-oldSize);
+            uint256 absNew = newSize > 0 ? uint256(newSize) : uint256(-newSize);
+            if (absNew > absOld) {
+                market.openInterest += absNew - absOld;
+                if (market.maxOpenInterest != 0) {
+                    require(market.openInterest <= market.maxOpenInterest, "TigerSwap: MAX_OPEN_INTEREST");
+                }
+            } else if (absOld > absNew) {
+                uint256 released = absOld - absNew;
+                market.openInterest = market.openInterest > released ? market.openInterest - released : 0;
+            }
+        }
+
         if (increasing) {
             int256 equity = _equity(marketId, trader);
             require(equity >= 0 && uint256(equity) >= _initialMarginRequirement(marketId, trader), "TigerSwap: INSUFFICIENT_MARGIN");

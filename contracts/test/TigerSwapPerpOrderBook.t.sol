@@ -699,4 +699,57 @@ contract TigerSwapPerpOrderBookTest is Test {
         assertEq(ap[1], PRICE + 100e18, "second ask");
         assertEq(aq[1], 2e18, "second ask qty");
     }
+
+    /// @dev Open interest must reflect real positions and the listing's cap must
+    ///      actually bind. It was previously never incremented and the cap never
+    ///      checked, so a maxOpenInterest an operator set was inert.
+    function testOpenInterestTracksPositionsAndCapBinds() public {
+        // Cap the book at 2e18: exactly one fully-open pair.
+        book.setMarketParams(BTC, TAKER_FEE, MAKER_FEE, INITIAL_MARGIN, MAINT_MARGIN, LIQ_FEE, 2e18);
+
+        _deposit(alice, 100_000e18);
+        _deposit(bob, 100_000e18);
+        _place(bob, 1e18, PRICE, false, 0, false);  // bob rests a short
+        _place(alice, 1e18, PRICE, true, 1, false); // alice takes it: long + short
+        (, , , , , uint256 oi) = _market();
+        assertEq(oi, 2e18, "a filled pair is 2e18 of open interest");
+
+        // A third trader's order would push open interest past the cap.
+        _deposit(carol, 100_000e18);
+        _deposit(dave, 100_000e18);
+        (uint256 daveOrderId,) = _place(dave, 1e18, PRICE, false, 0, false);
+        vm.prank(carol);
+        vm.expectRevert("TigerSwap: MAX_OPEN_INTEREST");
+        book.placeOrder(BTC, 1e18, PRICE, true, 1, false);
+        (, , , , , oi) = _market();
+        assertEq(oi, 2e18, "a refused open must leave open interest unchanged");
+
+        // Remove the third party's resting order, then close the original pair:
+        // bob bids and alice sells into it, so both sides release.
+        vm.prank(dave);
+        book.cancelOrder(daveOrderId);
+        _place(bob, 1e18, PRICE, true, 0, false);  // bob rests a bid (closes his short)
+        _place(alice, 1e18, PRICE, false, 1, false); // alice sells into it (closes her long)
+        (, , , , , oi) = _market();
+        assertEq(oi, 0, "closing the pair released its open interest");
+
+        // With the book empty the same size fits under the cap again.
+        _place(bob, 1e18, PRICE, false, 0, false);
+        _place(carol, 1e18, PRICE, true, 1, false);
+        (, , , , , oi) = _market();
+        assertEq(oi, 2e18, "the released capacity is usable again");
+    }
+
+    /// @dev An uncapped market (maxOpenInterest == 0) must never be blocked.
+    function testOpenInterestUncappedMarketIsNotBlocked() public {
+        _openPosition(alice, 5e18, true);
+        (, , , , , uint256 oi) = _market();
+        assertEq(oi, 10e18, "both sides of the 5e18 open are recorded");
+    }
+
+    /// @dev Reads the market's openInterest from the getMarket view.
+    function _market() internal view returns (uint256 a, uint256 b, uint256 c, uint256 d, uint256 e, uint256 oi) {
+        TigerSwapPerpOrderBook.Market memory m = book.getMarket(BTC);
+        return (m.takerFee, m.makerFee, m.initialMargin, m.maintenanceMargin, m.maxOpenInterest, m.openInterest);
+    }
 }
