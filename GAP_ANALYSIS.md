@@ -188,6 +188,26 @@ they are kept here so the history is not lost.
   frames to detect a half-open connection but never re-broadcasts one, and
   bounds the inbound frame size. `services/websocket_test.go` proves a client
   frame is discarded while a server-side `Broadcast` is still delivered.
+- **`TigerSwapPerpOrderBook.updatePrice` accrues funding before moving the
+  clock.** `updatePrice` set `fundingInfo.lastUpdateTime = block.timestamp`
+  without folding the elapsed window into the cumulative funding index, so an
+  oracle that published a price between accruals silently forgave that window of
+  funding (under-charging the position). `updatePrice` and `accrueFunding` now
+  share one private accrual, so every price-bearing oracle write charges the
+  window it covers. Pinned by `testUpdatePriceAccruesElapsedFunding`.
+- **A resting reduce-only order is capped at the maker's reducible size.** The
+  taker's reduce-only was clamped to its reducible size, but a maker's resting
+  reduce-only order was not, so a maker could rest a reduce-only order larger
+  than the position it meant to close and, once crossed, take the opposite
+  exposure. The maker side is now clamped the same way, and a reduce-only order
+  that can no longer reduce is cancelled as dead liquidity. Pinned by
+  `testRestingReduceOnlyIsCappedForMaker`.
+- **Price-time priority survives an order being retired.**
+  `TigerSwapPerpOrderBook._dropOrder` retired a cancelled or filled order with
+  swap-and-pop, moving the last order at a price level into the freed slot, so a
+  later order could fill ahead of an earlier one still resting at the same
+  price. The queue is now shifted to keep arrival order. Pinned by
+  `testCancellingPreservesTimePriority`.
 
 ## How to re-verify
 
