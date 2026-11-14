@@ -616,21 +616,15 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 		return nil, fmt.Errorf("insufficient collateral: need %.8f for %dx on size %.8f", need, leverage, sizeValue)
 	}
 
-	// Enforce the listing's open-interest cap. Without this a listed cap was
-	// accepted by the admin API and then never applied to trading.
-	if cap, limited, err := openInterestCapRat(cfg); err != nil {
+	// Enforce the listing's open-interest cap. The check must be atomic with the
+	// insert below: two concurrent opens that each read the pre-open interest
+	// would both pass the cap and both insert, leaving the book over its limit.
+	// The write lock is taken here and released only after the position is in the
+	// map, so the check-then-insert is serialised. openInterestCapRat reads the
+	// listing, not the book, so it is safe to call while the lock is held.
+	capRat, capped, err := openInterestCapRat(cfg)
+	if err != nil {
 		return nil, err
-	} else if limited {
-		long, short, err := e.openInterestRat(pair)
-		if err != nil {
-			return nil, err
-		}
-		open := new(big.Rat).Add(long, short)
-		projected := new(big.Rat).Add(open, sizeRat)
-		if projected.Cmp(cap) > 0 {
-			return nil, fmt.Errorf("open interest cap reached for %s: %s open plus %s would exceed the %s cap",
-				cfg.Symbol, open.RatString(), sizeRat.RatString(), cap.RatString())
-		}
 	}
 
 	position := &PerpetualPosition{
@@ -652,20 +646,44 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 		BlockNumber:      0,
 	}
 
+	// Take the write lock before the cap check and hold it through the map insert.
+	// openInterestRat re-acquires the read lock, which would deadlock if this
+	// goroutine already held the write lock, so it must be called under the same
+	// lock. The escrow transaction below does not touch the engine lock, so it can
+	// run while the lock is held.
+	e.mu.Lock()
+	if capped {
+		long, short, err := e.openInterestRatLocked(pair)
+		if err != nil {
+			e.mu.Unlock()
+			return nil, err
+		}
+		open := new(big.Rat).Add(long, short)
+		projected := new(big.Rat).Add(open, sizeRat)
+		if projected.Cmp(capRat) > 0 {
+			e.mu.Unlock()
+			return nil, fmt.Errorf("open interest cap reached for %s: %s open plus %s would exceed the %s cap",
+				cfg.Symbol, open.RatString(), sizeRat.RatString(), capRat.RatString())
+		}
+	}
+
 	// Escrow the posted margin before the position is recorded. The debit and the
 	// position row commit in one transaction, so a position can never exist
 	// without its margin escrowed and a debit can never be stranded by a failed
 	// insert. A position whose margin is not backed by real ledger balance would
 	// let a trader open exposure the platform cannot settle.
 	if e.db == nil {
+		e.mu.Unlock()
 		return nil, errors.New("perpetual engine has no database configured; positions cannot be escrowed")
 	}
 	settlement, err := e.settlementFor(pair)
 	if err != nil {
+		e.mu.Unlock()
 		return nil, err
 	}
 	marginUnits := scaleToBaseUnits(collateralRat, settlement.Decimals)
 	if marginUnits.Sign() <= 0 {
+		e.mu.Unlock()
 		return nil, fmt.Errorf("collateral %s is below one base unit of %s", collateral, settlement.Symbol)
 	}
 
@@ -676,10 +694,10 @@ func (e *PerpetualEngine) OpenPosition(ctx context.Context, ownerID string, chai
 		return e.persistPositionWithin(tx, position)
 	}
 	if err := e.db.Transaction(store); err != nil {
+		e.mu.Unlock()
 		return nil, err
 	}
 
-	e.mu.Lock()
 	e.positions[position.ID] = position
 	e.mu.Unlock()
 

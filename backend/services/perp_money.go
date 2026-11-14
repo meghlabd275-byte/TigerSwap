@@ -85,11 +85,19 @@ func positionIsLive(status string) bool {
 // skipped: silently omitting it would understate open interest and let the cap
 // be exceeded.
 func (e *PerpetualEngine) openInterestRat(symbol string) (long, short *big.Rat, err error) {
-	long = new(big.Rat)
-	short = new(big.Rat)
-
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+	return e.openInterestRatLocked(symbol)
+}
+
+// openInterestRatLocked totals open interest assuming the caller already holds
+// the engine lock (read or write). It exists so the open path can evaluate the
+// open-interest cap under the write lock it takes for the check-then-insert,
+// without re-acquiring the same RWMutex, which is not reentrant and would
+// deadlock.
+func (e *PerpetualEngine) openInterestRatLocked(symbol string) (long, short *big.Rat, err error) {
+	long = new(big.Rat)
+	short = new(big.Rat)
 
 	for _, position := range e.positions {
 		if position.Pair != symbol || !positionIsLive(position.Status) {

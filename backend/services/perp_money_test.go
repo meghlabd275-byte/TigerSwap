@@ -1,9 +1,13 @@
 package services
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"math/big"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"tigerswap/backend/models"
@@ -174,6 +178,55 @@ func TestPerpMarketConfigKeepsExactOpenInterest(t *testing.T) {
 	}
 	if cfg.MaxOpenInterest != "1000000.12345678" {
 		t.Fatalf("open interest cap lost precision: %q", cfg.MaxOpenInterest)
+	}
+}
+
+// TestOpenInterestCapIsAtomicUnderConcurrency proves the cap check and the
+// position insert cannot be raced. The check used to read the book, release the
+// lock, and insert afterwards, so two opens that each observed the pre-open
+// interest both passed the cap and both inserted -- leaving open interest over
+// the listing's limit. With the check and the insert under one write lock,
+// exactly the number of positions that fit under the cap may be opened.
+func TestOpenInterestCapIsAtomicUnderConcurrency(t *testing.T) {
+	engine, ledger := newEscrowPerpEngine(t, map[string]float64{"BTC": 100})
+	engine.markets["BTC/RUSD"] = &perpMarketConfig{
+		Symbol: "BTC/RUSD", OracleSymbol: "BTC", MaxLeverage: 100,
+		MaintenanceMarginRate: 0.05, MaxOpenInterest: "1000",
+	}
+
+	const traders = 40
+	for i := 0; i < traders; i++ {
+		fundTrader(t, ledger, fmt.Sprintf("u%d", i), 100)
+	}
+
+	// Each position is size 100 notional with 100 collateral at 1x, so exactly
+	// ten fit under a 1000 cap.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var opened int64
+	for i := 0; i < traders; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if _, err := engine.OpenPosition(context.Background(), fmt.Sprintf("u%d", i), 1, "BTC/RUSD", "long", "100", "100", 1); err == nil {
+				atomic.AddInt64(&opened, 1)
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	if opened != 10 {
+		t.Fatalf("opened %d positions under a 1000 cap with 100-notional each; want exactly 10", opened)
+	}
+	long, short, err := engine.openInterestRat("BTC/RUSD")
+	if err != nil {
+		t.Fatalf("openInterestRat: %v", err)
+	}
+	open := new(big.Rat).Add(long, short)
+	if open.RatString() != "1000" {
+		t.Fatalf("open interest = %s, want exactly the 1000 cap", open.RatString())
 	}
 }
 
