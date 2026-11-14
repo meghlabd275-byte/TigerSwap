@@ -391,8 +391,9 @@ to a writable path when running locally).
 
 ## Realtime market feed
 
-The WebSocket at `/ws` is served by `services.WebSocketHub`. Two wiring rules
-matter, and breaking either leaves the endpoint silently unusable.
+The WebSocket at `/ws` is served by `services.WebSocketHub`. Three wiring rules
+matter, and breaking any of them leaves the endpoint silently unusable or
+unsafe.
 
 - `services.StartWebSocketHub` must be called before the server serves traffic.
   The hub's `Run` goroutine owns the `register` channel; while it is not running
@@ -404,6 +405,12 @@ matter, and breaking either leaves the endpoint silently unusable.
   dropped instead of stalling the caller. `StartMarketFeed` publishes real
   oracle prices on an interval; `TrackedPriceSymbols` is the one symbol list
   shared with the REST `/prices` handlers, so the two cannot drift.
+- The feed is server-push only. `HandleWebSocket` drains inbound frames so a
+  half-open connection is detected, but it must never `Broadcast` a frame it
+  read from a client: the hub fans every broadcast out to all clients, so
+  echoing a client frame would let one connected client inject a spoofed tick
+  into every other client's feed. `services/websocket_test.go` pins this — a
+  client frame is discarded while a server-side `Broadcast` is still delivered.
 
 The frontend consumes the feed through `src/lib/marketFeed.ts` and
 `useMarketFeed`; every frame is validated with `marketTickValidator` before a

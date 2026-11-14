@@ -181,6 +181,13 @@ they are kept here so the history is not lost.
   insert two `GaugeVote` rows for one `(user, gauge)`, and the pro-rata bribe
   split then counted that account's weight twice. A composite unique index
   `(user_id, gauge_id)` plus an upsert makes a re-vote update the row in place.
+- **The realtime feed cannot be spoofed by a client.** `HandleWebSocket` used to
+  `Broadcast` every inbound frame, and the hub fans a broadcast out to all
+  clients, so any connected client could inject a fake price tick into every
+  other client's feed. The handler is now server-push only: it drains inbound
+  frames to detect a half-open connection but never re-broadcasts one, and
+  bounds the inbound frame size. `services/websocket_test.go` proves a client
+  frame is discarded while a server-side `Broadcast` is still delivered.
 
 ## How to re-verify
 

@@ -2013,6 +2013,11 @@ func Broadcast(message []byte) {
 	}
 }
 
+// wsMaxClientFrameBytes bounds an inbound client frame. The feed is push-only,
+// so the limit only stops a client from making the server buffer an arbitrarily
+// large message before it is discarded.
+const wsMaxClientFrameBytes = 4 << 10
+
 // upgrader upgrades HTTP requests to WebSocket connections.
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
@@ -2089,6 +2094,12 @@ func HandleWebSocket(c *gin.Context) {
 		client: c,
 		conn:   conn,
 	}
+	// The feed is server-push only: a frame is validated and published by the
+	// oracle sampler, never by a client. The read loop below drains incoming
+	// frames so a half-open connection is detected, but it must not re-broadcast
+	// them — echoing a client frame into the hub would let one connected client
+	// inject a spoofed tick into every other client's feed.
+	conn.SetReadLimit(wsMaxClientFrameBytes)
 	wsHub.register <- wsConn
 
 	go func() {
@@ -2098,11 +2109,9 @@ func HandleWebSocket(c *gin.Context) {
 		}()
 
 		for {
-			_, message, err := conn.ReadMessage()
-			if err != nil {
+			if _, _, err := conn.ReadMessage(); err != nil {
 				break
 			}
-			Broadcast(message)
 		}
 	}()
 
