@@ -25,7 +25,7 @@ resolved or still open.
 
 | Layer | Result |
 | --- | --- |
-| Solidity (`forge test`) | green (28 suites) |
+| Solidity (`forge test`) | green (34 suites, 810 tests) |
 | Go (`backend/`) | build + vet + test green (several packages have no tests) |
 | Go (`backend/go/api_gateway`, separate module) | build + test green |
 | Rust (`backend/rust`) | build + test green |
@@ -109,7 +109,7 @@ The strongest part of the repository.
 
 ### 2.3 Smart contracts
 
-- Every contract has a matching `contracts/test/<Name>.t.sol` (29 suites) and
+- Every contract has a matching `contracts/test/<Name>.t.sol` (34 suites) and
   the suite is green.
 - `TigerSwapPriceOracle` is the sole price source; acting contracts read the
   price from the oracle, never from a caller argument.
@@ -247,9 +247,11 @@ environment-variable secret.
 ### 4.4 Test depth
 
 - Fuzz and invariant tests now exist for the xyK pool
-  (`contracts/test/TigerSwapPoolFuzz.t.sol`, `TigerSwapPoolInvariant.t.sol`).
-  Still absent: contract fork tests (a test that reads a live fork), and fuzz /
-  invariant coverage for the stable, weighted and concentrated pool families.
+  (`contracts/test/TigerSwapPoolFuzz.t.sol`, `TigerSwapPoolInvariant.t.sol`) and
+  fuzz coverage has been added for the stable, weighted and concentrated
+  families (`TigerSwapStableFuzz.t.sol`, `TigerSwapWeightedFuzz.t.sol`,
+  `TigerSwapConcentratedFuzz.t.sol`). Still absent: contract fork tests (a test
+  that reads a live fork).
 - No end-to-end test that boots the API against a chain and a DB and trades
   through the stack. Per-service integration tests run against a real database
   and a real in-process chain harness (`perps/perpstest`, `go/orders`).
@@ -310,7 +312,8 @@ deposit watcher, and no cross-VM message layer.
 9. Horizontal-scale design (shared bus, leader/ownership) or an explicit
    single-replica constraint.
 10. Non-EVM support, or state "EVM multichain only".
-11. Fork/invariant/fuzz tests and an end-to-end trade test.
+11. Fork tests and an end-to-end trade test (pool-family fuzz/invariant tests
+    are in place).
 
 ---
 

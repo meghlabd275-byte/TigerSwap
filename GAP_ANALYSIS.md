@@ -29,6 +29,13 @@ green under `forge test`. Value-moving paths enforce the invariants in
 - Signature recovery range-checks `v` and rejects high-`s` before `ecrecover`.
 - ERC-20 transfers use a call-based helper that accepts a zero-length return
   (USDT) and rejects an explicit `false`.
+- Fuzz tests cover all four pool families. The xyK pool has fuzz and invariant
+  suites; the stable, weighted and concentrated families have fuzz suites
+  (`TigerSwapStableFuzz.t.sol`, `TigerSwapWeightedFuzz.t.sol`,
+  `TigerSwapConcentratedFuzz.t.sol`) pinning that a swap never loses the pool a
+  meaningful fraction of its invariant, never drains the output coin, moves
+  balances exactly, never inverts the price direction, and a deposit/withdraw
+  round trip is never profitable.
 
 ### Backend (`backend/`)
 
