@@ -60,7 +60,7 @@ change takes effect immediately.
 ### Frontend (`frontend/`)
 
 Next.js App Router + TypeScript + Tailwind. `npx tsc --noEmit` is clean and the
-runtime-validator suite (`npm test`, 94 tests) passes. Every API response is
+runtime-validator suite (`npm test`, 137 tests) passes. Every API response is
 parsed by a validator in `src/lib/types.ts` / `validation.ts` before a component
 sees it, and `serverContract.test.ts` pins the validators to payloads captured
 from a running server. The WebSocket market feed is validated per frame.
@@ -161,6 +161,17 @@ they are kept here so the history is not lost.
   before the row lock, so two racing liquidators could each seize the same
   collateral. The accrual, the liquidatability decision and the amounts are now
   computed inside the transaction after the account row is locked.
+- **A margin deposit and borrow cannot lose a write to a concurrent one.**
+  `DepositCollateral` and `Borrow` used to read the collateral/principal row and
+  write it back without a row lock or a unique constraint, so two requests on the
+  same `(account, asset)` each wrote a total that omitted the other while both
+  ledger movements stood. Both now lock the account row, take the debt row under
+  a `FOR UPDATE` lock, and upsert on a composite unique index `(account_id,
+  asset)` on `margin_collaterals` and `margin_borrows`.
+- **A governance re-vote cannot double a weight.** `GovernanceService.Vote` could
+  insert two `GaugeVote` rows for one `(user, gauge)`, and the pro-rata bribe
+  split then counted that account's weight twice. A composite unique index
+  `(user_id, gauge_id)` plus an upsert makes a re-vote update the row in place.
 
 ## How to re-verify
 
