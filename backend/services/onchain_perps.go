@@ -949,9 +949,11 @@ func (s *OnChainPerpsService) liquidateUnhealthy(ctx context.Context, chainID in
 		}
 		if position.Size.Sign() == 0 {
 			// Already closed on-chain; reconcile the mirror.
-			_ = s.db.Model(&models.OnChainPerpPosition{}).
+			if err := s.db.Model(&models.OnChainPerpPosition{}).
 				Where("chain_id = ? AND position_id = ?", chainID, row.PositionID).
-				Updates(map[string]interface{}{"status": "closed", "updated_at": time.Now().UTC()}).Error
+				Updates(map[string]interface{}{"status": "closed", "updated_at": time.Now().UTC()}).Error; err != nil {
+				log.Printf("keeper: failed to reconcile closed position %s: %v", row.PositionID, err)
+			}
 			continue
 		}
 		market, err := client.Market(ctx, position.MarketID)
@@ -978,13 +980,18 @@ func (s *OnChainPerpsService) liquidateUnhealthy(ctx context.Context, chainID in
 			log.Printf("keeper: liquidate %s: %v", row.PositionID, err)
 			continue
 		}
-		_ = s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.OnChainPerpLiquidation{
+		// The liquidation is already on-chain; the mirror row is the audit trail
+		// that stops the keeper re-submitting the same position, so a persistence
+		// failure is logged rather than silently dropped.
+		if err := s.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.OnChainPerpLiquidation{
 			ChainID:     chainID,
 			PositionID:  row.PositionID,
 			Trader:      row.Trader,
 			TxHash:      receipt.TxHash.Hex(),
 			BlockNumber: receipt.BlockNumber.Uint64(),
-		}).Error
+		}).Error; err != nil {
+			log.Printf("keeper: failed to record liquidation of %s on chain %d (tx %s): %v", row.PositionID, chainID, receipt.TxHash.Hex(), err)
+		}
 		log.Printf("keeper: liquidated position %s on chain %d (tx %s)", row.PositionID, chainID, receipt.TxHash.Hex())
 	}
 	return nil

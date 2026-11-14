@@ -314,7 +314,12 @@ func (s *AdminService) Authenticate(ctx context.Context, email, password, ipAddr
 			lockedUntil := time.Now().Add(15 * time.Minute)
 			admin.LockedUntil = &lockedUntil
 		}
-		s.db.Save(&admin)
+		// The lockout counter must persist: if this write fails silently the
+		// brute-force guard never engages, so the failure is logged for the
+		// operator even though the credential check has already failed.
+		if err := s.db.Save(&admin).Error; err != nil {
+			log.Printf("admin_service: failed to persist login attempts for %s: %v", admin.Email, err)
+		}
 		return nil, fmt.Errorf("invalid credentials")
 	}
 
@@ -322,7 +327,9 @@ func (s *AdminService) Authenticate(ctx context.Context, email, password, ipAddr
 	admin.LoginAttempts = 0
 	admin.LastLoginAt = new(time.Time)
 	*admin.LastLoginAt = time.Now()
-	s.db.Save(&admin)
+	if err := s.db.Save(&admin).Error; err != nil {
+		log.Printf("admin_service: failed to reset login attempts for %s: %v", admin.Email, err)
+	}
 
 	// Log activity
 	s.logActivity(ctx, admin.ID, "admin.login", "admin", admin.ID.String(), "Login successful")
@@ -367,7 +374,12 @@ func (s *AdminService) logActivity(ctx context.Context, adminID uuid.UUID, actio
 		activity.IPAddress = ip
 	}
 
-	s.db.Create(&activity)
+	// An audit record that failed to write is an audit gap, so it is surfaced
+	// rather than dropped. The action itself has already been performed, so the
+	// caller is not failed; the operator sees the gap in the log.
+	if err := s.db.Create(&activity).Error; err != nil {
+		log.Printf("admin_service: failed to write audit activity %s for admin %s: %v", action, adminID, err)
+	}
 }
 
 // isSuperAdmin checks if user is a super admin

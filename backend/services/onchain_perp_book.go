@@ -1111,7 +1111,12 @@ func (s *OnChainPerpBookService) liquidateUnhealthy(ctx context.Context, chainID
 			TxHash:      receipt.TxHash.Hex(),
 			BlockNumber: receipt.BlockNumber.Uint64(),
 		}
-		s.db.Save(&liq)
+		// The liquidation already executed on-chain, so a persistence failure must
+		// not be swallowed: the record is the audit trail an operator reconciles
+		// against. Log it loudly and keep sweeping the remaining positions.
+		if err := s.db.Create(&liq).Error; err != nil {
+			log.Printf("on-chain perp book keeper: failed to record liquidation of %s on chain %d (tx %s): %v", p.Trader, chainID, receipt.TxHash.Hex(), err)
+		}
 	}
 	return nil
 }
