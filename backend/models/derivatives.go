@@ -138,11 +138,14 @@ func (a *MarginAccount) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// MarginCollateral is one collateral asset held in a margin account.
+// MarginCollateral is one collateral asset held in a margin account. The
+// composite unique index on (account_id, asset) is the database-level backstop
+// against two concurrent deposits each inserting a row for the same asset, which
+// would let one holding's balance hide behind a duplicate row.
 type MarginCollateral struct {
 	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	AccountID uuid.UUID `gorm:"index" json:"account_id"`
-	Asset     string    `gorm:"size:20;index" json:"asset"`
+	AccountID uuid.UUID `gorm:"index;uniqueIndex:idx_margin_collateral_account_asset,priority:1" json:"account_id"`
+	Asset     string    `gorm:"size:20;index;uniqueIndex:idx_margin_collateral_account_asset,priority:2" json:"asset"`
 	Amount    string    `gorm:"size:60" json:"amount"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -159,8 +162,8 @@ func (c *MarginCollateral) BeforeCreate(tx *gorm.DB) error {
 // from LastAccrual at the market's utilization-driven rate.
 type MarginBorrow struct {
 	ID              uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	AccountID       uuid.UUID `gorm:"index" json:"account_id"`
-	Asset           string    `gorm:"size:20;index" json:"asset"`
+	AccountID       uuid.UUID `gorm:"index;uniqueIndex:idx_margin_borrow_account_asset,priority:1" json:"account_id"`
+	Asset           string    `gorm:"size:20;index;uniqueIndex:idx_margin_borrow_account_asset,priority:2" json:"asset"`
 	Principal       string    `gorm:"size:60" json:"principal"`
 	AccruedInterest string    `gorm:"size:60" json:"accrued_interest"`
 	LastAccrual     time.Time `json:"last_accrual"`

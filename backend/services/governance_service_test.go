@@ -1063,3 +1063,41 @@ func TestGetBribesRejectsMissingGaugeID(t *testing.T) {
 		t.Fatalf("expected 400 for missing gauge id, got %d", rec.Code)
 	}
 }
+
+// TestGaugeVoteRowsAreUniquePerAccount pins the (user_id, gauge_id) unique index
+// and the upsert in Vote. A duplicate vote row would count the same account's
+// weight twice in the pro-rata bribe split, so the schema must refuse a second
+// row and a re-vote must update the existing one in place.
+func TestGaugeVoteRowsAreUniquePerAccount(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := newGovernanceTestService(db)
+	gauge := createGauge(t, svc, "Pool A", models.GaugeTypePool)
+
+	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
+		"amount": "1000000000000000000000", "duration_seconds": maxLockSeconds,
+	}, nil)
+	power := svc.totalVotingPower("user-1", time.Now())
+
+	for _, weight := range []string{power.String(), power.String()} {
+		rec := callAs(t, "user-1", svc.Vote, http.MethodPost, "/x", gin.H{
+			"gauge_id": gauge.ID.String(), "weight": weight,
+		}, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("vote must succeed, got %d: %s", rec.Code, rec.Body.String())
+		}
+	}
+
+	var count int64
+	if err := db.Model(&models.GaugeVote{}).
+		Where("user_id = ? AND gauge_id = ?", "user-1", gauge.ID).Count(&count).Error; err != nil {
+		t.Fatalf("count votes: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("a re-vote must update the existing row, got %d rows", count)
+	}
+
+	duplicate := models.GaugeVote{UserID: "user-1", GaugeID: gauge.ID, Weight: "1"}
+	if err := db.Create(&duplicate).Error; err == nil {
+		t.Fatalf("a second vote row for the same (user, gauge) must be refused by the unique index")
+	}
+}

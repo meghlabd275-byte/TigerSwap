@@ -543,6 +543,17 @@ func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, acc
 	}
 
 	return e.db.Transaction(func(tx *gorm.DB) error {
+		// Lock the account row so two concurrent deposits on the same account
+		// serialize; without it both read the same pre-deposit amount and one
+		// deposit's collateral is overwritten (lost update). The unique index on
+		// (account_id, asset) is the backstop, and the upsert lets the first
+		// writer create the row while a loser adds to it rather than failing.
+		var locked models.MarginAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&locked, "id = ?", accountID).Error; err != nil {
+			return err
+		}
+
 		if err := e.ledger.debitWithin(tx, userID, settled.ChainID, settled.Address, units); err != nil {
 			return err
 		}
@@ -550,7 +561,10 @@ func (e *MarginEngine) DepositCollateral(ctx context.Context, userID string, acc
 		var existing models.MarginCollateral
 		err := tx.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return tx.Create(&models.MarginCollateral{
+			return tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "account_id"}, {Name: "asset"}},
+				DoNothing: true,
+			}).Create(&models.MarginCollateral{
 				AccountID: accountID,
 				Asset:     normalized,
 				Amount:    amountValueString(value),
@@ -622,22 +636,43 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 	// platform is the counterparty: the loan is backed by the escrowed collateral
 	// and repaid (with interest) out of the trader's balance.
 	return e.db.Transaction(func(tx *gorm.DB) error {
-		if err := e.ledger.creditWithin(tx, userID, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, units); err != nil {
+		// Lock the account row so two concurrent borrows serialize; the debt row
+		// is read under a row lock for the same reason. Without it two borrows on
+		// the same asset each read the pre-borrow principal and one principal is
+		// lost, while both credits stand. The unique index on (account_id, asset)
+		// and the upsert keep a concurrent first borrow from inserting a second row.
+		var locked models.MarginAccount
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&locked, "id = ?", accountID).Error; err != nil {
 			return err
 		}
 
+		// Lock the debt row before touching the balance. Row locks are taken in one
+		// order everywhere in this engine (account, then debt, then balance) so two
+		// operations on the same account cannot deadlock by grabbing them reversed.
 		var existing models.MarginBorrow
-		err := tx.Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return tx.Create(&models.MarginBorrow{
+			if err := tx.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "account_id"}, {Name: "asset"}},
+				DoNothing: true,
+			}).Create(&models.MarginBorrow{
 				AccountID:       accountID,
 				Asset:           normalized,
 				Principal:       amountValueString(value),
 				AccruedInterest: "0",
 				LastAccrual:     now,
-			}).Error
+			}).Error; err != nil {
+				return err
+			}
+			return e.ledger.creditWithin(tx, userID, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, units)
 		}
 		if err != nil {
+			return err
+		}
+
+		if err := e.ledger.creditWithin(tx, userID, settled.ChainID, settled.Address, settled.Symbol, settled.Decimals, units); err != nil {
 			return err
 		}
 

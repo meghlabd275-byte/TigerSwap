@@ -58,11 +58,14 @@ func (m *Gauge) BeforeCreate(tx *gorm.DB) error {
 	return nil
 }
 
-// GaugeVote is a user's current vote for a gauge.
+// GaugeVote is one account's vote on one gauge. The composite unique index on
+// (user_id, gauge_id) makes a second vote from the same account a conflict the
+// vote path resolves as an update, so a duplicate row can never double that
+// account's weight in the bribe distribution.
 type GaugeVote struct {
 	ID        uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	UserID    string    `gorm:"index;size:100;not null" json:"user_id"`
-	GaugeID   uuid.UUID `gorm:"index;not null" json:"gauge_id"`
+	UserID    string    `gorm:"index;size:100;not null;uniqueIndex:idx_gauge_vote_user_gauge,priority:1" json:"user_id"`
+	GaugeID   uuid.UUID `gorm:"index;not null;uniqueIndex:idx_gauge_vote_user_gauge,priority:2" json:"gauge_id"`
 	Weight    string    `gorm:"size:78;not null" json:"weight"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

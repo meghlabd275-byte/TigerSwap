@@ -416,20 +416,18 @@ func (s *GovernanceService) Vote(c *gin.Context) {
 			return err
 		}
 
-		var existing models.GaugeVote
-		lookup := tx.Where("user_id = ? AND gauge_id = ?", userID, gaugeID).First(&existing)
-		if lookup.Error == nil {
-			existing.Weight = weight.String()
-			return tx.Save(&existing).Error
-		}
-		if !errors.Is(lookup.Error, gorm.ErrRecordNotFound) {
-			return lookup.Error
-		}
-		return tx.Create(&models.GaugeVote{
+		// Upsert on the (user_id, gauge_id) unique index so two concurrent votes
+		// from the same account converge on one row instead of inserting a
+		// duplicate that would double the account's weight in the bribe split.
+		vote := models.GaugeVote{
 			UserID:  userID,
 			GaugeID: gaugeID,
 			Weight:  weight.String(),
-		}).Error
+		}
+		return tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "gauge_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{"weight", "updated_at"}),
+		}).Create(&vote).Error
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record vote"})
