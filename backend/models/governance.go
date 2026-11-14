@@ -18,15 +18,22 @@ const (
 
 // VeLock records a veTGR lock. Voting power decays linearly from the lock
 // start to UnlockTime, so it is derived rather than stored.
+//
+// The locked Amount is escrowed from the owner's ledger balance at creation and
+// returned on withdrawal. The chain/token columns record which ledger asset was
+// escrowed, so a withdrawal credits back exactly the asset that was debited
+// rather than trusting a caller-supplied token.
 type VeLock struct {
-	ID         uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
-	UserID     string    `gorm:"index;size:100;not null" json:"user_id"`
-	Amount     string    `gorm:"size:78;not null" json:"amount"`
-	StartTime  time.Time `gorm:"not null" json:"start_time"`
-	UnlockTime time.Time `gorm:"index;not null" json:"unlock_time"`
-	Withdrawn  bool      `gorm:"default:false" json:"withdrawn"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           uuid.UUID `gorm:"type:uuid;primary_key" json:"id"`
+	UserID       string    `gorm:"index;size:100;not null" json:"user_id"`
+	Amount       string    `gorm:"size:78;not null" json:"amount"`
+	ChainID      int64     `gorm:"index" json:"chain_id"`
+	TokenAddress string    `gorm:"size:100" json:"token_address"`
+	StartTime    time.Time `gorm:"not null" json:"start_time"`
+	UnlockTime   time.Time `gorm:"index;not null" json:"unlock_time"`
+	Withdrawn    bool      `gorm:"default:false" json:"withdrawn"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (m *VeLock) BeforeCreate(tx *gorm.DB) error {

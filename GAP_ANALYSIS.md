@@ -152,6 +152,15 @@ they are kept here so the history is not lost.
   that records the mutation, with the claim capped at the remaining escrow. A
   bribe used to be recorded with an amount but never touched a balance, so a
   claim paid out of nothing.
+- **veTGR locks escrow real balance.** `CreateLock` used to record a `VeLock`
+  with an `Amount` but never debit the owner, so any account could mint voting
+  power from a balance it did not hold; that power is spent against funded bribe
+  escrow, so the free power could drain a bribe. `CreateLock` now debits the
+  owner's TGR inside the transaction that inserts the lock (rejecting with 409
+  when the balance is short), the lock stores the escrowed chain/token, and
+  `WithdrawLock` refunds it under a `FOR UPDATE` row lock with a withdrawn
+  re-check so a release is exactly-once. A lock created before the escrow
+  columns existed (empty token) is never credited, so no balance is conjured.
 - **A margin repayment reads its debt under the transaction.** `Repay` used to
   read the `MarginBorrow` row before opening its transaction, so two concurrent
   repayments each acted on the pre-payment debt. The row is now read inside the

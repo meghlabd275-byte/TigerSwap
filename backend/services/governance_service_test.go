@@ -51,7 +51,7 @@ var govTestDBSeq uint64
 
 // newGovernanceTestService wires the service to a real ledger and a fixed token
 // registry (chain 1) so the bribe escrow path is exercised end to end.
-func newGovernanceTestService(db *gorm.DB) *GovernanceService {
+func newGovernanceTestService(t *testing.T, db *gorm.DB) *GovernanceService {
 	svc := NewGovernanceService(db)
 	svc.SetLedger(NewLedgerService(db), 1)
 	svc.settler = func(token string) (perpSettlement, error) {
@@ -67,6 +67,11 @@ func newGovernanceTestService(db *gorm.DB) *GovernanceService {
 		default:
 			return perpSettlement{}, fmt.Errorf("asset %s is not in the test registry", token)
 		}
+	}
+	// Lock creation escrows real TGR, so the shared lock accounts start funded. A
+	// test that needs to observe an unfunded rejection uses a different account.
+	for _, user := range []string{"user-1", "user-2"} {
+		creditGovernance(t, svc, user, "TGR", "1000000000000000000000000000")
 	}
 	return svc
 }
@@ -144,7 +149,7 @@ func decodeJSON[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 
 func TestCreateLockStoresAmountAndDecays(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "4000000000000000000000",
@@ -210,7 +215,7 @@ func TestVotingPowerIsZeroForWithdrawnLock(t *testing.T) {
 
 func TestCreateLockRejectsShortDuration(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "1000",
@@ -223,7 +228,7 @@ func TestCreateLockRejectsShortDuration(t *testing.T) {
 
 func TestCreateLockRejectsLongDuration(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "1000",
@@ -236,7 +241,7 @@ func TestCreateLockRejectsLongDuration(t *testing.T) {
 
 func TestCreateLockRejectsNonNumericAmount(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	for _, bad := range []string{"abc", "-5", "1.5", ""} {
 		rec := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
@@ -251,7 +256,7 @@ func TestCreateLockRejectsNonNumericAmount(t *testing.T) {
 
 func TestCreateLockRejectsSecondActiveLock(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	first := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "1000",
@@ -272,7 +277,7 @@ func TestCreateLockRejectsSecondActiveLock(t *testing.T) {
 
 func TestCreateLockRequiresAuthentication(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "1000",
@@ -285,7 +290,7 @@ func TestCreateLockRequiresAuthentication(t *testing.T) {
 
 func TestGetLocksReturnsTotalVotingPower(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount":           "1000000000000000000000",
@@ -315,7 +320,7 @@ func TestGetLocksReturnsTotalVotingPower(t *testing.T) {
 
 func TestGetLocksScopesToCaller(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount": "1000", "duration_seconds": maxLockSeconds,
@@ -338,7 +343,7 @@ func TestGetLocksScopesToCaller(t *testing.T) {
 
 func TestWithdrawLockRejectsUnexpired(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount": "1000", "duration_seconds": maxLockSeconds,
@@ -356,7 +361,7 @@ func TestWithdrawLockRejectsUnexpired(t *testing.T) {
 
 func TestWithdrawLockRejectsOtherUsersLock(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount": "1000", "duration_seconds": maxLockSeconds,
@@ -375,7 +380,7 @@ func TestWithdrawLockRejectsOtherUsersLock(t *testing.T) {
 
 func TestWithdrawLockSucceedsAfterExpiry(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
 		"amount": "1000", "duration_seconds": minLockSeconds,
@@ -423,7 +428,7 @@ func createGauge(t *testing.T, svc *GovernanceService, name, gaugeType string) m
 
 func TestCreateGaugeRejectsUnknownType(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "admin", svc.CreateGauge, http.MethodPost, "/x", gin.H{
 		"name": "bad", "gauge_type": "not-a-type",
@@ -435,7 +440,7 @@ func TestCreateGaugeRejectsUnknownType(t *testing.T) {
 
 func TestCreateGaugeRejectsEmptyName(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "admin", svc.CreateGauge, http.MethodPost, "/x", gin.H{
 		"name": "   ", "gauge_type": models.GaugeTypePool,
@@ -447,7 +452,7 @@ func TestCreateGaugeRejectsEmptyName(t *testing.T) {
 
 func TestVoteRequiresVotingPower(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	// No lock, so no power to vote with.
@@ -461,7 +466,7 @@ func TestVoteRequiresVotingPower(t *testing.T) {
 
 func TestVoteSucceedsWithinVotingPower(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
@@ -489,7 +494,7 @@ func TestVoteSucceedsWithinVotingPower(t *testing.T) {
 
 func TestVoteCannotExceedTotalPowerAcrossGauges(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gaugeA := createGauge(t, svc, "Pool A", models.GaugeTypePool)
 	gaugeB := createGauge(t, svc, "Pool B", models.GaugeTypePool)
 
@@ -518,7 +523,7 @@ func TestVoteCannotExceedTotalPowerAcrossGauges(t *testing.T) {
 
 func TestVoteCanBeReducedAndRedistributed(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gaugeA := createGauge(t, svc, "Pool A", models.GaugeTypePool)
 	gaugeB := createGauge(t, svc, "Pool B", models.GaugeTypePool)
 
@@ -557,7 +562,7 @@ func TestVoteCanBeReducedAndRedistributed(t *testing.T) {
 
 func TestVoteRejectsUnknownGauge(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
 		"amount": "1000000000000000000000", "duration_seconds": maxLockSeconds,
@@ -575,7 +580,7 @@ func TestVoteRejectsUnknownGauge(t *testing.T) {
 
 func TestBribeIsSplitProRataByVoteWeight(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	// user-1 locks 4x what user-2 locks.
@@ -646,7 +651,7 @@ func TestBribeIsSplitProRataByVoteWeight(t *testing.T) {
 
 func TestBribeCannotBeClaimedTwice(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
@@ -679,7 +684,7 @@ func TestBribeCannotBeClaimedTwice(t *testing.T) {
 
 func TestBribeClaimRejectsNonVoter(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	creditGovernance(t, svc, "funder", "RUSD", "1000")
@@ -699,7 +704,7 @@ func TestBribeClaimRejectsNonVoter(t *testing.T) {
 
 func TestAddBribeEscrowsTheFundersBalance(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	creditGovernance(t, svc, "funder", "RUSD", "5000")
@@ -734,7 +739,7 @@ func TestAddBribeEscrowsTheFundersBalance(t *testing.T) {
 
 func TestAddBribeWithoutBalanceIsRejected(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	// The funder holds nothing, so the bribe cannot be escrowed.
@@ -754,7 +759,7 @@ func TestAddBribeWithoutBalanceIsRejected(t *testing.T) {
 
 func TestBribeClaimCreditsTheVoterAndDrawsDownEscrow(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
@@ -802,7 +807,7 @@ func TestBribeClaimCreditsTheVoterAndDrawsDownEscrow(t *testing.T) {
 
 func TestAddBribeRejectsUnsupportedToken(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	rec := callAs(t, "funder", svc.AddBribe, http.MethodPost, "/x", gin.H{
@@ -815,7 +820,7 @@ func TestAddBribeRejectsUnsupportedToken(t *testing.T) {
 
 func TestAddBribeRejectsUnknownGauge(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "funder", svc.AddBribe, http.MethodPost, "/x", gin.H{
 		"gauge_id": "00000000-0000-0000-0000-000000000002", "token": "RUSD", "amount": "1000",
@@ -829,7 +834,7 @@ func TestAddBribeRejectsUnknownGauge(t *testing.T) {
 
 func TestBoostIsOneXWithoutVeTGR(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-1", svc.GetBoost, http.MethodGet, "/x?staked_amount=1000", nil, nil)
 	if rec.Code != http.StatusOK {
@@ -848,7 +853,7 @@ func TestBoostIsOneXWithoutVeTGR(t *testing.T) {
 
 func TestBoostCapsAtTwoPointFiveX(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
 		"amount": "1000000000000000000000000", "duration_seconds": maxLockSeconds,
@@ -869,7 +874,7 @@ func TestBoostCapsAtTwoPointFiveX(t *testing.T) {
 
 func TestBoostScalesWithRatio(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
 		"amount": "1000000000000000000000", "duration_seconds": maxLockSeconds,
@@ -891,7 +896,7 @@ func TestBoostScalesWithRatio(t *testing.T) {
 
 func TestBoostRejectsMissingStake(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-1", svc.GetBoost, http.MethodGet, "/x", nil, nil)
 	if rec.Code != http.StatusBadRequest {
@@ -903,7 +908,7 @@ func TestBoostRejectsMissingStake(t *testing.T) {
 
 func TestSetGaugeWeightUpdatesGauge(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	rec := callAs(t, "admin", svc.SetGaugeWeight, http.MethodPut, "/x", gin.H{
@@ -922,7 +927,7 @@ func TestSetGaugeWeightUpdatesGauge(t *testing.T) {
 
 func TestSetGaugeWeightCanDeactivate(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "TGR/RUSD", models.GaugeTypePool)
 
 	active := false
@@ -942,7 +947,7 @@ func TestSetGaugeWeightCanDeactivate(t *testing.T) {
 
 func TestSetGaugeWeightRejectsUnknownGauge(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "admin", svc.SetGaugeWeight, http.MethodPut, "/x", gin.H{
 		"weight": "100",
@@ -954,7 +959,7 @@ func TestSetGaugeWeightRejectsUnknownGauge(t *testing.T) {
 
 func TestGetGaugesFiltersActive(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "Active Pool", models.GaugeTypePool)
 	createGauge(t, svc, "Other Pool", models.GaugeTypePool)
 
@@ -1009,7 +1014,7 @@ func TestCurrentEpochIsWeekly(t *testing.T) {
 // frontend's gauge panel uses: GET /governance/bribes?gauge_id=...
 func TestGetBribesPublicRoute(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	userID := uuid.NewString()
 
 	gauge := models.Gauge{Name: "RUSD/TGR", GaugeType: "liquidity", Active: true}
@@ -1056,7 +1061,7 @@ func TestGetBribesPublicRoute(t *testing.T) {
 // no gauge filter rather than returning every bribe in the database.
 func TestGetBribesRejectsMissingGaugeID(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 
 	rec := callAs(t, "user-x", svc.GetBribes, http.MethodGet, "/governance/bribes", nil, nil)
 	if rec.Code != http.StatusBadRequest {
@@ -1070,7 +1075,7 @@ func TestGetBribesRejectsMissingGaugeID(t *testing.T) {
 // row and a re-vote must update the existing one in place.
 func TestGaugeVoteRowsAreUniquePerAccount(t *testing.T) {
 	db := newGovernanceTestDB(t)
-	svc := newGovernanceTestService(db)
+	svc := newGovernanceTestService(t, db)
 	gauge := createGauge(t, svc, "Pool A", models.GaugeTypePool)
 
 	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
@@ -1099,5 +1104,128 @@ func TestGaugeVoteRowsAreUniquePerAccount(t *testing.T) {
 	duplicate := models.GaugeVote{UserID: "user-1", GaugeID: gauge.ID, Weight: "1"}
 	if err := db.Create(&duplicate).Error; err == nil {
 		t.Fatalf("a second vote row for the same (user, gauge) must be refused by the unique index")
+	}
+}
+
+// A veTGR lock mints voting power that is spent against funded bribe escrow, so
+// the locked amount must be escrowed from the owner's real balance. Without the
+// debit an account could lock a balance it does not hold and vote with power
+// that no funds back.
+func TestCreateLockEscrowsTheOwnersBalance(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := newGovernanceTestService(t, db)
+
+	resolved, err := svc.settler("TGR")
+	if err != nil {
+		t.Fatalf("resolve TGR: %v", err)
+	}
+	before, err := svc.ledger.Available("user-1", resolved.ChainID, resolved.Address)
+	if err != nil {
+		t.Fatalf("available before: %v", err)
+	}
+
+	amount := "1000000000000000000000"
+	rec := callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
+		"amount": amount, "duration_seconds": maxLockSeconds,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	after, err := svc.ledger.Available("user-1", resolved.ChainID, resolved.Address)
+	if err != nil {
+		t.Fatalf("available after: %v", err)
+	}
+	locked, _ := new(big.Int).SetString(amount, 10)
+	want := new(big.Int).Sub(before, locked)
+	if after.Cmp(want) != 0 {
+		t.Fatalf("lock must debit the owner: got %s, want %s", after, want)
+	}
+
+	// The lock records the escrowed asset so the withdrawal can refund it.
+	var lock models.VeLock
+	if err := db.Where("user_id = ?", "user-1").First(&lock).Error; err != nil {
+		t.Fatalf("load lock: %v", err)
+	}
+	if lock.ChainID != resolved.ChainID || lock.TokenAddress != resolved.Address {
+		t.Fatalf("lock must record the escrowed asset, got chain %d token %q", lock.ChainID, lock.TokenAddress)
+	}
+}
+
+// A lock is not free: an account with no balance cannot mint voting power.
+func TestCreateLockWithoutBalanceIsRejected(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := newGovernanceTestService(t, db)
+
+	// "user-9" is not one of the pre-funded lock accounts.
+	rec := callAs(t, "user-9", svc.CreateLock, http.MethodPost, "/api/v1/governance/locks", gin.H{
+		"amount": "1000000000000000000000", "duration_seconds": maxLockSeconds,
+	}, nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for an unfunded lock, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var count int64
+	db.Model(&models.VeLock{}).Where("user_id = ?", "user-9").Count(&count)
+	if count != 0 {
+		t.Fatalf("a lock that could not be escrowed must not be recorded, found %d rows", count)
+	}
+}
+
+// Withdrawing an expired lock returns the escrowed amount exactly once, and a
+// second withdrawal is refused rather than crediting the owner twice.
+func TestWithdrawLockRefundsTheEscrowOnce(t *testing.T) {
+	db := newGovernanceTestDB(t)
+	svc := newGovernanceTestService(t, db)
+
+	resolved, err := svc.settler("TGR")
+	if err != nil {
+		t.Fatalf("resolve TGR: %v", err)
+	}
+
+	amount := "1000000000000000000000"
+	callAs(t, "user-1", svc.CreateLock, http.MethodPost, "/x", gin.H{
+		"amount": amount, "duration_seconds": minLockSeconds,
+	}, nil)
+	locked, _ := new(big.Int).SetString(amount, 10)
+	afterLock, err := svc.ledger.Available("user-1", resolved.ChainID, resolved.Address)
+	if err != nil {
+		t.Fatalf("available after lock: %v", err)
+	}
+
+	var lock models.VeLock
+	db.Where("user_id = ?", "user-1").First(&lock)
+	lock.UnlockTime = time.Now().Add(-time.Hour)
+	if err := db.Save(&lock).Error; err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	rec := callAs(t, "user-1", svc.WithdrawLock, http.MethodPost, "/x", nil,
+		gin.Params{{Key: "id", Value: lock.ID.String()}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	afterWithdraw, err := svc.ledger.Available("user-1", resolved.ChainID, resolved.Address)
+	if err != nil {
+		t.Fatalf("available after withdraw: %v", err)
+	}
+	want := new(big.Int).Add(afterLock, locked)
+	if afterWithdraw.Cmp(want) != 0 {
+		t.Fatalf("withdrawal must refund the escrow: got %s, want %s", afterWithdraw, want)
+	}
+
+	// A second withdrawal must not credit the owner again.
+	again := callAs(t, "user-1", svc.WithdrawLock, http.MethodPost, "/x", nil,
+		gin.Params{{Key: "id", Value: lock.ID.String()}})
+	if again.Code != http.StatusConflict {
+		t.Fatalf("second withdrawal: expected 409, got %d: %s", again.Code, again.Body.String())
+	}
+	final, err := svc.ledger.Available("user-1", resolved.ChainID, resolved.Address)
+	if err != nil {
+		t.Fatalf("available final: %v", err)
+	}
+	if final.Cmp(afterWithdraw) != 0 {
+		t.Fatalf("a second withdrawal must not change the balance: got %s, want %s", final, afterWithdraw)
 	}
 }

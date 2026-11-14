@@ -43,6 +43,29 @@ func (s *GovernanceService) SetLedger(ledger *LedgerService, settlementChainID i
 	s.settler = resolveAssetFromConfig(settlementChainID)
 }
 
+// lockLedger resolves the asset a veTGR lock escrows. veTGR is the protocol's
+// own governance token, so the lock is escrowed in TGR; the resolver is the same
+// one the bribe market uses, so a lock and a bribe always agree on the asset.
+func (s *GovernanceService) lockLedger() (perpSettlement, error) {
+	if s.ledger == nil {
+		return perpSettlement{}, errors.New("governance service has no ledger configured; locks cannot be escrowed")
+	}
+	if s.settler == nil {
+		return perpSettlement{}, errors.New("no ledger asset resolver configured for TGR")
+	}
+	resolved, err := s.settler("TGR")
+	if err != nil {
+		return perpSettlement{}, err
+	}
+	if resolved.Symbol == "" || resolved.Address == "" {
+		return perpSettlement{}, errors.New("TGR has no resolvable ledger entry")
+	}
+	if resolved.Decimals < 0 || resolved.Decimals > 36 {
+		return perpSettlement{}, fmt.Errorf("TGR has invalid decimals %d", resolved.Decimals)
+	}
+	return resolved, nil
+}
+
 // bribeLedger resolves a bribe token to its ledger entry. It requires both a
 // ledger and a resolver, so a deployment that forgets either refuses to escrow
 // a bribe rather than moving funds in a guessed asset.
@@ -72,6 +95,11 @@ var (
 	errBribeNoWeight       = errors.New("bribe has no distributable weight")
 	errBribeZeroShare      = errors.New("computed bribe share is zero")
 	errBribeAlreadyClaimed = errors.New("bribe already claimed")
+
+	// Lock withdrawal sentinels, raised from inside the locked transaction so the
+	// handler can report the same status the pre-check would have.
+	errLockAlreadyWithdrawn = errors.New("lock already withdrawn")
+	errLockNotExpired       = errors.New("lock has not expired")
 )
 
 const (
@@ -167,14 +195,40 @@ func (s *GovernanceService) CreateLock(c *gin.Context) {
 		return
 	}
 
+	// The lock escrows real TGR from the owner's own platform balance, so the
+	// voting power it mints is always backed by funds that were actually
+	// deposited. Without the debit a caller could lock a balance they do not
+	// hold and vote with the resulting power, draining funded bribe escrow.
+	escrow, err := s.lockLedger()
+	if err != nil {
+		log.Printf("governance: cannot escrow lock: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "veTGR locks are not configured for escrow"})
+		return
+	}
+
 	now := time.Now()
 	lock := models.VeLock{
-		UserID:     userID,
-		Amount:     amount.String(),
-		StartTime:  now,
-		UnlockTime: now.Add(time.Duration(req.DurationSecond) * time.Second),
+		UserID:       userID,
+		Amount:       amount.String(),
+		ChainID:      escrow.ChainID,
+		TokenAddress: escrow.Address,
+		StartTime:    now,
+		UnlockTime:   now.Add(time.Duration(req.DurationSecond) * time.Second),
 	}
-	if err := s.db.Create(&lock).Error; err != nil {
+	// The debit and the lock row commit together: a lock can never grant voting
+	// power without the funds behind it, nor consume funds without the row that
+	// records the owner and the unlock time.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := s.ledger.debitWithin(tx, userID, escrow.ChainID, escrow.Address, amount); err != nil {
+			return err
+		}
+		return tx.Create(&lock).Error
+	}); err != nil {
+		if errors.Is(err, ErrInsufficientBalance) {
+			c.JSON(http.StatusConflict, gin.H{"error": "insufficient balance to lock this amount"})
+			return
+		}
+		log.Printf("governance: failed to create lock: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create lock"})
 		return
 	}
@@ -260,11 +314,51 @@ func (s *GovernanceService) WithdrawLock(c *gin.Context) {
 		return
 	}
 
-	lock.Withdrawn = true
-	if err := s.db.Save(&lock).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to withdraw lock"})
+	// The row lock plus the withdrawn re-check make the release exactly-once: two
+	// concurrent withdrawals of the same expired lock cannot both credit the
+	// owner, which would otherwise mint balance from a single escrow.
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		var row models.VeLock
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&row, "id = ? AND user_id = ?", lockID, userID).Error; err != nil {
+			return err
+		}
+		if row.Withdrawn {
+			return errLockAlreadyWithdrawn
+		}
+		if time.Now().Before(row.UnlockTime) {
+			return errLockNotExpired
+		}
+		amount, ok := new(big.Int).SetString(row.Amount, 10)
+		if !ok || amount.Sign() <= 0 {
+			return errors.New("lock has an unparseable amount; refusing to withdraw")
+		}
+		// A lock created before the escrow columns existed was never debited, so
+		// there is nothing to return; crediting it would conjure balance. Only a
+		// lock that records its escrowed asset is refunded.
+		if row.TokenAddress != "" && row.ChainID != 0 {
+			if s.ledger == nil {
+				return errors.New("governance service has no ledger configured; cannot refund the lock")
+			}
+			if err := s.ledger.creditWithin(tx, row.UserID, row.ChainID, row.TokenAddress, "", 0, amount); err != nil {
+				return err
+			}
+		}
+		return tx.Model(&models.VeLock{}).Where("id = ?", row.ID).
+			Update("withdrawn", true).Error
+	}); err != nil {
+		switch {
+		case errors.Is(err, errLockAlreadyWithdrawn):
+			c.JSON(http.StatusConflict, gin.H{"error": "lock already withdrawn"})
+		case errors.Is(err, errLockNotExpired):
+			c.JSON(http.StatusBadRequest, gin.H{"error": "lock has not expired"})
+		default:
+			log.Printf("governance: failed to withdraw lock: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to withdraw lock"})
+		}
 		return
 	}
+
 	c.JSON(http.StatusOK, gin.H{"success": true, "amount": lock.Amount})
 }
 
