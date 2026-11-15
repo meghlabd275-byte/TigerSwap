@@ -294,6 +294,16 @@ reported as `409`, so the first writer fixes the price and a loser cannot
 overwrite it. `TestOptionSettleIsWriteOnce` pins that the stored price survives a
 second settle.
 
+### 3.8 A balance-scoping test matched a timestamp (resolved)
+
+`TestGetBalancesReturnsOnlyCallersRows` asserted the other account's balance was
+absent with `strings.Contains(body, "9999")`. A balance row serialises its
+`created_at`/`updated_at` with nanosecond precision, so any run whose timestamp
+contained the digit sequence `9999` (for example `...220999946Z`) failed the
+test even though the response was correct — a flaky test, not a leak. The
+assertion now decodes the JSON and checks the caller's `user_id` and the exact
+balance value, so a timestamp can never be mistaken for another account's funds.
+
 ---
 
 ## 4. What is missing (needed for a global commercial launch)

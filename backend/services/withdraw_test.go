@@ -1,9 +1,9 @@
 package services
 
 import (
+	"encoding/json"
 	"math/big"
 	"net/http"
-	"strings"
 	"testing"
 
 	"tigerswap/backend/models"
@@ -191,8 +191,25 @@ func TestGetBalancesReturnsOnlyCallersRows(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `"user_id":"trader"`) || strings.Contains(body, "9999") {
-		t.Fatalf("response leaked another account: %s", body)
+	// Decode rather than substring-match: a bare `strings.Contains(body, "9999")`
+	// also matches the nanosecond component of a serialised timestamp (e.g.
+	// "...220999946Z"), which made this assertion fail at random.
+	var parsed struct {
+		Balances []models.AccountBalance `json:"balances"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("decode balances: %v (%s)", err, rec.Body.String())
+	}
+	if len(parsed.Balances) != 1 {
+		t.Fatalf("expected exactly the caller's one balance, got %d rows", len(parsed.Balances))
+	}
+	for _, row := range parsed.Balances {
+		if row.UserID != "trader" {
+			t.Fatalf("response leaked another account: %s", rec.Body.String())
+		}
+		if row.Available == "9999" {
+			t.Fatalf("response leaked another account's balance: %s", rec.Body.String())
+		}
 	}
 }
 
