@@ -628,11 +628,21 @@ func (s *OptionService) SettleSeries(c *gin.Context) {
 	}
 
 	formatted := formatWad(settlementPrice)
-	if err := s.db.Model(&models.OptionSeries{}).Where("id = ?", series.ID).Updates(map[string]interface{}{
-		"settlement_price": formatted,
-		"status":           models.OptionStatusSettled,
-	}).Error; err != nil {
+	// Guard the write on the not-yet-settled status so two concurrent settles
+	// cannot both pass the pre-check and overwrite each other: the first writer
+	// fixes the price, the second sees zero rows affected and is rejected.
+	result := s.db.Model(&models.OptionSeries{}).
+		Where("id = ? AND status <> ?", series.ID, models.OptionStatusSettled).
+		Updates(map[string]interface{}{
+			"settlement_price": formatted,
+			"status":           models.OptionStatusSettled,
+		})
+	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to settle series"})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "series is already settled"})
 		return
 	}
 	logListingAction(c, s.db, "settle_option_series", "option_series", series.ID.String(), gin.H{"settlement_price": formatted})

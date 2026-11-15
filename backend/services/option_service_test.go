@@ -534,3 +534,75 @@ func mustBigParse(t *testing.T, raw string) *big.Int {
 	}
 	return value
 }
+
+// TestOptionWithdrawLiquidityRejectsNonDepositor pins that a withdrawal is
+// bounded by the caller's own recorded liquidity, not just the pool's free
+// collateral: an account that deposited nothing in the series must not be able
+// to withdraw the pool's balance.
+func TestOptionWithdrawLiquidityRejectsNonDepositor(t *testing.T) {
+	env := newOptionTestEnv(t)
+	expiry := time.Now().Add(30 * 24 * time.Hour)
+	seriesID := seedOptionSeries(t, env, true, "2000", "2000", "0.8", expiry)
+
+	creditCollateral(t, env, "lp-1", "1000000000000000000000000")
+	callUserHandler(t, env.engine.AddCollateral, "lp-1", http.MethodPost,
+		"/options/series/x/collateral", `{"amount":"1000000000000000000000000"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+
+	if err := env.db.Model(&models.OptionSeries{}).Where("id = ?", seriesID).
+		Update("expiry", time.Now().Add(-time.Hour)).Error; err != nil {
+		t.Fatalf("expire series: %v", err)
+	}
+	callUserHandler(t, env.engine.SettleSeries, "admin-1", http.MethodPost,
+		"/admin/options/series/x/settle", `{"settlement_price":"1500"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+
+	// attacker-1 deposited nothing; the pool's free collateral must not be theirs.
+	status, _ := callUserHandler(t, env.engine.WithdrawLiquidity, "attacker-1", http.MethodPost,
+		"/options/series/x/withdraw", `{"amount":"1000000000000000000"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+	if status == http.StatusOK {
+		t.Fatal("an account with no liquidity in the series must not withdraw the pool's collateral")
+	}
+}
+
+// TestOptionSettleIsWriteOnce pins that settlement fixes the price exactly once.
+// A second settle is rejected and the stored price is unchanged, so a settled
+// series cannot be re-priced under open positions. The status-guarded UPDATE
+// closes the concurrent window as well: two settles that both pass the pre-check
+// can no longer overwrite each other, because the loser sees zero rows affected.
+func TestOptionSettleIsWriteOnce(t *testing.T) {
+	env := newOptionTestEnv(t)
+	expiry := time.Now().Add(30 * 24 * time.Hour)
+	seriesID := seedOptionSeries(t, env, true, "2000", "2000", "0.8", expiry)
+
+	if err := env.db.Model(&models.OptionSeries{}).Where("id = ?", seriesID).
+		Update("expiry", time.Now().Add(-time.Hour)).Error; err != nil {
+		t.Fatalf("expire series: %v", err)
+	}
+	status, _ := callUserHandler(t, env.engine.SettleSeries, "admin-1", http.MethodPost,
+		"/admin/options/series/x/settle", `{"settlement_price":"1500"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+	if status != http.StatusOK {
+		t.Fatalf("first settle: want 200, got %d", status)
+	}
+
+	status, _ = callUserHandler(t, env.engine.SettleSeries, "admin-1", http.MethodPost,
+		"/admin/options/series/x/settle", `{"settlement_price":"9999"}`,
+		gin.Params{{Key: "id", Value: seriesID}})
+	if status != http.StatusConflict {
+		t.Fatalf("second settle: want 409, got %d", status)
+	}
+
+	var stored models.OptionSeries
+	if err := env.db.First(&stored, "id = ?", seriesID).Error; err != nil {
+		t.Fatalf("reload series: %v", err)
+	}
+	if stored.SettlementPrice == nil || *stored.SettlementPrice != formatWad(mustBigParse(t, "1500000000000000000000")) {
+		got := "<nil>"
+		if stored.SettlementPrice != nil {
+			got = *stored.SettlementPrice
+		}
+		t.Fatalf("settlement price = %s, want 1500e18; a second settle must not re-price", got)
+	}
+}

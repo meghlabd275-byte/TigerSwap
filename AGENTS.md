@@ -539,6 +539,10 @@ pricing and settlement layer; `services/option_math.go` and
   settlement price, after which `Exercise` pays intrinsic value and
   `WithdrawLiquidity` returns an LP's share. A position can be exercised once;
   the payout is recorded before it is credited so a replay cannot double-pay.
+  The settle write is guarded on `status <> settled` and reports a zero row
+  count as `409`, so settlement is write-once even under two concurrent
+  settles; the pre-check alone could not stop the second writer re-pricing a
+  series that was already settled.
 - The mark price is never caller-supplied. `RefreshMarkPrice` reads it from the
   configured price source, the same way the perp engine sources its oracle.
 - Routes: public `GET /options/series`, `/options/series/all`,

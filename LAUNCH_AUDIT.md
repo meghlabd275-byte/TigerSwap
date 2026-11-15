@@ -283,6 +283,17 @@ The health read and the LTV comparison now run inside the transaction, under the
 `TestMarginBorrowChecksLTVInsideTheTransaction` observes the collateral read and
 fails on the pre-fix code, where it happened outside the transaction.
 
+### 3.7 Option settlement could be raced to a second price (resolved)
+
+`OptionService.SettleSeries` read the series status outside any lock and then
+wrote the settlement price with an `UPDATE` guarded only by `id`. Two settles
+that both passed the pre-check could each write, so the last writer re-priced a
+series that was already settled — the opposite of settlement fixing one price.
+The `UPDATE` is now guarded on `status <> settled` and a zero row count is
+reported as `409`, so the first writer fixes the price and a loser cannot
+overwrite it. `TestOptionSettleIsWriteOnce` pins that the stored price survives a
+second settle.
+
 ---
 
 ## 4. What is missing (needed for a global commercial launch)
