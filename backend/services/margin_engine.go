@@ -605,22 +605,6 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 		return fmt.Errorf("cannot price borrow asset %s: %w", normalized, err)
 	}
 
-	health, err := e.computeHealth(ctx, e.db, accountID, cfg)
-	if err != nil {
-		return err
-	}
-	// New debt may not exceed LTV * collateral. LTV is stricter than the
-	// liquidation threshold, so a fresh borrow leaves a safety buffer. The
-	// comparison is exact, so a borrow that only fits because of binary
-	// rounding is refused.
-	maxDebt := new(big.Rat).Mul(health.CollateralUSD, cfg.LTV)
-	debt := new(big.Rat).Add(health.DebtUSD, new(big.Rat).Mul(value, borrowPrice))
-	if debt.Cmp(maxDebt) > 0 {
-		f, _ := value.Float64()
-		ltvFloat, _ := cfg.LTV.Float64()
-		return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, ltvFloat)
-	}
-
 	settled, err := e.assetLedger(normalized)
 	if err != nil {
 		return err
@@ -647,11 +631,28 @@ func (e *MarginEngine) Borrow(ctx context.Context, userID string, accountID uuid
 			return err
 		}
 
+		// Health is recomputed inside the transaction, under the account lock. New
+		// debt may not exceed LTV * collateral, and LTV is stricter than the
+		// liquidation threshold, so a fresh borrow leaves a safety buffer. Checking
+		// this before the lock let two concurrent borrows each pass LTV against the
+		// same pre-borrow snapshot and jointly exceed the limit.
+		health, err := e.computeHealth(ctx, tx, accountID, cfg)
+		if err != nil {
+			return err
+		}
+		maxDebt := new(big.Rat).Mul(health.CollateralUSD, cfg.LTV)
+		debt := new(big.Rat).Add(health.DebtUSD, new(big.Rat).Mul(value, borrowPrice))
+		if debt.Cmp(maxDebt) > 0 {
+			f, _ := value.Float64()
+			ltvFloat, _ := cfg.LTV.Float64()
+			return fmt.Errorf("%w: borrowing %.8f %s would exceed the LTV of %.2f", ErrMarginInsufficientCollateral, f, normalized, ltvFloat)
+		}
+
 		// Lock the debt row before touching the balance. Row locks are taken in one
 		// order everywhere in this engine (account, then debt, then balance) so two
 		// operations on the same account cannot deadlock by grabbing them reversed.
 		var existing models.MarginBorrow
-		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("account_id = ? AND asset = ?", accountID, normalized).First(&existing).Error
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			if err := tx.Clauses(clause.OnConflict{

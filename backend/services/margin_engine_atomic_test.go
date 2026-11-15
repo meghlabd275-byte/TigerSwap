@@ -186,3 +186,52 @@ func TestMarginLiquidateDecidesInsideTheTransaction(t *testing.T) {
 		t.Fatal("liquidation must not decide from collateral read outside the transaction, before the row lock")
 	}
 }
+
+// TestMarginBorrowChecksLTVInsideTheTransaction proves the health that decides
+// whether a borrow fits the LTV is computed inside the borrow transaction, after
+// the account row is locked. Computing it from a snapshot read before the lock
+// let two concurrent borrows each pass LTV against the same pre-borrow state, so
+// their sum exceeded the limit.
+//
+// The query observer records whether the collateral read that drives the
+// decision ran inside a transaction: on the old code the LTV read happened
+// before the transaction opened, so the guard fires.
+func TestMarginBorrowChecksLTVInsideTheTransaction(t *testing.T) {
+	ctx := context.Background()
+	env := newMarginTestEnv(t, map[string]float64{"BTC": 60000, "RUSD": 1})
+	env.seedMarginMarket(t, "BTC/RUSD", "BTC", "RUSD", 0.7, 0.75)
+
+	account, err := env.engine.OpenAccount(ctx, "user-1", OpenAccountRequest{Pair: "BTC/RUSD"})
+	if err != nil {
+		t.Fatalf("open account: %v", err)
+	}
+	if err := env.engine.DepositCollateral(ctx, "user-1", account.ID, "BTC", "1"); err != nil {
+		t.Fatalf("deposit: %v", err)
+	}
+
+	var collateralReadInTx, collateralReadOutsideTx bool
+	if err := env.db.Callback().Query().Before("gorm:query").
+		Register("test:watch_margin_borrow_ltv_read", func(tx *gorm.DB) {
+			if tx.Statement == nil || tx.Statement.Table != "margin_collaterals" {
+				return
+			}
+			if _, ok := tx.Statement.ConnPool.(gorm.TxCommitter); ok {
+				collateralReadInTx = true
+			} else {
+				collateralReadOutsideTx = true
+			}
+		}); err != nil {
+		t.Fatalf("register query observer: %v", err)
+	}
+
+	if err := env.engine.Borrow(ctx, "user-1", account.ID, "RUSD", "1000"); err != nil {
+		t.Fatalf("borrow: %v", err)
+	}
+
+	if !collateralReadInTx {
+		t.Fatal("borrow must check the LTV against collateral read inside the transaction")
+	}
+	if collateralReadOutsideTx {
+		t.Fatal("borrow must not decide the LTV from collateral read outside the transaction, before the row lock")
+	}
+}

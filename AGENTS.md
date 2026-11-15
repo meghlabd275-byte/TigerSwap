@@ -295,6 +295,14 @@ listing changes take effect without a restart:
 Margin accounts live in `margin_accounts`, with `margin_collaterals` and
 `margin_borrows` per account. Borrow interest accrues on read from
 `last_accrual`, so it survives restarts and does not depend on a background job.
+Every operation that reads state to make a decision — `Borrow`'s LTV check,
+`Repay`'s debt read, `Liquidate`'s health and seize amounts — computes it inside
+the transaction after locking the account row `FOR UPDATE`, never from a
+pre-lock snapshot. A pre-lock read lets two concurrent operations each act on the
+same stale state: two borrows jointly exceed the LTV, two repayments reduce one
+debt twice, two liquidators seize the same collateral. Row locks are taken in one
+order (account, then debt, then balance) so two operations on one account cannot
+deadlock.
 
 ## Pool families and on-chain ABIs
 

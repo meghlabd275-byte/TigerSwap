@@ -50,9 +50,11 @@ wired to nothing":
    open-interest cap under the same write lock that inserts the position, so two
    concurrent opens can no longer both slip past it; the on-chain
    `TigerSwapPerpOrderBook` now tracks and enforces `maxOpenInterest`, which was
-   previously stored but never checked (§3.2); and a withdrawal is only settled
+   previously stored but never checked (§3.2); a withdrawal is only settled
    once its receipt is buried under the same confirmation depth a deposit waits
-   for, instead of the first receipt (§3.5).
+   for, instead of the first receipt (§3.5); and the margin engine's borrow path
+   checks the LTV inside the transaction that locks the account, not against a
+   pre-lock snapshot (§3.6).
 1. **Settlement of the derivatives book is custodial and off-chain.** Perp and
    margin positions live in Postgres and settle against an internal ledger. That
    is the exchange model, not the DEX model, and it is the opposite of
@@ -266,6 +268,20 @@ is treated as not-yet-safe, so a transient RPC error delays settlement rather
 than settling early.
 `TestWithdrawalReconcilerConfirmsMinedTransfer` now pins that a depth-zero
 receipt leaves the row pending and only settles once buried past the depth.
+
+### 3.6 Margin borrow checked the LTV before the lock (resolved)
+
+`MarginEngine.Borrow` computed the account's health and the resulting LTV check
+against `e.db` *before* the transaction that locks the account row. Two
+concurrent borrows on the same account could each pass the check against the same
+pre-borrow snapshot, so their sum exceeded the listing's LTV. `Repay` and
+`Liquidate` had the same shape and were already fixed to decide inside the
+transaction; `Borrow` was the remaining one.
+
+The health read and the LTV comparison now run inside the transaction, under the
+`FOR UPDATE` account lock, before the debt row is touched.
+`TestMarginBorrowChecksLTVInsideTheTransaction` observes the collateral read and
+fails on the pre-fix code, where it happened outside the transaction.
 
 ---
 
