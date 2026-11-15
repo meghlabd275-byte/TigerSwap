@@ -117,16 +117,18 @@ does not yet contain.
 
 ## Gaps (correctness or launch-blocking)
 
-1. **Perp prices are still `float64` (margin is now exact).** The perp
-   settlement arithmetic is exact (`perp_money.go` uses `big.Rat`), but
-   `PerpetualPosition` prices (`EntryPrice`, `MarkPrice`, `IndexPrice`,
-   `LiquidationPrice`) are still `float64`, and `notionalPNL` /
-   `isLiquidatable` compare a float mark price against a float liquidation
-   price. `MarginEngine` is now fully exact: health, LTV, liquidation
-   threshold, bonus and close factor are `*big.Rat`, so a margin account whose
-   health factor is exactly 1 is neither listed nor liquidated. The perp engine
-   should be converted the same way; a liquidation threshold compared against a
-   floating mark price can round at the boundary.
+1. **Perp prices enter as `float64` (the settlement arithmetic is exact).**
+   `perp_money.go` and the perp risk path use exact `big.Rat`: `notionalPNL`,
+   `liquidationPriceRat` and `liquidationRequired` convert the stored prices to
+   rationals and compare exactly, so a position sitting on its maintenance level
+   is not liquidated by a binary-rounding artefact. What remains a float is the
+   price *input*: `PerpetualPosition.EntryPrice`/`MarkPrice`/`IndexPrice`/
+   `LiquidationPrice` are `float64`, and the mark price arrives from the oracle
+   as a `float64`, so a price cannot carry more than ~15–16 significant digits
+   into the exact comparison. That is a precision boundary on the price feed,
+   not a rounding defect in settlement, and it is bounded by the oracle's own
+   precision. Moving the price fields to exact decimals is a hardening step, not
+   a correctness fix.
 2. **Bridge relayer holds the entire validator key set.** `bridge_new.go` reads
    `TIGERBRIDGE_VALIDATOR_KEYS` in-process and signs the supermajority itself, so
    the supermajority is produced by one process. A production bridge needs
@@ -228,6 +230,18 @@ they are kept here so the history is not lost.
   artifact, with a selector pin. Pinned by
   `testPositionEquityFoldsPendingFunding` and
   `TestBookBelowMaintenanceMirrorsContract`.
+- **A margin borrow checks its LTV under the transaction.** `MarginEngine.Borrow`
+  computed account health/LTV against `e.db` *before* the transaction that locks
+  the account row, so two concurrent borrows could each pass on the same
+  pre-borrow snapshot and sum past the listing's LTV. The check now runs inside
+  the transaction, under the account row lock, matching `Repay` and `Liquidate`.
+  Pinned by `TestMarginBorrowChecksLTVInsideTheTransaction`.
+- **Option settlement is write-once.** `OptionService.SettleSeries` read the
+  series status outside any lock and wrote the settlement price with an `UPDATE`
+  guarded only by `id`, so two concurrent settles could each pass the pre-check
+  and the last writer re-priced a series that was already settled. The `UPDATE`
+  is now guarded on `status <> settled` and a zero row count is reported as
+  `409`. Pinned by `TestOptionSettleIsWriteOnce`.
 
 ## How to re-verify
 
