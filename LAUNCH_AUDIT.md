@@ -48,9 +48,11 @@ wired to nothing":
    ledger funds; the oracle prices the derivatives money paths parse are parsed
    exactly rather than through `float64`; the off-chain perp engine evaluates its
    open-interest cap under the same write lock that inserts the position, so two
-   concurrent opens can no longer both slip past it; and the on-chain
+   concurrent opens can no longer both slip past it; the on-chain
    `TigerSwapPerpOrderBook` now tracks and enforces `maxOpenInterest`, which was
-   previously stored but never checked (§3.2).
+   previously stored but never checked (§3.2); and a withdrawal is only settled
+   once its receipt is buried under the same confirmation depth a deposit waits
+   for, instead of the first receipt (§3.5).
 1. **Settlement of the derivatives book is custodial and off-chain.** Perp and
    margin positions live in Postgres and settle against an internal ledger. That
    is the exchange model, not the DEX model, and it is the opposite of
@@ -245,6 +247,25 @@ on several EVM chains"; there is still no non-EVM deposit path.
 supermajority itself. A supermajority one process can produce is not a
 supermajority; a real bridge runs independent validators. This is a design gap,
 not a coding error, but it is a launch blocker for a bridge with real value.
+
+### 3.5 Withdrawals settled at zero confirmations (resolved)
+
+The withdrawal reconciler marked a pending withdrawal `confirmed` the moment a
+receipt existed, with no confirmation depth. A receipt at depth zero can be
+orphaned by a reorg, and the row would then claim the funds had left the platform
+when the transaction no longer existed. Deposits (`deposit_watcher.go`) and both
+on-chain indexers (`onchain_perps.go`, `onchain_perp_book.go`) already wait
+twelve confirmations; only the withdrawal path did not.
+
+`reconcile` and `reconcileRequest` now call `sufficientlyConfirmed`, which reads
+the chain head and requires the receipt to be buried under
+`withdrawalConfirmations` (12) blocks before the row is marked confirmed or a
+request approved. A reverted receipt is still final on the first sighting — a
+revert cannot become a success — so refunds are not delayed. An unreadable head
+is treated as not-yet-safe, so a transient RPC error delays settlement rather
+than settling early.
+`TestWithdrawalReconcilerConfirmsMinedTransfer` now pins that a depth-zero
+receipt leaves the row pending and only settles once buried past the depth.
 
 ---
 

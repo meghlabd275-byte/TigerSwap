@@ -125,6 +125,15 @@ func mine(t *testing.T, raw *ethclient.Client, ctx context.Context) {
 	}
 }
 
+// mineBlocks mines n blocks so a receipt reaches the confirmation depth the
+// reconciler requires before it treats a withdrawal as settled.
+func mineBlocks(t *testing.T, raw *ethclient.Client, ctx context.Context, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		mine(t, raw, ctx)
+	}
+}
+
 // TestWithdrawalReconcilerConfirmsMinedTransfer drives a real native transfer on
 // a local chain and pins that the reconciler marks the pending row confirmed
 // with the mined block number, leaving the ledger debit in place.
@@ -157,7 +166,19 @@ func TestWithdrawalReconcilerConfirmsMinedTransfer(t *testing.T) {
 	ledger := NewLedgerService(db)
 	reconciler := &withdrawalReconciler{db: db, blockchain: client, ledger: ledger}
 
+	// A receipt at depth zero must not settle: a reorg could still orphan it.
 	mine(t, raw, ctx)
+	reconciler.sweep(ctx)
+	var shallow models.Transaction
+	if err := db.Where("hash = ?", txHash).First(&shallow).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if shallow.Status != "pending" {
+		t.Fatalf("status at depth 0 = %q, want pending (a reorg could still orphan it)", shallow.Status)
+	}
+
+	// Once buried past the confirmation depth it is settled.
+	mineBlocks(t, raw, ctx, withdrawalConfirmations)
 	reconciler.sweep(ctx)
 
 	var got models.Transaction
@@ -411,7 +432,7 @@ func TestWithdrawalReconcilerApprovesConfirmedRequest(t *testing.T) {
 
 	to := common.HexToAddress("0x70997970C51812dc3A010C7d01b50e0d17dc79C8")
 	txHash := sendSigned(t, raw, ctx, to, big.NewInt(1_000_000_000_000_000), 21000, nil)
-	mine(t, raw, ctx)
+	mineBlocks(t, raw, ctx, withdrawalConfirmations+1)
 
 	db := newReconcilerDB(t)
 	if err := db.AutoMigrate(&models.WithdrawalRequest{}); err != nil {

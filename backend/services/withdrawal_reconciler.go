@@ -25,6 +25,14 @@ const DefaultWithdrawalReconcileInterval = 30 * time.Second
 // (or the process died) and an operator must decide whether it was broadcast.
 const unbroadcastedWithdrawalGrace = 15 * time.Minute
 
+// withdrawalConfirmations is how deep a withdrawal's receipt must be buried
+// before the row is treated as settled. A receipt at depth zero can be orphaned
+// by a reorg; marking the withdrawal confirmed there would tell the platform the
+// funds left when the transaction may no longer exist. Deposits and both on-chain
+// indexers wait the same depth, so a deposit is never credited on a block a
+// withdrawal has already been confirmed on.
+const withdrawalConfirmations = 12
+
 // StartWithdrawalReconciler runs the receipt reconciler until ctx is cancelled.
 // It is the single writer that moves a withdrawal out of "pending": on a
 // confirmed receipt the row is marked confirmed, and on a reverted receipt the
@@ -167,6 +175,11 @@ func (r *withdrawalReconciler) reconcileRequest(ctx context.Context, request *mo
 
 	switch data.Status {
 	case "confirmed":
+		// Same depth gate as a direct withdrawal: a request is approved only once
+		// its release is buried past a reorg.
+		if !r.sufficientlyConfirmed(ctx, request.ChainID, data.BlockNumber) {
+			return nil
+		}
 		return r.db.WithContext(ctx).Model(&models.WithdrawalRequest{}).
 			Where("id = ? AND status = ?", request.ID, "processing").
 			Update("status", models.WithdrawalStatusApproved).Error
@@ -243,12 +256,32 @@ func (r *withdrawalReconciler) reconcile(ctx context.Context, tx *models.Transac
 
 	switch data.Status {
 	case "confirmed":
+		// Wait for the same depth deposits wait for. A reverted receipt is final
+		// immediately: a revert cannot become a success, so the refund is safe to
+		// apply on the first sighting.
+		if !r.sufficientlyConfirmed(ctx, tx.ChainID, data.BlockNumber) {
+			return nil
+		}
 		return r.markConfirmed(ctx, tx, data.BlockNumber)
 	case "failed":
 		return r.reverse(ctx, tx)
 	default:
 		return nil
 	}
+}
+
+// sufficientlyConfirmed reports whether a receipt at blockNumber is buried under
+// withdrawalConfirmations blocks. An unreadable head is treated as not-yet-safe,
+// so a transient RPC error delays settlement rather than settling early.
+func (r *withdrawalReconciler) sufficientlyConfirmed(ctx context.Context, chainID int64, blockNumber uint64) bool {
+	head, err := r.blockchain.GetCurrentBlock(ctx, chainID)
+	if err != nil {
+		return false
+	}
+	if head < blockNumber {
+		return false
+	}
+	return head-blockNumber >= withdrawalConfirmations
 }
 
 // markConfirmed flips a pending row to confirmed. The update is guarded by the

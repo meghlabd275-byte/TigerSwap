@@ -175,6 +175,13 @@ The Go module uses `GOFLAGS=-mod=mod` because `go.sum` is not fully vendored.
   while the nonce lock is held, so a crash between broadcast and the DB update
   cannot strand a request in `processing` with no hash to reconcile.
 - Chain selection for the watcher comes from `DEPOSIT_WATCH_CHAINS`.
+- A withdrawal is settled only once its receipt is buried under
+  `withdrawalConfirmations` (12) blocks — the same depth the deposit watcher and
+  both on-chain indexers wait for. A receipt at depth zero can be orphaned by a
+  reorg, so `withdrawal_reconciler` checks the chain head
+  (`sufficientlyConfirmed`) before it marks a row confirmed or approves a
+  request; an unreadable head counts as not-yet-safe. A reverted receipt is
+  final on first sighting, so refunds are never delayed by the depth gate.
 
 ## On-chain RPC endpoints
 

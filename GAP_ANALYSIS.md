@@ -148,7 +148,10 @@ they are kept here so the history is not lost.
 - **Launchpad escrows.** `launchpad.go` debits the participant on `Participate`
   and releases on `ClaimTokens`, both within the allocation transaction.
 - **Withdrawals reach a terminal state.** `withdrawal_reconciler.go` watches the
-  receipt and confirms or reverses the debit.
+  receipt and confirms or reverses the debit. A withdrawal is only marked
+  confirmed once its receipt is buried under the same confirmation depth a
+  deposit waits for, so a reorg cannot leave a withdrawal settled on a block that
+  is later orphaned; a reverted receipt is still reversed on first sighting.
 - **`TradingEnabled` and maintenance mode are enforced.** `platform_gate.go`
   gates trading, withdrawals, deposits and registration.
 - **Spot limit/stop orders execute on-chain** through the `onchain_orders.go`
